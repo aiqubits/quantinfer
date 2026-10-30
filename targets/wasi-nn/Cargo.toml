@@ -1,0 +1,8 @@
+[package]
+name = "quantinfer-target-wasi-nn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quantinfer = { workspace = true }

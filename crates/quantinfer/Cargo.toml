@@ -1,0 +1,31 @@
+[package]
+name = "quantinfer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = ["dep:quantinfer-backend-cpu"]
+wgpu = ["dep:quantinfer-backend-wgpu"]
+cuda = ["dep:quantinfer-backend-cuda"]
+metal = ["dep:quantinfer-backend-metal"]
+ascend = ["dep:quantinfer-backend-ascend"]
+candle = ["dep:quantinfer-adapter-candle"]
+wasm = []
+wasi-nn = []
+
+[dependencies]
+quantinfer-core.workspace = true
+quantinfer-format.workspace = true
+quantinfer-model.workspace = true
+quantinfer-tokenizer.workspace = true
+quantinfer-kernel.workspace = true
+quantinfer-runtime.workspace = true
+quantinfer-quant.workspace = true
+quantinfer-backend-cpu = { workspace = true, optional = true }
+quantinfer-backend-wgpu = { workspace = true, optional = true }
+quantinfer-backend-cuda = { workspace = true, optional = true }
+quantinfer-backend-metal = { workspace = true, optional = true }
+quantinfer-backend-ascend = { workspace = true, optional = true }
+quantinfer-adapter-candle = { workspace = true, optional = true }

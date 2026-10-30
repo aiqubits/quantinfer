@@ -1,0 +1,10 @@
+[package]
+name = "quantinfer-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quantinfer-core = { workspace = true }
+quantinfer-format = { workspace = true }
+quantinfer-tokenizer = { workspace = true }

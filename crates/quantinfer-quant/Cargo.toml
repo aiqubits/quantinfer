@@ -1,0 +1,11 @@
+[package]
+name = "quantinfer-quant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quantinfer-core = { workspace = true }
+quantinfer-format = { workspace = true }
+quantinfer-model = { workspace = true }
+quantinfer-kernel = { workspace = true }
