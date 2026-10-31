@@ -56,7 +56,7 @@ impl SafeTensorFile {
                 .try_into()
                 .map_err(|_| FormatError::Invalid("invalid SafeTensors header".to_owned()))?,
         ) as usize;
-        let header_start = 8;
+        let header_start: usize = 8;
         let data_start = header_start
             .checked_add(header_size)
             .ok_or_else(|| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
