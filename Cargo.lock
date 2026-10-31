@@ -197,6 +197,7 @@ dependencies = [
  "quantinfer-format",
  "quantinfer-kernel",
  "quantinfer-model",
+ "quantinfer-quant",
  "quantinfer-tokenizer",
 ]
 

@@ -13,3 +13,4 @@ quantinfer-kernel = { workspace = true }
 
 [dev-dependencies]
 quantinfer-backend-cpu = { workspace = true }
+quantinfer-quant = { workspace = true }

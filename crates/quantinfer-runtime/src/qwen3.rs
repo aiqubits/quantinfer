@@ -1,22 +1,51 @@
-use quantinfer_core::{Shape, Tensor};
+use quantinfer_core::{DType, QuantizedTensor, Shape, Tensor};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::Qwen3Config;
 
 use crate::{KvCache, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
+pub enum LinearWeight {
+    F32(Tensor),
+    Q8_0(QuantizedTensor),
+}
+
+impl LinearWeight {
+    pub fn shape(&self) -> &Shape {
+        match self {
+            Self::F32(tensor) => tensor.shape(),
+            Self::Q8_0(tensor) => tensor.shape(),
+        }
+    }
+
+    pub fn dtype(&self) -> DType {
+        match self {
+            Self::F32(_) => DType::F32,
+            Self::Q8_0(_) => DType::Q8_0,
+        }
+    }
+
+    fn matmul<B: KernelBackend>(&self, backend: &B, input: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::F32(weight) => Ok(backend.matmul(input, weight)?),
+            Self::Q8_0(weight) => Ok(backend.matmul_q8_0(input, weight)?),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Qwen3LayerWeights {
     pub input_layernorm: Tensor,
-    pub q_proj: Tensor,
+    pub q_proj: LinearWeight,
     pub q_norm: Tensor,
-    pub k_proj: Tensor,
+    pub k_proj: LinearWeight,
     pub k_norm: Tensor,
-    pub v_proj: Tensor,
-    pub o_proj: Tensor,
+    pub v_proj: LinearWeight,
+    pub o_proj: LinearWeight,
     pub post_attention_layernorm: Tensor,
-    pub gate_proj: Tensor,
-    pub up_proj: Tensor,
-    pub down_proj: Tensor,
+    pub gate_proj: LinearWeight,
+    pub up_proj: LinearWeight,
+    pub down_proj: LinearWeight,
 }
 
 impl Qwen3LayerWeights {
@@ -80,7 +109,11 @@ impl Qwen3LayerWeights {
                     "Qwen3 {name} has shape {actual:?}, expected {expected:?}"
                 )));
             }
-            if self.tensor_by_name(name)?.dtype() != quantinfer_core::DType::F32 {
+            if !matches!(
+                name,
+                "q_proj" | "k_proj" | "v_proj" | "o_proj" | "gate_proj" | "up_proj" | "down_proj"
+            ) && self.weight_dtype(name)? != DType::F32
+            {
                 return Err(RuntimeError::InvalidInput(format!(
                     "Qwen3 {name} must use F32 for the reference runtime"
                 )));
@@ -89,19 +122,19 @@ impl Qwen3LayerWeights {
         Ok(())
     }
 
-    fn tensor_by_name(&self, name: &str) -> Result<&Tensor> {
+    fn weight_dtype(&self, name: &str) -> Result<DType> {
         match name {
-            "input_layernorm" => Ok(&self.input_layernorm),
-            "q_proj" => Ok(&self.q_proj),
-            "q_norm" => Ok(&self.q_norm),
-            "k_proj" => Ok(&self.k_proj),
-            "k_norm" => Ok(&self.k_norm),
-            "v_proj" => Ok(&self.v_proj),
-            "o_proj" => Ok(&self.o_proj),
-            "post_attention_layernorm" => Ok(&self.post_attention_layernorm),
-            "gate_proj" => Ok(&self.gate_proj),
-            "up_proj" => Ok(&self.up_proj),
-            "down_proj" => Ok(&self.down_proj),
+            "input_layernorm" => Ok(self.input_layernorm.dtype()),
+            "q_proj" => Ok(self.q_proj.dtype()),
+            "q_norm" => Ok(self.q_norm.dtype()),
+            "k_proj" => Ok(self.k_proj.dtype()),
+            "k_norm" => Ok(self.k_norm.dtype()),
+            "v_proj" => Ok(self.v_proj.dtype()),
+            "o_proj" => Ok(self.o_proj.dtype()),
+            "post_attention_layernorm" => Ok(self.post_attention_layernorm.dtype()),
+            "gate_proj" => Ok(self.gate_proj.dtype()),
+            "up_proj" => Ok(self.up_proj.dtype()),
+            "down_proj" => Ok(self.down_proj.dtype()),
             _ => Err(RuntimeError::InvalidInput(format!(
                 "unknown Qwen3 weight {name}"
             ))),
@@ -119,22 +152,25 @@ impl Qwen3LayerWeights {
         let sequence_length = hidden.shape().dims()[0];
         let residual = hidden.clone();
         let normalized = backend.rms_norm(hidden, &self.input_layernorm, config.rms_norm_eps)?;
-        let query = backend
-            .matmul(&normalized, &self.q_proj)?
+        let query = self
+            .q_proj
+            .matmul(backend, &normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_attention_heads,
                 config.effective_head_dim(),
             ]))?;
-        let key = backend
-            .matmul(&normalized, &self.k_proj)?
+        let key = self
+            .k_proj
+            .matmul(backend, &normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads,
                 config.effective_head_dim(),
             ]))?;
-        let value = backend
-            .matmul(&normalized, &self.v_proj)?
+        let value = self
+            .v_proj
+            .matmul(backend, &normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads,
@@ -167,17 +203,17 @@ impl Qwen3LayerWeights {
             sequence_length,
             config.query_projection_size(),
         ]))?;
-        let projected = backend.matmul(&attended, &self.o_proj)?;
+        let projected = self.o_proj.matmul(backend, &attended)?;
         let residual = add(&residual, &projected)?;
         let normalized = backend.rms_norm(
             &residual,
             &self.post_attention_layernorm,
             config.rms_norm_eps,
         )?;
-        let gate = backend.matmul(&normalized, &self.gate_proj)?;
-        let up = backend.matmul(&normalized, &self.up_proj)?;
+        let gate = self.gate_proj.matmul(backend, &normalized)?;
+        let up = self.up_proj.matmul(backend, &normalized)?;
         let feed_forward = backend.silu_mul(&gate, &up)?;
-        let feed_forward = backend.matmul(&feed_forward, &self.down_proj)?;
+        let feed_forward = self.down_proj.matmul(backend, &feed_forward)?;
         add(&residual, &feed_forward)
     }
 }
@@ -374,15 +410,24 @@ fn gqa_attention(
 
 #[cfg(test)]
 mod tests {
-    use super::{Qwen3LayerWeights, Qwen3Model};
+    use super::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
     use crate::KvCache;
     use quantinfer_backend_cpu::CpuScalar;
     use quantinfer_core::Tensor;
     use quantinfer_model::Qwen3Config;
+    use quantinfer_quant::quantize_q8_0;
 
     fn filled(shape: Vec<usize>, value: f32) -> Tensor {
         let count = shape.iter().product();
         Tensor::from_f32(shape, vec![value; count]).unwrap()
+    }
+
+    fn linear(shape: Vec<usize>, value: f32) -> LinearWeight {
+        LinearWeight::F32(filled(shape, value))
+    }
+
+    fn quantized_linear(shape: Vec<usize>, value: f32) -> LinearWeight {
+        LinearWeight::Q8_0(quantize_q8_0(&filled(shape, value)).unwrap())
     }
 
     fn config() -> Qwen3Config {
@@ -409,16 +454,32 @@ mod tests {
     fn layer() -> Qwen3LayerWeights {
         Qwen3LayerWeights {
             input_layernorm: filled(vec![8], 1.0),
-            q_proj: filled(vec![8, 8], 0.01),
+            q_proj: linear(vec![8, 8], 0.01),
             q_norm: filled(vec![4], 1.0),
-            k_proj: filled(vec![8, 4], 0.01),
+            k_proj: linear(vec![8, 4], 0.01),
             k_norm: filled(vec![4], 1.0),
-            v_proj: filled(vec![8, 4], 0.01),
-            o_proj: filled(vec![8, 8], 0.01),
+            v_proj: linear(vec![8, 4], 0.01),
+            o_proj: linear(vec![8, 8], 0.01),
             post_attention_layernorm: filled(vec![8], 1.0),
-            gate_proj: filled(vec![8, 16], 0.01),
-            up_proj: filled(vec![8, 16], 0.01),
-            down_proj: filled(vec![16, 8], 0.01),
+            gate_proj: linear(vec![8, 16], 0.01),
+            up_proj: linear(vec![8, 16], 0.01),
+            down_proj: linear(vec![16, 8], 0.01),
+        }
+    }
+
+    fn quantized_layer() -> Qwen3LayerWeights {
+        Qwen3LayerWeights {
+            input_layernorm: filled(vec![8], 1.0),
+            q_proj: quantized_linear(vec![8, 8], 0.01),
+            q_norm: filled(vec![4], 1.0),
+            k_proj: quantized_linear(vec![8, 4], 0.01),
+            k_norm: filled(vec![4], 1.0),
+            v_proj: quantized_linear(vec![8, 4], 0.01),
+            o_proj: quantized_linear(vec![8, 8], 0.01),
+            post_attention_layernorm: filled(vec![8], 1.0),
+            gate_proj: quantized_linear(vec![8, 16], 0.01),
+            up_proj: quantized_linear(vec![8, 16], 0.01),
+            down_proj: quantized_linear(vec![16, 8], 0.01),
         }
     }
 
@@ -447,5 +508,28 @@ mod tests {
         let decode = model.forward(&[3], &mut cache).unwrap();
         assert_eq!(decode.shape().dims(), &[1, config.vocab_size]);
         assert_eq!(cache.sequence_length(0).unwrap(), 3);
+    }
+
+    #[test]
+    fn runs_qwen3_with_q8_linear_weights() {
+        let config = config();
+        let model = Qwen3Model::new(
+            config.clone(),
+            CpuScalar::new(),
+            filled(vec![config.vocab_size, config.hidden_size], 0.01),
+            vec![quantized_layer()],
+            filled(vec![config.hidden_size], 1.0),
+            filled(vec![config.hidden_size, config.vocab_size], 0.01),
+        )
+        .unwrap();
+        let mut cache = KvCache::new(
+            config.num_hidden_layers,
+            config.max_position_embeddings,
+            config.num_key_value_heads,
+            config.effective_head_dim(),
+        )
+        .unwrap();
+        let logits = model.forward(&[1], &mut cache).unwrap();
+        assert_eq!(logits.shape().dims(), &[1, config.vocab_size]);
     }
 }

@@ -4,7 +4,7 @@
 
 pub mod qwen3;
 
-pub use qwen3::{Qwen3LayerWeights, Qwen3Model};
+pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
 
 use std::fmt;
 
