@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use half::{bf16, f16};
+
 use super::{FormatError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,22 +171,31 @@ impl SafeTensorFile {
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
-        if info.dtype != SafeTensorDType::F32 {
-            return Err(FormatError::Invalid(format!(
-                "tensor {name} is {:?}, only F32 conversion is available",
-                info.dtype
-            )));
-        }
         let bytes = self.tensor_bytes(name)?;
-        if bytes.len() % 4 != 0 {
+        let element_size = info.dtype.element_size();
+        if bytes.len() % element_size != 0 {
             return Err(FormatError::Invalid(format!(
-                "F32 tensor {name} has a non-aligned byte length"
+                "tensor {name} has a non-aligned byte length"
             )));
         }
-        Ok(bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has four bytes")))
-            .collect())
+        Ok(match info.dtype {
+            SafeTensorDType::F32 => bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has four bytes")))
+                .collect(),
+            SafeTensorDType::F16 => bytes
+                .chunks_exact(2)
+                .map(|chunk| {
+                    f16::from_le_bytes(chunk.try_into().expect("chunk has two bytes")).to_f32()
+                })
+                .collect(),
+            SafeTensorDType::BF16 => bytes
+                .chunks_exact(2)
+                .map(|chunk| {
+                    bf16::from_le_bytes(chunk.try_into().expect("chunk has two bytes")).to_f32()
+                })
+                .collect(),
+        })
     }
 }
 

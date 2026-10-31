@@ -9,6 +9,7 @@ members = [
     "bindings/c",
     "bindings/wasm",
     "tools/xtask",
+    "tools/quantinfer-convert",
 ]
 default-members = [
     "crates/quantinfer",
