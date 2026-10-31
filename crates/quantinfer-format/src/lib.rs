@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use half::f16;
-use quantinfer_core::{QuantizedTensor, Tensor};
+use quantinfer_core::QuantizedTensor;
 
 pub type Result<T> = std::result::Result<T, FormatError>;
 
@@ -192,7 +192,7 @@ pub struct GgufReader {
 impl GgufReader {
     pub fn open(bytes: Vec<u8>) -> Result<Self> {
         let mut cursor = Cursor::new(&bytes);
-        if cursor.read_exact(4)? != GGUF_MAGIC[..] {
+        if cursor.read_exact(4)? != &GGUF_MAGIC[..] {
             return Err(FormatError::Invalid("invalid GGUF magic".to_owned()));
         }
         if cursor.read_u32()? != GGUF_VERSION {
@@ -285,7 +285,7 @@ fn encode_metadata(metadata: &BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
 }
 
 fn encode_value(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
-    let (kind, encoded) = match value {
+    let (kind, encoded): (u32, Vec<u8>) = match value {
         GgufValue::U32(value) => (4, value.to_le_bytes().to_vec()),
         GgufValue::U64(value) => (10, value.to_le_bytes().to_vec()),
         GgufValue::I32(value) => (5, value.to_le_bytes().to_vec()),
