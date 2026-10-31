@@ -2,8 +2,10 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use quantinfer_core::Tensor;
 use quantinfer_format::{GgufValue, GgufWriter, SafeTensorFile};
 use quantinfer_model::Qwen3Config;
+use quantinfer_quant::quantize_q8_0;
 
 fn main() {
     if let Err(error) = run() {
@@ -24,6 +26,12 @@ fn run() -> Result<(), String> {
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
     let output_path = required_path(&arguments, "--output")?;
+    let quantization = optional_value(&arguments, "--quantize");
+    if let Some(value) = &quantization {
+        if value != "q8_0" {
+            return Err(format!("unsupported quantization {value}; use q8_0"));
+        }
+    }
 
     let config_json = fs::read_to_string(&config_path)
         .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
@@ -72,9 +80,20 @@ fn run() -> Result<(), String> {
         let values = weights
             .tensor_f32(name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
-        writer
-            .add_f32_tensor(name, info.shape.clone(), &values)
-            .map_err(|error| format!("cannot add tensor {name}: {error}"))?;
+        if quantization.as_deref() == Some("q8_0")
+            && is_quantizable_linear(name)
+            && values.len() % quantinfer_core::Q8_0_BLOCK_SIZE == 0
+        {
+            let tensor = Tensor::from_f32(info.shape.clone(), values)
+                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
+            let quantized = quantize_q8_0(&tensor)
+                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
+            writer.add_q8_0_tensor(name, &quantized);
+        } else {
+            writer
+                .add_f32_tensor(name, info.shape.clone(), &values)
+                .map_err(|error| format!("cannot add tensor {name}: {error}"))?;
+        }
     }
     let bytes = writer
         .finish()
@@ -97,8 +116,29 @@ fn required_path(arguments: &[String], flag: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("missing {flag}; use --help for usage"))
 }
 
+fn optional_value(arguments: &[String], flag: &str) -> Option<String> {
+    arguments
+        .windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+}
+
+fn is_quantizable_linear(name: &str) -> bool {
+    [
+        "q_proj.weight",
+        "k_proj.weight",
+        "v_proj.weight",
+        "o_proj.weight",
+        "gate_proj.weight",
+        "up_proj.weight",
+        "down_proj.weight",
+    ]
+    .iter()
+    .any(|suffix| name.ends_with(suffix))
+}
+
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--quantize q8_0]"
     );
 }

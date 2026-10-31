@@ -5,5 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+quantinfer-core = { workspace = true }
 quantinfer-format = { workspace = true }
 quantinfer-model = { workspace = true }
+quantinfer-quant = { workspace = true }
