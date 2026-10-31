@@ -10,6 +10,10 @@ use quantinfer_core::QuantizedTensor;
 
 pub type Result<T> = std::result::Result<T, FormatError>;
 
+pub mod safetensors;
+
+pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo};
+
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
 const DEFAULT_ALIGNMENT: u64 = 32;
