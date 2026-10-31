@@ -318,7 +318,7 @@ fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
             .checked_mul(4)
             .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned())),
         GgmlType::Q8_0 => {
-            if elements % 32 != 0 {
+            if !elements.is_multiple_of(32) {
                 return Err(FormatError::Invalid(
                     "Q8_0 tensor is not block aligned".to_owned(),
                 ));
@@ -335,7 +335,7 @@ fn write_string(output: &mut Vec<u8>, value: &str) -> Result<()> {
 }
 
 fn align_up(value: u64, alignment: u64) -> u64 {
-    (value + alignment - 1) / alignment * alignment
+    value.div_ceil(alignment) * alignment
 }
 
 struct Cursor<'a> {

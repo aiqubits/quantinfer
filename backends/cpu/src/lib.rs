@@ -163,7 +163,7 @@ impl KernelBackend for CpuScalar {
 
     fn apply_rope(&self, input: &Tensor, cos: &[f32], sin: &[f32]) -> Result<Tensor> {
         let dims = input.shape().dims();
-        if dims.len() != 3 || dims[2] % 2 != 0 {
+        if dims.len() != 3 || !dims[2].is_multiple_of(2) {
             return Err(KernelError::InvalidInput(
                 "RoPE input must have shape [tokens, heads, even_head_dim]".to_owned(),
             ));

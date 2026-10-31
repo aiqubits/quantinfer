@@ -173,27 +173,29 @@ impl SafeTensorFile {
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
         let bytes = self.tensor_bytes(name)?;
         let element_size = info.dtype.element_size();
-        if bytes.len() % element_size != 0 {
+        if !bytes.len().is_multiple_of(element_size) {
             return Err(FormatError::Invalid(format!(
                 "tensor {name} has a non-aligned byte length"
             )));
         }
         Ok(match info.dtype {
             SafeTensorDType::F32 => bytes
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("chunk has four bytes")))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
                 .collect(),
             SafeTensorDType::F16 => bytes
-                .chunks_exact(2)
-                .map(|chunk| {
-                    f16::from_le_bytes(chunk.try_into().expect("chunk has two bytes")).to_f32()
-                })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| f16::from_le_bytes(*chunk).to_f32())
                 .collect(),
             SafeTensorDType::BF16 => bytes
-                .chunks_exact(2)
-                .map(|chunk| {
-                    bf16::from_le_bytes(chunk.try_into().expect("chunk has two bytes")).to_f32()
-                })
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|chunk| bf16::from_le_bytes(*chunk).to_f32())
                 .collect(),
         })
     }

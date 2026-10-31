@@ -33,13 +33,13 @@ impl From<quantinfer_core::CoreError> for QuantizationError {
 
 pub fn quantize_q8_0(input: &Tensor) -> Result<QuantizedTensor> {
     let values = input.as_f32()?;
-    if values.len() % Q8_0_BLOCK_SIZE != 0 {
+    if !values.len().is_multiple_of(Q8_0_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q8_0 requires a multiple of 32 elements".to_owned(),
         ));
     }
     let mut blocks = Vec::with_capacity(values.len() / Q8_0_BLOCK_SIZE);
-    for chunk in values.chunks_exact(Q8_0_BLOCK_SIZE) {
+    for chunk in values.as_chunks::<Q8_0_BLOCK_SIZE>().0 {
         let maximum = chunk.iter().copied().map(f32::abs).fold(0.0, f32::max);
         let scale = if maximum == 0.0 { 1.0 } else { maximum / 127.0 };
         let mut quantized = [0_i8; Q8_0_BLOCK_SIZE];

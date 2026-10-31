@@ -56,7 +56,7 @@ pub struct Shape(Vec<usize>);
 impl Shape {
     pub fn new(dims: impl Into<Vec<usize>>) -> Result<Self> {
         let dims = dims.into();
-        if dims.iter().any(|dimension| *dimension == 0) {
+        if dims.contains(&0) {
             return Err(CoreError::InvalidShape(
                 "tensor dimensions must be greater than zero".to_owned(),
             ));
@@ -85,7 +85,7 @@ impl Shape {
     }
 
     fn validate(&self) -> Result<()> {
-        if self.0.iter().any(|dimension| *dimension == 0) {
+        if self.0.contains(&0) {
             return Err(CoreError::InvalidShape(
                 "tensor dimensions must be greater than zero".to_owned(),
             ));
@@ -142,6 +142,10 @@ impl Storage {
             Self::U16(values) => values.len(),
             Self::U8(values) => values.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     pub fn as_f32(&self) -> Option<&[f32]> {
@@ -321,7 +325,7 @@ pub struct QuantizedTensor {
 impl QuantizedTensor {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q8_0Block>) -> Result<Self> {
         let shape = shape.into();
-        if shape.num_elements() % Q8_0_BLOCK_SIZE != 0 {
+        if !shape.num_elements().is_multiple_of(Q8_0_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
                 "Q8_0 tensor element count must be a multiple of 32".to_owned(),
             ));

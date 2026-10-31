@@ -82,7 +82,7 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
         if quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(name)
-            && values.len() % quantinfer_core::Q8_0_BLOCK_SIZE == 0
+            && values.len().is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE)
         {
             let tensor = Tensor::from_f32(info.shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
