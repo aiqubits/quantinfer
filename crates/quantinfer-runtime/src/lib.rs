@@ -1,3 +1,284 @@
-//! quantinfer-runtime public API.
+//! Runtime state shared by model execution and generation.
 
 #![forbid(unsafe_code)]
+
+use std::fmt;
+
+use quantinfer_core::{Shape, Tensor};
+
+pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuntimeError {
+    InvalidInput(String),
+    Core(quantinfer_core::CoreError),
+}
+
+impl fmt::Display for RuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidInput(message) => formatter.write_str(message),
+            Self::Core(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {}
+
+impl From<quantinfer_core::CoreError> for RuntimeError {
+    fn from(error: quantinfer_core::CoreError) -> Self {
+        Self::Core(error)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LayerKvCache {
+    keys: Vec<f32>,
+    values: Vec<f32>,
+    sequence_length: usize,
+}
+
+/// Per-layer KV storage for single-sequence Prefill and Decode.
+#[derive(Debug, Clone)]
+pub struct KvCache {
+    layers: Vec<LayerKvCache>,
+    max_sequence_length: usize,
+    num_key_value_heads: usize,
+    head_dim: usize,
+}
+
+impl KvCache {
+    pub fn new(
+        num_layers: usize,
+        max_sequence_length: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+    ) -> Result<Self> {
+        if num_layers == 0 || max_sequence_length == 0 || num_key_value_heads == 0 || head_dim == 0
+        {
+            return Err(RuntimeError::InvalidInput(
+                "KV cache dimensions must be greater than zero".to_owned(),
+            ));
+        }
+        let layer_capacity = max_sequence_length * num_key_value_heads * head_dim;
+        Ok(Self {
+            layers: (0..num_layers)
+                .map(|_| LayerKvCache {
+                    keys: Vec::with_capacity(layer_capacity),
+                    values: Vec::with_capacity(layer_capacity),
+                    sequence_length: 0,
+                })
+                .collect(),
+            max_sequence_length,
+            num_key_value_heads,
+            head_dim,
+        })
+    }
+
+    pub fn sequence_length(&self, layer: usize) -> Result<usize> {
+        self.layers
+            .get(layer)
+            .map(|cache| cache.sequence_length)
+            .ok_or_else(|| RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned()))
+    }
+
+    pub fn append(&mut self, layer: usize, key: &Tensor, value: &Tensor) -> Result<()> {
+        let layer_cache = self.layers.get_mut(layer).ok_or_else(|| {
+            RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned())
+        })?;
+        let expected = [self.num_key_value_heads, self.head_dim];
+        let key_dims = key.shape().dims();
+        let value_dims = value.shape().dims();
+        if key_dims.len() != 3
+            || value_dims != key_dims
+            || key_dims[1..] != expected
+            || key_dims[0] == 0
+        {
+            return Err(RuntimeError::InvalidInput(
+                "KV tensors must have shape [tokens, num_kv_heads, head_dim]".to_owned(),
+            ));
+        }
+        if layer_cache.sequence_length + key_dims[0] > self.max_sequence_length {
+            return Err(RuntimeError::InvalidInput(
+                "KV cache capacity is smaller than the requested sequence".to_owned(),
+            ));
+        }
+        let key_values = key.as_f32()?;
+        let value_values = value.as_f32()?;
+        layer_cache.keys.extend_from_slice(key_values);
+        layer_cache.values.extend_from_slice(value_values);
+        layer_cache.sequence_length += key_dims[0];
+        Ok(())
+    }
+
+    pub fn keys(&self, layer: usize) -> Result<Tensor> {
+        self.tensor_for(layer, true)
+    }
+
+    pub fn values(&self, layer: usize) -> Result<Tensor> {
+        self.tensor_for(layer, false)
+    }
+
+    fn tensor_for(&self, layer: usize, keys: bool) -> Result<Tensor> {
+        let layer_cache = self.layers.get(layer).ok_or_else(|| {
+            RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned())
+        })?;
+        let values = if keys {
+            &layer_cache.keys
+        } else {
+            &layer_cache.values
+        };
+        Ok(Tensor::from_f32(
+            Shape::from(vec![
+                layer_cache.sequence_length,
+                self.num_key_value_heads,
+                self.head_dim,
+            ]),
+            values.clone(),
+        )?)
+    }
+
+    pub fn clear(&mut self) {
+        for layer in &mut self.layers {
+            layer.keys.clear();
+            layer.values.clear();
+            layer.sequence_length = 0;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GenerationConfig {
+    pub max_new_tokens: usize,
+    pub temperature: f32,
+    pub top_k: Option<usize>,
+    pub top_p: Option<f32>,
+    pub eos_token_id: Option<usize>,
+}
+
+impl Default for GenerationConfig {
+    fn default() -> Self {
+        Self {
+            max_new_tokens: 128,
+            temperature: 0.0,
+            top_k: None,
+            top_p: None,
+            eos_token_id: None,
+        }
+    }
+}
+
+impl GenerationConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.max_new_tokens == 0 {
+            return Err(RuntimeError::InvalidInput(
+                "max_new_tokens must be greater than zero".to_owned(),
+            ));
+        }
+        if self.temperature < 0.0 || !self.temperature.is_finite() {
+            return Err(RuntimeError::InvalidInput(
+                "temperature must be finite and non-negative".to_owned(),
+            ));
+        }
+        if self.top_k == Some(0) {
+            return Err(RuntimeError::InvalidInput(
+                "top_k must be greater than zero when provided".to_owned(),
+            ));
+        }
+        if let Some(top_p) = self.top_p {
+            if !(0.0..=1.0).contains(&top_p) || !top_p.is_finite() || top_p == 0.0 {
+                return Err(RuntimeError::InvalidInput(
+                    "top_p must be finite and in the range (0, 1]".to_owned(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn argmax(logits: &Tensor) -> Result<usize> {
+    let values = logits.as_f32()?;
+    if values.is_empty() {
+        return Err(RuntimeError::InvalidInput(
+            "logits cannot be empty".to_owned(),
+        ));
+    }
+    let mut best_index = 0;
+    for (index, value) in values.iter().copied().enumerate().skip(1) {
+        if value > values[best_index] {
+            best_index = index;
+        }
+    }
+    Ok(best_index)
+}
+
+pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize> {
+    config.validate()?;
+    let values = logits.as_f32()?;
+    if values.is_empty() {
+        return Err(RuntimeError::InvalidInput(
+            "logits cannot be empty".to_owned(),
+        ));
+    }
+    if config.temperature == 0.0 && config.top_k.is_none() && config.top_p.is_none() {
+        return argmax(logits);
+    }
+
+    // The first MVP keeps sampling deterministic. Temperature and candidate filters
+    // select the highest-scoring surviving token; stochastic sampling is added later.
+    let mut candidates: Vec<(usize, f32)> = values.iter().copied().enumerate().collect();
+    candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
+    if let Some(top_k) = config.top_k {
+        candidates.truncate(top_k.min(candidates.len()));
+    }
+    if let Some(top_p) = config.top_p {
+        let maximum = candidates[0].1;
+        let mut cumulative = 0.0;
+        let mut kept = 0;
+        for (_, value) in &candidates {
+            cumulative += (*value - maximum).exp();
+            kept += 1;
+            if cumulative
+                / candidates
+                    .iter()
+                    .map(|(_, item)| (*item - maximum).exp())
+                    .sum::<f32>()
+                >= top_p
+            {
+                break;
+            }
+        }
+        candidates.truncate(kept.max(1));
+    }
+    candidates
+        .first()
+        .map(|(index, _)| *index)
+        .ok_or_else(|| RuntimeError::InvalidInput("sampling candidate set is empty".to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{argmax, select_token, GenerationConfig, KvCache};
+    use quantinfer_core::Tensor;
+
+    #[test]
+    fn appends_and_reads_kv_cache() {
+        let mut cache = KvCache::new(2, 8, 2, 4).unwrap();
+        let key = Tensor::from_f32(vec![1, 2, 4], vec![1.0; 8]).unwrap();
+        let value = Tensor::from_f32(vec![1, 2, 4], vec![2.0; 8]).unwrap();
+        cache.append(0, &key, &value).unwrap();
+        assert_eq!(cache.sequence_length(0).unwrap(), 1);
+        assert_eq!(cache.keys(0).unwrap().as_f32().unwrap(), &[1.0; 8]);
+        assert_eq!(cache.values(0).unwrap().as_f32().unwrap(), &[2.0; 8]);
+    }
+
+    #[test]
+    fn selects_deterministic_highest_logit() {
+        let logits = Tensor::from_f32(vec![4], vec![0.1, 0.9, 0.2, 0.8]).unwrap();
+        assert_eq!(argmax(&logits).unwrap(), 1);
+        assert_eq!(
+            select_token(&logits, &GenerationConfig::default()).unwrap(),
+            1
+        );
+    }
+}
