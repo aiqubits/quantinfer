@@ -2,6 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod qwen3;
+
+pub use qwen3::{Qwen3LayerWeights, Qwen3Model};
+
 use std::fmt;
 
 use quantinfer_core::{Shape, Tensor};
@@ -12,6 +16,7 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 pub enum RuntimeError {
     InvalidInput(String),
     Core(quantinfer_core::CoreError),
+    Kernel(quantinfer_kernel::KernelError),
 }
 
 impl fmt::Display for RuntimeError {
@@ -19,6 +24,7 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::InvalidInput(message) => formatter.write_str(message),
             Self::Core(error) => error.fmt(formatter),
+            Self::Kernel(error) => error.fmt(formatter),
         }
     }
 }
@@ -28,6 +34,12 @@ impl std::error::Error for RuntimeError {}
 impl From<quantinfer_core::CoreError> for RuntimeError {
     fn from(error: quantinfer_core::CoreError) -> Self {
         Self::Core(error)
+    }
+}
+
+impl From<quantinfer_kernel::KernelError> for RuntimeError {
+    fn from(error: quantinfer_kernel::KernelError) -> Self {
+        Self::Kernel(error)
     }
 }
 

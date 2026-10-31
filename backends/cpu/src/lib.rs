@@ -169,9 +169,15 @@ impl KernelBackend for CpuScalar {
             ));
         }
         let head_dim = dims[2];
-        if cos.len() != head_dim / 2 || sin.len() != head_dim / 2 {
+        let pair_count = head_dim / 2;
+        if cos.len() != pair_count && cos.len() != dims[0] * pair_count {
             return Err(KernelError::InvalidInput(
-                "RoPE cosine and sine tables must have head_dim / 2 values".to_owned(),
+                "RoPE tables must have one row or one row per token".to_owned(),
+            ));
+        }
+        if sin.len() != cos.len() {
+            return Err(KernelError::InvalidInput(
+                "RoPE cosine and sine tables must have identical lengths".to_owned(),
             ));
         }
         let input_values = self.f32_values(input, "input")?;
@@ -179,11 +185,18 @@ impl KernelBackend for CpuScalar {
         for token in 0..dims[0] {
             for head in 0..dims[1] {
                 let start = (token * dims[1] + head) * head_dim;
-                for pair in 0..head_dim / 2 {
+                let table_offset = if cos.len() == pair_count {
+                    0
+                } else {
+                    token * pair_count
+                };
+                for pair in 0..pair_count {
                     let first = input_values[start + pair * 2];
                     let second = input_values[start + pair * 2 + 1];
-                    output[start + pair * 2] = first * cos[pair] - second * sin[pair];
-                    output[start + pair * 2 + 1] = first * sin[pair] + second * cos[pair];
+                    output[start + pair * 2] =
+                        first * cos[table_offset + pair] - second * sin[table_offset + pair];
+                    output[start + pair * 2 + 1] =
+                        first * sin[table_offset + pair] + second * cos[table_offset + pair];
                 }
             }
         }

@@ -48,6 +48,7 @@ pub trait KernelBackend {
 
     fn silu_mul(&self, gate: &Tensor, up: &Tensor) -> Result<Tensor>;
 
+    /// Apply RoPE. Tables may contain one head-dimension row or one row per token.
     fn apply_rope(&self, input: &Tensor, cos: &[f32], sin: &[f32]) -> Result<Tensor>;
 
     fn embedding(&self, table: &Tensor, token_ids: &[usize]) -> Result<Tensor>;
