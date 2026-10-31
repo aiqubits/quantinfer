@@ -15,4 +15,4 @@ This document is the reviewed workspace baseline for QuantInfer.
 
 ## Initial scope
 
-The first implementation should target native CPU execution, GGUF/SafeTensors loading, Llama/Qwen model families, and a small quantized-kernel surface. WGPU, QIF, vendor backends, Candle, WASM, and WASI-NN are optional extensions.
+The first implementation targets Qwen3 Dense, native CPU execution, SafeTensors input, GGUF runtime loading, Q8_0 weight-only quantization, KV cache, and single-sequence generation. Qwen3 MoE, sliding-window execution, GPU backends, QIF, vendor SDKs, WASM, and WASI-NN remain extensions.
