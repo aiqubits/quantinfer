@@ -7,3 +7,5 @@ license.workspace = true
 
 [dependencies]
 quantinfer = { workspace = true }
+quantinfer-format = { workspace = true }
+quantinfer-tokenizer = { workspace = true }
