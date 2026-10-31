@@ -65,7 +65,10 @@ impl Qwen3Config {
             return Err("head_dim must be greater than zero".to_owned());
         }
         if self.head_dim.is_none() && self.hidden_size % self.num_attention_heads != 0 {
-            return Err("hidden size must be divisible by attention heads when head_dim is absent".to_owned());
+            return Err(
+                "hidden size must be divisible by attention heads when head_dim is absent"
+                    .to_owned(),
+            );
         }
         if self.rms_norm_eps <= 0.0 || self.rope_theta <= 0.0 {
             return Err("Qwen3 normalization epsilon and RoPE theta must be positive".to_owned());

@@ -21,7 +21,10 @@ impl fmt::Display for CoreError {
             | Self::InvalidData(message)
             | Self::Unsupported(message) => formatter.write_str(message),
             Self::DTypeMismatch { expected, actual } => {
-                write!(formatter, "dtype mismatch: expected {expected:?}, got {actual:?}")
+                write!(
+                    formatter,
+                    "dtype mismatch: expected {expected:?}, got {actual:?}"
+                )
             }
         }
     }
@@ -217,21 +220,17 @@ impl Tensor {
     }
 
     pub fn as_f32(&self) -> Result<&[f32]> {
-        self.storage
-            .as_f32()
-            .ok_or(CoreError::DTypeMismatch {
-                expected: DType::F32,
-                actual: self.dtype,
-            })
+        self.storage.as_f32().ok_or(CoreError::DTypeMismatch {
+            expected: DType::F32,
+            actual: self.dtype,
+        })
     }
 
     pub fn as_f32_mut(&mut self) -> Result<&mut [f32]> {
-        self.storage
-            .as_f32_mut()
-            .ok_or(CoreError::DTypeMismatch {
-                expected: DType::F32,
-                actual: self.dtype,
-            })
+        self.storage.as_f32_mut().ok_or(CoreError::DTypeMismatch {
+            expected: DType::F32,
+            actual: self.dtype,
+        })
     }
 
     pub fn reshape(&self, shape: impl Into<Shape>) -> Result<Self> {
@@ -268,7 +267,9 @@ impl Tensor {
             .zip(self.strides.as_slice())
         {
             if *index >= *dimension {
-                return Err(CoreError::InvalidShape("tensor index is out of bounds".to_owned()));
+                return Err(CoreError::InvalidShape(
+                    "tensor index is out of bounds".to_owned(),
+                ));
             }
             offset += *index * *stride;
         }

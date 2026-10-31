@@ -106,8 +106,8 @@ impl KernelBackend for CpuScalar {
         for row in 0..input_values.len() / last_dim {
             let start = row * last_dim;
             let values = &input_values[start..start + last_dim];
-            let mean_square = values.iter().map(|value| value * value).sum::<f32>()
-                / last_dim as f32;
+            let mean_square =
+                values.iter().map(|value| value * value).sum::<f32>() / last_dim as f32;
             let inverse = (mean_square + epsilon).sqrt().recip();
             for column in 0..last_dim {
                 output[start + column] = values[column] * inverse * weight_values[column];
@@ -202,7 +202,10 @@ impl KernelBackend for CpuScalar {
             }
             output.extend_from_slice(&table_values[token_id * hidden..(token_id + 1) * hidden]);
         }
-        Ok(Tensor::from_f32(Shape::from(vec![token_ids.len().max(1), hidden]), output)?)
+        Ok(Tensor::from_f32(
+            Shape::from(vec![token_ids.len().max(1), hidden]),
+            output,
+        )?)
     }
 }
 

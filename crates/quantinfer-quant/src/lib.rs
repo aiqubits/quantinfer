@@ -40,11 +40,7 @@ pub fn quantize_q8_0(input: &Tensor) -> Result<QuantizedTensor> {
     }
     let mut blocks = Vec::with_capacity(values.len() / Q8_0_BLOCK_SIZE);
     for chunk in values.chunks_exact(Q8_0_BLOCK_SIZE) {
-        let maximum = chunk
-            .iter()
-            .copied()
-            .map(f32::abs)
-            .fold(0.0, f32::max);
+        let maximum = chunk.iter().copied().map(f32::abs).fold(0.0, f32::max);
         let scale = if maximum == 0.0 { 1.0 } else { maximum / 127.0 };
         let mut quantized = [0_i8; Q8_0_BLOCK_SIZE];
         for (index, value) in chunk.iter().copied().enumerate() {
@@ -80,7 +76,8 @@ mod tests {
 
     #[test]
     fn quantizes_and_dequantizes_a_block() {
-        let input = Tensor::from_f32(vec![32], (0..32).map(|value| value as f32).collect()).unwrap();
+        let input =
+            Tensor::from_f32(vec![32], (0..32).map(|value| value as f32).collect()).unwrap();
         let quantized = quantize_q8_0(&input).unwrap();
         assert_eq!(quantized.blocks().len(), 1);
         let restored = dequantize_q8_0(&quantized).unwrap();

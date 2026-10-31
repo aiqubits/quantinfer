@@ -18,7 +18,9 @@ pub enum KernelError {
 impl fmt::Display for KernelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidInput(message) | Self::Unsupported(message) => formatter.write_str(message),
+            Self::InvalidInput(message) | Self::Unsupported(message) => {
+                formatter.write_str(message)
+            }
             Self::Core(error) => error.fmt(formatter),
         }
     }
@@ -46,12 +48,7 @@ pub trait KernelBackend {
 
     fn silu_mul(&self, gate: &Tensor, up: &Tensor) -> Result<Tensor>;
 
-    fn apply_rope(
-        &self,
-        input: &Tensor,
-        cos: &[f32],
-        sin: &[f32],
-    ) -> Result<Tensor>;
+    fn apply_rope(&self, input: &Tensor, cos: &[f32], sin: &[f32]) -> Result<Tensor>;
 
     fn embedding(&self, table: &Tensor, token_ids: &[usize]) -> Result<Tensor>;
 }
