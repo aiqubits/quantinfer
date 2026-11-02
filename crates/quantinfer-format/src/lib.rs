@@ -277,12 +277,11 @@ impl GgufReader {
         }
         let bytes = self.tensor_bytes(name)?;
         let mut values = Vec::with_capacity(info.shape.iter().product::<usize>());
-        for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
-            values.push(f32::from_le_bytes(chunk.try_into().map_err(|_| {
-                FormatError::Invalid("invalid F32 tensor chunk".to_owned())
-            })?));
+        let (chunks, remainder) = bytes.as_chunks::<4>();
+        for chunk in chunks {
+            values.push(f32::from_le_bytes(*chunk));
         }
-        if !bytes.len().is_multiple_of(std::mem::size_of::<f32>())
+        if !remainder.is_empty()
             || values.len() != info.shape.iter().product::<usize>()
         {
             return Err(FormatError::Invalid(format!(
