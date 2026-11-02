@@ -324,14 +324,7 @@ impl<B: KernelBackend> Qwen3Model<B> {
                 down_proj: load_linear(reader, tensor("ffn_down").as_str())?,
             });
         }
-        Self::new(
-            config,
-            backend,
-            embedding,
-            layers,
-            final_norm,
-            lm_head,
-        )
+        Self::new(config, backend, embedding, layers, final_norm, lm_head)
     }
 }
 
@@ -363,16 +356,14 @@ fn transpose_matrix(tensor: &Tensor) -> Result<Tensor> {
 
 fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
     let embedding = reader.tensor_info("token_embd.weight")?;
-    let vocab_size = metadata_usize(reader, "qwen3.vocab_size")?.unwrap_or_else(|| {
-        embedding.shape.first().copied().unwrap_or_default()
-    });
-    let hidden_size = metadata_usize(reader, "qwen3.embedding_length")?.unwrap_or_else(|| {
-        embedding.shape.get(1).copied().unwrap_or_default()
-    });
+    let vocab_size = metadata_usize(reader, "qwen3.vocab_size")?
+        .unwrap_or_else(|| embedding.shape.first().copied().unwrap_or_default());
+    let hidden_size = metadata_usize(reader, "qwen3.embedding_length")?
+        .unwrap_or_else(|| embedding.shape.get(1).copied().unwrap_or_default());
     let num_hidden_layers = required_metadata_usize(reader, "qwen3.block_count")?;
     let num_attention_heads = required_metadata_usize(reader, "qwen3.attention.head_count")?;
-    let num_key_value_heads = metadata_usize(reader, "qwen3.attention.head_count_kv")?
-        .unwrap_or(num_attention_heads);
+    let num_key_value_heads =
+        metadata_usize(reader, "qwen3.attention.head_count_kv")?.unwrap_or(num_attention_heads);
     let intermediate_size = metadata_usize(reader, "qwen3.feed_forward_length")?.or_else(|| {
         reader
             .tensor_info("blk.0.ffn_gate.weight")
@@ -386,11 +377,10 @@ fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
     })?;
     let max_position_embeddings = required_metadata_usize(reader, "qwen3.context_length")?;
     let head_dim = metadata_usize(reader, "qwen3.attention.head_dim")?;
-    let rms_norm_eps = metadata_f32(reader, "qwen3.attention.layer_norm_rms_epsilon")?
-        .unwrap_or(1e-6);
+    let rms_norm_eps =
+        metadata_f32(reader, "qwen3.attention.layer_norm_rms_epsilon")?.unwrap_or(1e-6);
     let rope_theta = metadata_f32(reader, "qwen3.rope.freq_base")?.unwrap_or(1_000_000.0);
-    let tie_word_embeddings =
-        metadata_bool(reader, "qwen3.tie_word_embeddings")?.unwrap_or(false);
+    let tie_word_embeddings = metadata_bool(reader, "qwen3.tie_word_embeddings")?.unwrap_or(false);
     let architectures = metadata_architectures(reader)
         .or_else(|| metadata_architectures_from_key(reader, "qwen3.architectures"))
         .unwrap_or_else(|| vec!["Qwen3ForCausalLM".to_owned()]);
