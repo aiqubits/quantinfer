@@ -1,4 +1,5 @@
 use quantinfer_core::{DType, QuantizedTensor, Shape, Tensor};
+use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::Qwen3Config;
 
@@ -290,6 +291,202 @@ impl<B: KernelBackend> Qwen3Model<B> {
             .rms_norm(&hidden, &self.final_norm, self.config.rms_norm_eps)?;
         Ok(self.backend.matmul(&hidden, &self.lm_head)?)
     }
+
+    pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
+        let config = config_from_gguf(reader)?;
+        let embedding = reader.tensor_f32("token_embd.weight")?;
+        let final_norm = reader.tensor_f32("output_norm.weight")?;
+        let lm_head = match reader.tensor_info("output.weight") {
+            Ok(info) if info.dtype == GgmlType::F32 => reader.tensor_f32("output.weight")?,
+            Ok(info) => {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "GGUF output.weight has unsupported type {:?}",
+                    info.dtype
+                )))
+            }
+            Err(_) if config.tie_word_embeddings => transpose_matrix(&embedding)?,
+            Err(error) => return Err(error.into()),
+        };
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for layer_index in 0..config.num_hidden_layers {
+            let tensor = |suffix: &str| format!("blk.{layer_index}.{suffix}.weight");
+            layers.push(Qwen3LayerWeights {
+                input_layernorm: reader.tensor_f32(tensor("attn_norm").as_str())?,
+                q_proj: load_linear(reader, tensor("attn_q").as_str())?,
+                q_norm: reader.tensor_f32(tensor("attn_q_norm").as_str())?,
+                k_proj: load_linear(reader, tensor("attn_k").as_str())?,
+                k_norm: reader.tensor_f32(tensor("attn_k_norm").as_str())?,
+                v_proj: load_linear(reader, tensor("attn_v").as_str())?,
+                o_proj: load_linear(reader, tensor("attn_output").as_str())?,
+                post_attention_layernorm: reader.tensor_f32(tensor("ffn_norm").as_str())?,
+                gate_proj: load_linear(reader, tensor("ffn_gate").as_str())?,
+                up_proj: load_linear(reader, tensor("ffn_up").as_str())?,
+                down_proj: load_linear(reader, tensor("ffn_down").as_str())?,
+            });
+        }
+        Self::new(
+            config,
+            backend,
+            embedding,
+            layers,
+            final_norm,
+            lm_head,
+        )
+    }
+}
+
+fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
+    match reader.tensor_info(name)?.dtype {
+        GgmlType::F32 => Ok(LinearWeight::F32(reader.tensor_f32(name)?)),
+        GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
+    }
+}
+
+fn transpose_matrix(tensor: &Tensor) -> Result<Tensor> {
+    let dims = tensor.shape().dims();
+    if dims.len() != 2 {
+        return Err(RuntimeError::InvalidInput(
+            "tied Qwen3 embedding must be a matrix".to_owned(),
+        ));
+    }
+    let rows = dims[0];
+    let columns = dims[1];
+    let source = tensor.as_f32()?;
+    let mut values = vec![0.0; source.len()];
+    for row in 0..rows {
+        for column in 0..columns {
+            values[column * rows + row] = source[row * columns + column];
+        }
+    }
+    Ok(Tensor::from_f32(vec![columns, rows], values)?)
+}
+
+fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
+    let embedding = reader.tensor_info("token_embd.weight")?;
+    let vocab_size = metadata_usize(reader, "qwen3.vocab_size")?.unwrap_or_else(|| {
+        embedding.shape.first().copied().unwrap_or_default()
+    });
+    let hidden_size = metadata_usize(reader, "qwen3.embedding_length")?.unwrap_or_else(|| {
+        embedding.shape.get(1).copied().unwrap_or_default()
+    });
+    let num_hidden_layers = required_metadata_usize(reader, "qwen3.block_count")?;
+    let num_attention_heads = required_metadata_usize(reader, "qwen3.attention.head_count")?;
+    let num_key_value_heads = metadata_usize(reader, "qwen3.attention.head_count_kv")?
+        .unwrap_or(num_attention_heads);
+    let intermediate_size = metadata_usize(reader, "qwen3.feed_forward_length")?.or_else(|| {
+        reader
+            .tensor_info("blk.0.ffn_gate.weight")
+            .ok()
+            .and_then(|info| info.shape.get(1).copied())
+    });
+    let intermediate_size = intermediate_size.ok_or_else(|| {
+        RuntimeError::InvalidInput(
+            "GGUF is missing qwen3.feed_forward_length and ffn_gate shape".to_owned(),
+        )
+    })?;
+    let max_position_embeddings = required_metadata_usize(reader, "qwen3.context_length")?;
+    let head_dim = metadata_usize(reader, "qwen3.attention.head_dim")?;
+    let rms_norm_eps = metadata_f32(reader, "qwen3.attention.layer_norm_rms_epsilon")?
+        .unwrap_or(1e-6);
+    let rope_theta = metadata_f32(reader, "qwen3.rope.freq_base")?.unwrap_or(1_000_000.0);
+    let tie_word_embeddings =
+        metadata_bool(reader, "qwen3.tie_word_embeddings")?.unwrap_or(false);
+    let architectures = metadata_architectures(reader)
+        .or_else(|| metadata_architectures_from_key(reader, "qwen3.architectures"))
+        .unwrap_or_else(|| vec!["Qwen3ForCausalLM".to_owned()]);
+    let config = Qwen3Config {
+        vocab_size,
+        hidden_size,
+        intermediate_size,
+        num_hidden_layers,
+        num_attention_heads,
+        num_key_value_heads,
+        head_dim,
+        rms_norm_eps,
+        rope_theta,
+        max_position_embeddings,
+        tie_word_embeddings,
+        sliding_window: None,
+        max_window_layers: None,
+        use_sliding_window: false,
+        rope_scaling: None,
+        architectures,
+    };
+    config.validate().map_err(RuntimeError::InvalidInput)?;
+    Ok(config)
+}
+
+fn required_metadata_usize(reader: &GgufReader, key: &str) -> Result<usize> {
+    metadata_usize(reader, key)?.ok_or_else(|| {
+        RuntimeError::InvalidInput(format!("GGUF is missing required metadata {key}"))
+    })
+}
+
+fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
+    let Some(value) = reader.metadata().get(key) else {
+        return Ok(None);
+    };
+    let value = match value {
+        GgufValue::U32(value) => *value as usize,
+        GgufValue::U64(value) => usize::try_from(*value).map_err(|_| {
+            RuntimeError::InvalidInput(format!("GGUF metadata {key} overflows usize"))
+        })?,
+        GgufValue::I32(value) if *value >= 0 => *value as usize,
+        GgufValue::I64(value) if *value >= 0 => usize::try_from(*value).map_err(|_| {
+            RuntimeError::InvalidInput(format!("GGUF metadata {key} overflows usize"))
+        })?,
+        _ => {
+            return Err(RuntimeError::InvalidInput(format!(
+                "GGUF metadata {key} must be an unsigned integer"
+            )))
+        }
+    };
+    Ok(Some(value))
+}
+
+fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
+    let Some(value) = reader.metadata().get(key) else {
+        return Ok(None);
+    };
+    match value {
+        GgufValue::F32(value) => Ok(Some(*value)),
+        GgufValue::U32(value) => Ok(Some(*value as f32)),
+        GgufValue::U64(value) => Ok(Some(*value as f32)),
+        _ => Err(RuntimeError::InvalidInput(format!(
+            "GGUF metadata {key} must be a number"
+        ))),
+    }
+}
+
+fn metadata_bool(reader: &GgufReader, key: &str) -> Result<Option<bool>> {
+    let Some(value) = reader.metadata().get(key) else {
+        return Ok(None);
+    };
+    match value {
+        GgufValue::Bool(value) => Ok(Some(*value)),
+        _ => Err(RuntimeError::InvalidInput(format!(
+            "GGUF metadata {key} must be a boolean"
+        ))),
+    }
+}
+
+fn metadata_architectures(reader: &GgufReader) -> Option<Vec<String>> {
+    metadata_architectures_from_key(reader, "general.architectures")
+}
+
+fn metadata_architectures_from_key(reader: &GgufReader, key: &str) -> Option<Vec<String>> {
+    match reader.metadata().get(key) {
+        Some(GgufValue::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(|value| match value {
+                    GgufValue::String(value) => Some(value.clone()),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
 }
 
 fn expect_shape(tensor: &Tensor, expected: &[usize], name: &str) -> Result<()> {
@@ -415,7 +612,8 @@ mod tests {
     use super::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
     use crate::KvCache;
     use quantinfer_backend_cpu::CpuScalar;
-    use quantinfer_core::Tensor;
+    use quantinfer_core::{DType, Tensor};
+    use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
     use quantinfer_model::Qwen3Config;
     use quantinfer_quant::quantize_q8_0;
 
@@ -533,5 +731,82 @@ mod tests {
         .unwrap();
         let logits = model.forward(&[1], &mut cache).unwrap();
         assert_eq!(logits.shape().dims(), &[1, config.vocab_size]);
+    }
+
+    #[test]
+    fn loads_qwen3_from_gguf_with_q8_projection() {
+        let config = config();
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata(
+            "general.architecture",
+            GgufValue::String("qwen3".to_owned()),
+        );
+        writer.insert_metadata("qwen3.vocab_size", GgufValue::U32(16));
+        writer.insert_metadata("qwen3.context_length", GgufValue::U32(32));
+        writer.insert_metadata("qwen3.embedding_length", GgufValue::U32(8));
+        writer.insert_metadata("qwen3.feed_forward_length", GgufValue::U32(16));
+        writer.insert_metadata("qwen3.block_count", GgufValue::U32(1));
+        writer.insert_metadata("qwen3.attention.head_count", GgufValue::U32(2));
+        writer.insert_metadata("qwen3.attention.head_count_kv", GgufValue::U32(1));
+        writer.insert_metadata("qwen3.attention.head_dim", GgufValue::U32(4));
+        writer.insert_metadata(
+            "qwen3.attention.layer_norm_rms_epsilon",
+            GgufValue::F32(1e-6),
+        );
+        writer.insert_metadata("qwen3.rope.freq_base", GgufValue::F32(1_000_000.0));
+        writer.insert_metadata("qwen3.tie_word_embeddings", GgufValue::Bool(true));
+        writer.insert_metadata(
+            "qwen3.architectures",
+            GgufValue::Array(vec![GgufValue::String("Qwen3ForCausalLM".to_owned())]),
+        );
+        writer
+            .add_f32_tensor("token_embd.weight", vec![16, 8], &vec![0.01; 128])
+            .unwrap();
+        writer
+            .add_f32_tensor("output_norm.weight", vec![8], &[1.0; 8])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_norm.weight", vec![8], &[1.0; 8])
+            .unwrap();
+        writer.add_q8_0_tensor(
+            "blk.0.attn_q.weight",
+            &quantize_q8_0(&filled(vec![8, 8], 0.01)).unwrap(),
+        );
+        writer
+            .add_f32_tensor("blk.0.attn_q_norm.weight", vec![4], &[1.0; 4])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_k.weight", vec![8, 4], &vec![0.01; 32])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_k_norm.weight", vec![4], &[1.0; 4])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_v.weight", vec![8, 4], &vec![0.01; 32])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_output.weight", vec![8, 8], &vec![0.01; 64])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.ffn_norm.weight", vec![8], &[1.0; 8])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.ffn_gate.weight", vec![8, 16], &vec![0.01; 128])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.ffn_up.weight", vec![8, 16], &vec![0.01; 128])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.ffn_down.weight", vec![16, 8], &vec![0.01; 128])
+            .unwrap();
+
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let model = Qwen3Model::from_gguf(CpuScalar::new(), &reader).unwrap();
+        assert_eq!(model.config, config);
+        assert_eq!(model.layers[0].q_proj.dtype(), DType::Q8_0);
+        assert_eq!(model.lm_head.shape().dims(), &[8, 16]);
+        let mut cache = KvCache::new(1, 32, 1, 4).unwrap();
+        let logits = model.forward(&[1, 2], &mut cache).unwrap();
+        assert_eq!(logits.shape().dims(), &[2, 16]);
     }
 }
