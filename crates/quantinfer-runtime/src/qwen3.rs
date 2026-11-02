@@ -337,6 +337,7 @@ fn rope_tables(theta: f32, head_dim: usize, start: usize, length: usize) -> (Vec
     (cos, sin)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gqa_attention(
     query: &Tensor,
     key_values: &[f32],
