@@ -281,9 +281,7 @@ impl GgufReader {
         for chunk in chunks {
             values.push(f32::from_le_bytes(*chunk));
         }
-        if !remainder.is_empty()
-            || values.len() != info.shape.iter().product::<usize>()
-        {
+        if !remainder.is_empty() || values.len() != info.shape.iter().product::<usize>() {
             return Err(FormatError::Invalid(format!(
                 "GGUF F32 tensor {name} has an invalid byte length"
             )));
