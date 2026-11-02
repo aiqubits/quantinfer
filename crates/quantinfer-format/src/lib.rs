@@ -278,15 +278,11 @@ impl GgufReader {
         let bytes = self.tensor_bytes(name)?;
         let mut values = Vec::with_capacity(info.shape.iter().product());
         for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
-            values.push(f32::from_le_bytes(
-                chunk.try_into().map_err(|_| {
-                    FormatError::Invalid("invalid F32 tensor chunk".to_owned())
-                })?,
-            ));
+            values.push(f32::from_le_bytes(chunk.try_into().map_err(|_| {
+                FormatError::Invalid("invalid F32 tensor chunk".to_owned())
+            })?));
         }
-        if !bytes
-            .len()
-            .is_multiple_of(std::mem::size_of::<f32>())
+        if !bytes.len().is_multiple_of(std::mem::size_of::<f32>())
             || values.len() != info.shape.iter().product()
         {
             return Err(FormatError::Invalid(format!(
@@ -365,7 +361,10 @@ fn encode_value(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
             ));
         };
         let element_kind = value_kind(first)?;
-        if values.iter().any(|item| value_kind(item) != Ok(element_kind)) {
+        if values
+            .iter()
+            .any(|item| value_kind(item) != Ok(element_kind))
+        {
             return Err(FormatError::Invalid(
                 "GGUF metadata arrays must contain one value type".to_owned(),
             ));
@@ -505,9 +504,9 @@ impl<'a> Cursor<'a> {
             5 => Ok(GgufValue::I32(self.read_u32()? as i32)),
             11 => Ok(GgufValue::I64(self.read_u64()? as i64)),
             6 => Ok(GgufValue::F32(f32::from_le_bytes(
-                self.read_exact(4)?.try_into().map_err(|_| {
-                    FormatError::Invalid("invalid F32 metadata value".to_owned())
-                })?,
+                self.read_exact(4)?
+                    .try_into()
+                    .map_err(|_| FormatError::Invalid("invalid F32 metadata value".to_owned()))?,
             ))),
             7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
             8 => Ok(GgufValue::String(self.read_string()?)),
@@ -575,7 +574,10 @@ mod tests {
                 GgufValue::String("hello".to_owned()),
             ]))
         );
-        assert_eq!(reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype, GgmlType::Q8_0);
+        assert_eq!(
+            reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype,
+            GgmlType::Q8_0
+        );
         assert_eq!(
             reader.tensor_q8_0("blk.0.attn_q.weight").unwrap(),
             quantized
