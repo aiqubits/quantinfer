@@ -276,14 +276,14 @@ impl GgufReader {
             )));
         }
         let bytes = self.tensor_bytes(name)?;
-        let mut values = Vec::with_capacity(info.shape.iter().product());
+        let mut values = Vec::with_capacity(info.shape.iter().product::<usize>());
         for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
             values.push(f32::from_le_bytes(chunk.try_into().map_err(|_| {
                 FormatError::Invalid("invalid F32 tensor chunk".to_owned())
             })?));
         }
         if !bytes.len().is_multiple_of(std::mem::size_of::<f32>())
-            || values.len() != info.shape.iter().product()
+            || values.len() != info.shape.iter().product::<usize>()
         {
             return Err(FormatError::Invalid(format!(
                 "GGUF F32 tensor {name} has an invalid byte length"
