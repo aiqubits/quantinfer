@@ -766,13 +766,13 @@ mod tests {
             .add_f32_tensor("blk.0.attn_q_norm.weight", vec![4], &[1.0; 4])
             .unwrap();
         writer
-            .add_f32_tensor("blk.0.attn_k.weight", vec![8, 4], &vec![0.01; 32])
+            .add_f32_tensor("blk.0.attn_k.weight", vec![8, 4], &[0.01; 32])
             .unwrap();
         writer
             .add_f32_tensor("blk.0.attn_k_norm.weight", vec![4], &[1.0; 4])
             .unwrap();
         writer
-            .add_f32_tensor("blk.0.attn_v.weight", vec![8, 4], &vec![0.01; 32])
+            .add_f32_tensor("blk.0.attn_v.weight", vec![8, 4], &[0.01; 32])
             .unwrap();
         writer
             .add_f32_tensor("blk.0.attn_output.weight", vec![8, 8], &vec![0.01; 64])
