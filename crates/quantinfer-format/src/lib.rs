@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use half::f16;
-use quantinfer_core::QuantizedTensor;
+use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor, Q8_0_BLOCK_SIZE};
 
 pub type Result<T> = std::result::Result<T, FormatError>;
 
@@ -51,6 +51,7 @@ pub enum GgufValue {
     F32(f32),
     Bool(bool),
     String(String),
+    Array(Vec<Self>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,16 +252,84 @@ impl GgufReader {
     }
 
     pub fn tensor_bytes(&self, name: &str) -> Result<&[u8]> {
-        let info = self
-            .tensors
-            .iter()
-            .find(|tensor| tensor.name == name)
-            .ok_or_else(|| FormatError::Invalid(format!("unknown GGUF tensor {name}")))?;
+        let info = self.tensor_info(name)?;
         let start = self.data_start + info.offset as usize;
         let end = start + info.size;
         self.bytes
             .get(start..end)
             .ok_or_else(|| FormatError::Invalid("GGUF tensor data is truncated".to_owned()))
+    }
+
+    pub fn tensor_info(&self, name: &str) -> Result<&GgufTensorInfo> {
+        self.tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown GGUF tensor {name}")))
+    }
+
+    pub fn tensor_f32(&self, name: &str) -> Result<Tensor> {
+        let info = self.tensor_info(name)?;
+        if info.dtype != GgmlType::F32 {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} has type {:?}, expected F32",
+                info.dtype
+            )));
+        }
+        let bytes = self.tensor_bytes(name)?;
+        let mut values = Vec::with_capacity(info.shape.iter().product());
+        for chunk in bytes.chunks_exact(std::mem::size_of::<f32>()) {
+            values.push(f32::from_le_bytes(
+                chunk.try_into().map_err(|_| {
+                    FormatError::Invalid("invalid F32 tensor chunk".to_owned())
+                })?,
+            ));
+        }
+        if !bytes
+            .len()
+            .is_multiple_of(std::mem::size_of::<f32>())
+            || values.len() != info.shape.iter().product()
+        {
+            return Err(FormatError::Invalid(format!(
+                "GGUF F32 tensor {name} has an invalid byte length"
+            )));
+        }
+        Ok(Tensor::from_f32(info.shape.clone(), values)?)
+    }
+
+    pub fn tensor_q8_0(&self, name: &str) -> Result<QuantizedTensor> {
+        let info = self.tensor_info(name)?;
+        if info.dtype != GgmlType::Q8_0 {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} has type {:?}, expected Q8_0",
+                info.dtype
+            )));
+        }
+        let bytes = self.tensor_bytes(name)?;
+        let block_size = std::mem::size_of::<f16>() + Q8_0_BLOCK_SIZE;
+        if !bytes.len().is_multiple_of(block_size) {
+            return Err(FormatError::Invalid(format!(
+                "GGUF Q8_0 tensor {name} has an invalid byte length"
+            )));
+        }
+        let mut blocks = Vec::with_capacity(bytes.len() / block_size);
+        for chunk in bytes.chunks_exact(block_size) {
+            let scale = f16::from_le_bytes(
+                chunk[..std::mem::size_of::<f16>()]
+                    .try_into()
+                    .map_err(|_| FormatError::Invalid("invalid Q8_0 scale".to_owned()))?,
+            )
+            .to_f32();
+            let mut values = [0_i8; Q8_0_BLOCK_SIZE];
+            for (index, value) in chunk[std::mem::size_of::<f16>()..]
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                values[index] = i8::from_le_bytes([value]);
+            }
+            blocks.push(Q8_0Block { scale, values });
+        }
+        Ok(QuantizedTensor::from_blocks(info.shape.clone(), blocks)?)
     }
 }
 
@@ -289,21 +358,60 @@ fn encode_metadata(metadata: &BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
 }
 
 fn encode_value(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
-    let (kind, encoded): (u32, Vec<u8>) = match value {
-        GgufValue::U32(value) => (4, value.to_le_bytes().to_vec()),
-        GgufValue::U64(value) => (10, value.to_le_bytes().to_vec()),
-        GgufValue::I32(value) => (5, value.to_le_bytes().to_vec()),
-        GgufValue::I64(value) => (11, value.to_le_bytes().to_vec()),
-        GgufValue::F32(value) => (6, value.to_le_bytes().to_vec()),
-        GgufValue::Bool(value) => (7, vec![u8::from(*value)]),
-        GgufValue::String(value) => {
-            let mut bytes = Vec::new();
-            write_string(&mut bytes, value)?;
-            (8, bytes)
+    if let GgufValue::Array(values) = value {
+        let Some(first) = values.first() else {
+            return Err(FormatError::Invalid(
+                "GGUF metadata arrays cannot be empty".to_owned(),
+            ));
+        };
+        let element_kind = value_kind(first)?;
+        if values.iter().any(|item| value_kind(item) != Ok(element_kind)) {
+            return Err(FormatError::Invalid(
+                "GGUF metadata arrays must contain one value type".to_owned(),
+            ));
         }
-    };
-    output.extend_from_slice(&kind.to_le_bytes());
-    output.extend_from_slice(&encoded);
+        output.extend_from_slice(&9_u32.to_le_bytes());
+        output.extend_from_slice(&element_kind.to_le_bytes());
+        output.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for item in values {
+            encode_scalar(output, item)?;
+        }
+        return Ok(());
+    }
+    output.extend_from_slice(&value_kind(value)?.to_le_bytes());
+    encode_scalar(output, value)
+}
+
+fn value_kind(value: &GgufValue) -> Result<u32> {
+    match value {
+        GgufValue::U32(_) => Ok(4),
+        GgufValue::U64(_) => Ok(10),
+        GgufValue::I32(_) => Ok(5),
+        GgufValue::I64(_) => Ok(11),
+        GgufValue::F32(_) => Ok(6),
+        GgufValue::Bool(_) => Ok(7),
+        GgufValue::String(_) => Ok(8),
+        GgufValue::Array(_) => Err(FormatError::Invalid(
+            "nested GGUF metadata arrays are not supported".to_owned(),
+        )),
+    }
+}
+
+fn encode_scalar(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
+    match value {
+        GgufValue::U32(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::U64(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::I32(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::I64(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::F32(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::Bool(value) => output.push(u8::from(*value)),
+        GgufValue::String(value) => write_string(output, value)?,
+        GgufValue::Array(_) => {
+            return Err(FormatError::Invalid(
+                "nested GGUF metadata arrays are not supported".to_owned(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -377,13 +485,29 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_value(&mut self) -> Result<GgufValue> {
-        match self.read_u32()? {
+        let kind = self.read_u32()?;
+        if kind == 9 {
+            let element_kind = self.read_u32()?;
+            let length = self.read_u64()? as usize;
+            let mut values = Vec::with_capacity(length);
+            for _ in 0..length {
+                values.push(self.read_scalar(element_kind)?);
+            }
+            return Ok(GgufValue::Array(values));
+        }
+        self.read_scalar(kind)
+    }
+
+    fn read_scalar(&mut self, kind: u32) -> Result<GgufValue> {
+        match kind {
             4 => Ok(GgufValue::U32(self.read_u32()?)),
             10 => Ok(GgufValue::U64(self.read_u64()?)),
             5 => Ok(GgufValue::I32(self.read_u32()? as i32)),
             11 => Ok(GgufValue::I64(self.read_u64()? as i64)),
             6 => Ok(GgufValue::F32(f32::from_le_bytes(
-                self.read_exact(4)?.try_into().unwrap(),
+                self.read_exact(4)?.try_into().map_err(|_| {
+                    FormatError::Invalid("invalid F32 metadata value".to_owned())
+                })?,
             ))),
             7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
             8 => Ok(GgufValue::String(self.read_string()?)),
@@ -396,7 +520,8 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GgufReader, GgufValue, GgufWriter};
+    use super::{GgmlType, GgufReader, GgufValue, GgufWriter};
+    use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor};
 
     #[test]
     fn round_trips_scalar_metadata_and_f32_tensor() {
@@ -417,5 +542,43 @@ mod tests {
         );
         assert_eq!(reader.tensors()[0].shape, vec![2, 2]);
         assert_eq!(reader.tensor_bytes("token_embd.weight").unwrap().len(), 16);
+        assert_eq!(
+            reader.tensor_f32("token_embd.weight").unwrap(),
+            Tensor::from_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap()
+        );
+    }
+
+    #[test]
+    fn round_trips_metadata_arrays_and_q8_0_tensor() {
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata(
+            "tokenizer.ggml.tokens",
+            GgufValue::Array(vec![
+                GgufValue::String("<|endoftext|>".to_owned()),
+                GgufValue::String("hello".to_owned()),
+            ]),
+        );
+        let quantized = QuantizedTensor::from_blocks(
+            vec![32],
+            vec![Q8_0Block {
+                scale: 0.25,
+                values: [1_i8; 32],
+            }],
+        )
+        .unwrap();
+        writer.add_q8_0_tensor("blk.0.attn_q.weight", &quantized);
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        assert_eq!(
+            reader.metadata().get("tokenizer.ggml.tokens"),
+            Some(&GgufValue::Array(vec![
+                GgufValue::String("<|endoftext|>".to_owned()),
+                GgufValue::String("hello".to_owned()),
+            ]))
+        );
+        assert_eq!(reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype, GgmlType::Q8_0);
+        assert_eq!(
+            reader.tensor_q8_0("blk.0.attn_q.weight").unwrap(),
+            quantized
+        );
     }
 }
