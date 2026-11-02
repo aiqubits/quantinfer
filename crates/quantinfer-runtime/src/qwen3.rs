@@ -188,12 +188,14 @@ impl Qwen3LayerWeights {
         let query = backend.apply_rope(&query, &cos, &sin)?;
         let key = backend.apply_rope(&key, &cos, &sin)?;
         cache.append(layer_index, &key, &value)?;
-        let keys = cache.keys(layer_index)?;
-        let values = cache.values(layer_index)?;
+        let key_values = cache.key_values(layer_index)?;
+        let value_values = cache.value_values(layer_index)?;
+        let key_tokens = cache.sequence_length(layer_index)?;
         let attended = gqa_attention(
             &query,
-            &keys,
-            &values,
+            key_values,
+            value_values,
+            key_tokens,
             config.num_attention_heads,
             config.num_key_value_heads,
             config.effective_head_dim(),
@@ -337,31 +339,35 @@ fn rope_tables(theta: f32, head_dim: usize, start: usize, length: usize) -> (Vec
 
 fn gqa_attention(
     query: &Tensor,
-    keys: &Tensor,
-    values: &Tensor,
+    key_values: &[f32],
+    value_values: &[f32],
+    key_tokens: usize,
     query_heads: usize,
     key_value_heads: usize,
     head_dim: usize,
     start_position: usize,
 ) -> Result<Tensor> {
     let query_dims = query.shape().dims();
-    let key_dims = keys.shape().dims();
     if query_dims.len() != 3
-        || key_dims != values.shape().dims()
         || query_dims[1] != query_heads
         || query_dims[2] != head_dim
-        || key_dims[1] != key_value_heads
-        || key_dims[2] != head_dim
+        || key_tokens == 0
+        || key_value_heads == 0
+        || key_values.len() != key_tokens * key_value_heads * head_dim
+        || value_values.len() != key_values.len()
+        || !query_heads.is_multiple_of(key_value_heads)
     {
         return Err(RuntimeError::InvalidInput(
             "invalid Qwen3 GQA tensor shapes".to_owned(),
         ));
     }
     let query_values = query.as_f32()?;
-    let key_values = keys.as_f32()?;
-    let value_values = values.as_f32()?;
     let query_tokens = query_dims[0];
-    let key_tokens = key_dims[0];
+    if key_tokens < start_position + query_tokens {
+        return Err(RuntimeError::InvalidInput(
+            "KV cache does not contain all causal attention keys".to_owned(),
+        ));
+    }
     let group_size = query_heads / key_value_heads;
     let scale = (head_dim as f32).sqrt().recip();
     let mut output = vec![0.0; query_tokens * query_heads * head_dim];
@@ -396,11 +402,6 @@ fn gqa_attention(
                 }
             }
         }
-    }
-    if key_tokens < start_position + query_tokens {
-        return Err(RuntimeError::InvalidInput(
-            "KV cache does not contain all causal attention keys".to_owned(),
-        ));
     }
     Ok(Tensor::from_f32(
         Shape::from(vec![query_tokens, query_heads, head_dim]),

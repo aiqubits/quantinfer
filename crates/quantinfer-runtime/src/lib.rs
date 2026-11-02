@@ -16,6 +16,7 @@ pub type Result<T> = std::result::Result<T, RuntimeError>;
 pub enum RuntimeError {
     InvalidInput(String),
     Core(quantinfer_core::CoreError),
+    Format(quantinfer_format::FormatError),
     Kernel(quantinfer_kernel::KernelError),
 }
 
@@ -24,6 +25,7 @@ impl fmt::Display for RuntimeError {
         match self {
             Self::InvalidInput(message) => formatter.write_str(message),
             Self::Core(error) => error.fmt(formatter),
+            Self::Format(error) => error.fmt(formatter),
             Self::Kernel(error) => error.fmt(formatter),
         }
     }
@@ -34,6 +36,12 @@ impl std::error::Error for RuntimeError {}
 impl From<quantinfer_core::CoreError> for RuntimeError {
     fn from(error: quantinfer_core::CoreError) -> Self {
         Self::Core(error)
+    }
+}
+
+impl From<quantinfer_format::FormatError> for RuntimeError {
+    fn from(error: quantinfer_format::FormatError) -> Self {
+        Self::Format(error)
     }
 }
 
@@ -129,6 +137,20 @@ impl KvCache {
 
     pub fn values(&self, layer: usize) -> Result<Tensor> {
         self.tensor_for(layer, false)
+    }
+
+    pub fn key_values(&self, layer: usize) -> Result<&[f32]> {
+        let layer_cache = self.layers.get(layer).ok_or_else(|| {
+            RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned())
+        })?;
+        Ok(&layer_cache.keys)
+    }
+
+    pub fn value_values(&self, layer: usize) -> Result<&[f32]> {
+        let layer_cache = self.layers.get(layer).ok_or_else(|| {
+            RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned())
+        })?;
+        Ok(&layer_cache.values)
     }
 
     fn tensor_for(&self, layer: usize, keys: bool) -> Result<Tensor> {
@@ -280,6 +302,8 @@ mod tests {
         let value = Tensor::from_f32(vec![1, 2, 4], vec![2.0; 8]).unwrap();
         cache.append(0, &key, &value).unwrap();
         assert_eq!(cache.sequence_length(0).unwrap(), 1);
+        assert_eq!(cache.key_values(0).unwrap(), &[1.0; 8]);
+        assert_eq!(cache.value_values(0).unwrap(), &[2.0; 8]);
         assert_eq!(cache.keys(0).unwrap().as_f32().unwrap(), &[1.0; 8]);
         assert_eq!(cache.values(0).unwrap().as_f32().unwrap(), &[2.0; 8]);
     }
