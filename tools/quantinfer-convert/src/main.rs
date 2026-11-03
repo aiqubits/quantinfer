@@ -53,7 +53,10 @@ fn run() -> Result<(), String> {
     );
     writer.insert_metadata(
         "qwen3.context_length",
-        GgufValue::U32(metadata_u32(config.max_position_embeddings, "max_position_embeddings")?),
+        GgufValue::U32(metadata_u32(
+            config.max_position_embeddings,
+            "max_position_embeddings",
+        )?),
     );
     writer.insert_metadata(
         "qwen3.embedding_length",
@@ -87,10 +90,7 @@ fn run() -> Result<(), String> {
     );
     writer.insert_metadata(
         "qwen3.attention.head_dim",
-        GgufValue::U32(metadata_u32(
-            config.effective_head_dim(),
-            "head_dim",
-        )?),
+        GgufValue::U32(metadata_u32(config.effective_head_dim(), "head_dim")?),
     );
     writer.insert_metadata("qwen3.rope.freq_base", GgufValue::F32(config.rope_theta));
     writer.insert_metadata(
@@ -273,8 +273,7 @@ fn print_help() {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_tensor_name, canonicalize_tensor_layout, is_matrix_weight,
-        is_quantizable_linear,
+        canonical_tensor_name, canonicalize_tensor_layout, is_matrix_weight, is_quantizable_linear,
     };
 
     #[test]
