@@ -82,6 +82,13 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or(0.0);
+    let eos_token_id = option_value(arguments, "--eos-token-id")?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|error| format!("invalid --eos-token-id: {error}"))
+        })
+        .transpose()?;
     if prompt_tokens.is_empty() {
         return Err("--tokens must contain at least one token id".to_owned());
     }
@@ -97,6 +104,9 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     {
         return Err("prompt token id is outside the model vocabulary".to_owned());
     }
+    if eos_token_id.is_some_and(|token| token >= model.config.vocab_size) {
+        return Err("EOS token id is outside the model vocabulary".to_owned());
+    }
     let mut cache = KvCache::new(
         model.config.num_hidden_layers,
         model.config.max_position_embeddings,
@@ -111,6 +121,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     let generation_config = GenerationConfig {
         max_new_tokens,
         temperature,
+        eos_token_id,
         ..GenerationConfig::default()
     };
     generation_config
@@ -175,7 +186,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf\n  generate --input MODEL.gguf --tokens 1,2,3 [--max-new-tokens N] [--temperature T]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf\n  generate --input MODEL.gguf --tokens 1,2,3 [--max-new-tokens N] [--temperature T] [--eos-token-id ID]"
     );
 }
 
