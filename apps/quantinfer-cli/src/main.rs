@@ -86,13 +86,15 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         return Err("--tokens must contain at least one token id".to_owned());
     }
     let reader = GgufReader::open(
-        fs::read(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+        fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
     )
     .map_err(|error| format!("cannot parse GGUF: {error}"))?;
     let model = Qwen3Model::from_gguf(CpuScalar::new(), &reader)
         .map_err(|error| format!("cannot load Qwen3 model: {error}"))?;
-    if prompt_tokens.iter().any(|token| *token >= model.config.vocab_size) {
+    if prompt_tokens
+        .iter()
+        .any(|token| *token >= model.config.vocab_size)
+    {
         return Err("prompt token id is outside the model vocabulary".to_owned());
     }
     let mut cache = KvCache::new(
