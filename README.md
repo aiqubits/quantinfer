@@ -22,3 +22,33 @@ cargo fmt --all -- --check
 cargo check --workspace
 cargo test --workspace
 ```
+
+## MVP flow
+
+Convert a Qwen3 SafeTensors checkpoint to the canonical GGUF layout. Linear projection matrices are transposed into the runtime layout, and `--quantize q8_0` stores supported projection weights as Q8_0 blocks.
+
+```bash
+cargo run -p quantinfer-convert -- \
+  --config config.json \
+  --weights model.safetensors \
+  --output model.gguf \
+  --quantize q8_0
+```
+
+Inspect the resulting metadata and tensor inventory.
+
+```bash
+cargo run -p quantinfer-cli -- inspect-gguf --input model.gguf
+```
+
+Run deterministic CPU Prefill and Decode with explicit token ids.
+
+```bash
+cargo run -p quantinfer-cli -- generate \
+  --input model.gguf \
+  --tokens 1,2,3 \
+  --max-new-tokens 16 \
+  --eos-token-id 2
+```
+
+The MVP command accepts token ids so it can exercise model loading and generation without assuming a tokenizer file. `ByteTokenizer` and the Qwen3 chat template remain deterministic fixtures until the Qwen3 BPE vocabulary and merge-file path is added.

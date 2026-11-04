@@ -30,3 +30,7 @@ The implementation order is:
 6. Q8_0 quantization and quantized execution;
 7. tokenizer, Chat Template, and generation;
 8. benchmarks and release hardening.
+
+## Current end-to-end path
+
+The CLI generation path loads canonical GGUF directly into `Qwen3Model`, runs CPU Prefill and Decode, selects deterministic tokens, and supports an explicit EOS token id. It accepts a comma-separated token-id prompt so the runtime path remains independently testable from tokenizer assets. The repository's byte tokenizer and Qwen3 chat template are fixtures for this MVP boundary.
