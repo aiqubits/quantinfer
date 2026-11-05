@@ -106,7 +106,7 @@ impl GgufBpeTokenizer {
                     || Some(*token_id) == bos_token_id
                     || Some(*token_id) == eos_token_id
             })
-            .map(|(token_id, token)| (token.to_string(), *token_id))
+            .map(|(token_id, token)| (token.to_string(), token_id))
             .collect();
         special_tokens.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
 
