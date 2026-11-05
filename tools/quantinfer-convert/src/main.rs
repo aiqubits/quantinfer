@@ -145,10 +145,7 @@ fn run() -> Result<(), String> {
                 ),
             );
         }
-        writer.insert_metadata(
-            "tokenizer.ggml.model",
-            GgufValue::String("gpt2".to_owned()),
-        );
+        writer.insert_metadata("tokenizer.ggml.model", GgufValue::String("gpt2".to_owned()));
         if let Some(token_id) = tokenizer.bos_token_id {
             writer.insert_metadata(
                 "tokenizer.ggml.bos_token_id",
@@ -295,12 +292,12 @@ fn load_tokenizer_metadata(
                                 "tokenizer merge arrays must contain two strings".to_owned()
                             );
                         }
-                        let left = parts[0]
-                            .as_str()
-                            .ok_or_else(|| "tokenizer merge left side is not a string".to_owned())?;
-                        let right = parts[1]
-                            .as_str()
-                            .ok_or_else(|| "tokenizer merge right side is not a string".to_owned())?;
+                        let left = parts[0].as_str().ok_or_else(|| {
+                            "tokenizer merge left side is not a string".to_owned()
+                        })?;
+                        let right = parts[1].as_str().ok_or_else(|| {
+                            "tokenizer merge right side is not a string".to_owned()
+                        })?;
                         Ok(format!("{left} {right}"))
                     } else {
                         Err("tokenizer merge must be a string or two-item array".to_owned())
@@ -473,10 +470,7 @@ mod tests {
     #[test]
     fn reads_huggingface_tokenizer_vocab_and_merges() {
         let directory = std::env::temp_dir();
-        let path = directory.join(format!(
-            "quantinfer-tokenizer-{}.json",
-            std::process::id()
-        ));
+        let path = directory.join(format!("quantinfer-tokenizer-{}.json", std::process::id()));
         std::fs::write(
             &path,
             r#"{
@@ -488,11 +482,8 @@ mod tests {
             }"#,
         )
         .unwrap();
-        let metadata = load_tokenizer_metadata(
-            &path,
-            r#"{"bos_token_id": 0, "eos_token_id": 3}"#,
-        )
-        .unwrap();
+        let metadata =
+            load_tokenizer_metadata(&path, r#"{"bos_token_id": 0, "eos_token_id": 3}"#).unwrap();
         std::fs::remove_file(path).unwrap();
         assert_eq!(metadata.tokens, vec!["h", "i", "hi", "<|im_end|>"]);
         assert_eq!(metadata.merges, vec!["h i"]);

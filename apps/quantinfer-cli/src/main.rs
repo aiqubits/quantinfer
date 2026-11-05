@@ -118,11 +118,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 ThinkingMode::Disabled
             };
             Qwen3ChatTemplate
-                .render(
-                    &[ChatMessage::new(role, prompt_text)],
-                    thinking,
-                    true,
-                )
+                .render(&[ChatMessage::new(role, prompt_text)], thinking, true)
                 .map_err(|error| error.to_string())?
         } else {
             prompt_text
@@ -161,8 +157,11 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     let generation_config = GenerationConfig {
         max_new_tokens,
         temperature,
-        eos_token_id: eos_token_id
-            .or_else(|| tokenizer.as_ref().and_then(|tokenizer| tokenizer.eos_token_id())),
+        eos_token_id: eos_token_id.or_else(|| {
+            tokenizer
+                .as_ref()
+                .and_then(|tokenizer| tokenizer.eos_token_id())
+        }),
         ..GenerationConfig::default()
     };
     generation_config
