@@ -145,6 +145,7 @@ dependencies = [
  "quantinfer-format",
  "quantinfer-model",
  "quantinfer-quant",
+ "serde_json",
 ]
 
 [[package]]
