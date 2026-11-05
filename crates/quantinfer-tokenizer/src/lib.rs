@@ -108,7 +108,7 @@ impl GgufBpeTokenizer {
             })
             .map(|(token_id, token)| (token.to_string(), token_id))
             .collect();
-        special_tokens.sort_by(|left, right| right.0.len().cmp(&left.0.len()));
+        special_tokens.sort_by_key(|left| std::cmp::Reverse(left.0.len()));
 
         Ok(Self {
             tokens,
