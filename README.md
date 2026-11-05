@@ -32,6 +32,7 @@ cargo run -p quantinfer-convert -- \
   --config config.json \
   --weights model.safetensors \
   --output model.gguf \
+  --tokenizer tokenizer.json \
   --quantize q8_0
 ```
 
@@ -41,7 +42,17 @@ Inspect the resulting metadata and tensor inventory.
 cargo run -p quantinfer-cli -- inspect-gguf --input model.gguf
 ```
 
-Run deterministic CPU Prefill and Decode with explicit token ids.
+Run CPU Prefill and Decode from a natural-language prompt. The converter embeds the Qwen3 BPE vocabulary and merges into GGUF.
+
+```bash
+cargo run -p quantinfer-cli -- generate \
+  --input model.gguf \
+  --prompt "Hello, QuantInfer" \
+  --chat \
+  --max-new-tokens 16
+```
+
+The token-id form remains available for runtime smoke tests.
 
 ```bash
 cargo run -p quantinfer-cli -- generate \
@@ -51,4 +62,4 @@ cargo run -p quantinfer-cli -- generate \
   --eos-token-id 2
 ```
 
-The MVP command accepts token ids so it can exercise model loading and generation without assuming a tokenizer file. `ByteTokenizer` and the Qwen3 chat template remain deterministic fixtures until the Qwen3 BPE vocabulary and merge-file path is added.
+`ByteTokenizer` remains a deterministic fixture for unit tests. Production text prompts use the byte-level BPE metadata embedded by the converter.

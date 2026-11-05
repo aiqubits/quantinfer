@@ -33,4 +33,4 @@ The implementation order is:
 
 ## Current end-to-end path
 
-The CLI generation path loads canonical GGUF directly into `Qwen3Model`, runs CPU Prefill and Decode, selects deterministic tokens, and supports an explicit EOS token id. It accepts a comma-separated token-id prompt so the runtime path remains independently testable from tokenizer assets. The repository's byte tokenizer and Qwen3 chat template are fixtures for this MVP boundary.
+The CLI generation path loads canonical GGUF directly into `Qwen3Model`, constructs the Qwen3 byte-level BPE tokenizer from GGUF metadata, renders an optional chat prompt, and runs CPU Prefill and Decode. It accepts either a natural-language prompt or comma-separated token IDs. EOS metadata is read from GGUF and can be overridden on the command line. `ByteTokenizer` remains a deterministic fixture for unit tests.
