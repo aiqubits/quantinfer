@@ -6,6 +6,7 @@ use quantinfer_core::Tensor;
 use quantinfer_format::{GgufValue, GgufWriter, SafeTensorFile};
 use quantinfer_model::Qwen3Config;
 use quantinfer_quant::quantize_q8_0;
+use serde_json::Value;
 
 fn main() {
     if let Err(error) = run() {
@@ -26,6 +27,7 @@ fn run() -> Result<(), String> {
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
     let output_path = required_path(&arguments, "--output")?;
+    let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let quantization = optional_value(&arguments, "--quantize");
     if let Some(value) = &quantization {
         if value != "q8_0" {
@@ -112,6 +114,54 @@ fn run() -> Result<(), String> {
                 .collect(),
         ),
     );
+    if let Some(tokenizer_path) = tokenizer_path {
+        let tokenizer = load_tokenizer_metadata(&tokenizer_path, &config_json)?;
+        if tokenizer.tokens.len() > config.vocab_size {
+            return Err(format!(
+                "tokenizer vocabulary has {} entries, exceeding model vocabulary {}",
+                tokenizer.tokens.len(),
+                config.vocab_size
+            ));
+        }
+        writer.insert_metadata(
+            "tokenizer.ggml.tokens",
+            GgufValue::Array(
+                tokenizer
+                    .tokens
+                    .into_iter()
+                    .map(GgufValue::String)
+                    .collect(),
+            ),
+        );
+        if !tokenizer.merges.is_empty() {
+            writer.insert_metadata(
+                "tokenizer.ggml.merges",
+                GgufValue::Array(
+                    tokenizer
+                        .merges
+                        .into_iter()
+                        .map(GgufValue::String)
+                        .collect(),
+                ),
+            );
+        }
+        writer.insert_metadata(
+            "tokenizer.ggml.model",
+            GgufValue::String("gpt2".to_owned()),
+        );
+        if let Some(token_id) = tokenizer.bos_token_id {
+            writer.insert_metadata(
+                "tokenizer.ggml.bos_token_id",
+                GgufValue::U32(metadata_u32(token_id, "bos_token_id")?),
+            );
+        }
+        if let Some(token_id) = tokenizer.eos_token_id {
+            writer.insert_metadata(
+                "tokenizer.ggml.eos_token_id",
+                GgufValue::U32(metadata_u32(token_id, "eos_token_id")?),
+            );
+        }
+    }
     for (name, info) in weights.tensors() {
         let values = weights
             .tensor_f32(name)
@@ -169,6 +219,114 @@ fn optional_value(arguments: &[String], flag: &str) -> Option<String> {
 
 fn metadata_u32(value: usize, name: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("{name} does not fit in GGUF u32 metadata"))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TokenizerMetadata {
+    tokens: Vec<String>,
+    merges: Vec<String>,
+    bos_token_id: Option<usize>,
+    eos_token_id: Option<usize>,
+}
+
+fn load_tokenizer_metadata(
+    tokenizer_path: &PathBuf,
+    config_json: &str,
+) -> Result<TokenizerMetadata, String> {
+    let tokenizer_json = fs::read_to_string(tokenizer_path)
+        .map_err(|error| format!("cannot read {}: {error}", tokenizer_path.display()))?;
+    let root: Value = serde_json::from_str(&tokenizer_json)
+        .map_err(|error| format!("cannot parse {}: {error}", tokenizer_path.display()))?;
+    let vocab = root
+        .get("model")
+        .and_then(|model| model.get("vocab"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| "tokenizer.json is missing model.vocab".to_owned())?;
+    let maximum_id = vocab
+        .values()
+        .filter_map(Value::as_u64)
+        .max()
+        .ok_or_else(|| "tokenizer.json model.vocab is empty".to_owned())?;
+    let mut tokens = vec![None; usize::try_from(maximum_id).unwrap_or(usize::MAX) + 1];
+    for (token, value) in vocab {
+        let token_id = value
+            .as_u64()
+            .ok_or_else(|| format!("tokenizer id for {token:?} is not an integer"))?;
+        let token_id = usize::try_from(token_id)
+            .map_err(|_| format!("tokenizer id for {token:?} overflows usize"))?;
+        tokens[token_id] = Some(token.clone());
+    }
+    if let Some(added_tokens) = root.get("added_tokens").and_then(Value::as_array) {
+        for added_token in added_tokens {
+            let Some(token) = added_token.get("content").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(token_id) = added_token.get("id").and_then(Value::as_u64) else {
+                continue;
+            };
+            let token_id = usize::try_from(token_id)
+                .map_err(|_| format!("added tokenizer id for {token:?} overflows usize"))?;
+            if token_id >= tokens.len() {
+                tokens.resize(token_id + 1, None);
+            }
+            tokens[token_id] = Some(token.to_owned());
+        }
+    }
+    let tokens: Vec<String> = tokens
+        .into_iter()
+        .enumerate()
+        .map(|(token_id, token)| {
+            token.ok_or_else(|| format!("tokenizer vocabulary is missing id {token_id}"))
+        })
+        .collect::<Result<_, _>>()?;
+    let merges = root
+        .get("model")
+        .and_then(|model| model.get("merges"))
+        .and_then(Value::as_array)
+        .map(|merges| {
+            merges
+                .iter()
+                .map(|merge| {
+                    if let Some(merge) = merge.as_str() {
+                        Ok(merge.to_owned())
+                    } else if let Some(parts) = merge.as_array() {
+                        if parts.len() != 2 {
+                            return Err(
+                                "tokenizer merge arrays must contain two strings".to_owned()
+                            );
+                        }
+                        let left = parts[0]
+                            .as_str()
+                            .ok_or_else(|| "tokenizer merge left side is not a string".to_owned())?;
+                        let right = parts[1]
+                            .as_str()
+                            .ok_or_else(|| "tokenizer merge right side is not a string".to_owned())?;
+                        Ok(format!("{left} {right}"))
+                    } else {
+                        Err("tokenizer merge must be a string or two-item array".to_owned())
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let config: Value = serde_json::from_str(config_json)
+        .map_err(|error| format!("cannot parse Qwen3 config for tokenizer ids: {error}"))?;
+    Ok(TokenizerMetadata {
+        tokens,
+        merges,
+        bos_token_id: token_id_from_value(config.get("bos_token_id")),
+        eos_token_id: token_id_from_value(config.get("eos_token_id")),
+    })
+}
+
+fn token_id_from_value(value: Option<&Value>) -> Option<usize> {
+    value.and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_array()?.first()?.as_u64())
+            .and_then(|id| usize::try_from(id).ok())
+    })
 }
 
 fn canonical_tensor_name(name: &str) -> Option<String> {
@@ -266,7 +424,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--quantize q8_0]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--quantize q8_0]"
     );
 }
 
@@ -274,6 +432,7 @@ fn print_help() {
 mod tests {
     use super::{
         canonical_tensor_name, canonicalize_tensor_layout, is_matrix_weight, is_quantizable_linear,
+        load_tokenizer_metadata,
     };
 
     #[test]
@@ -309,5 +468,34 @@ mod tests {
         assert!(is_matrix_weight("blk.0.attn_q.weight"));
         assert!(is_quantizable_linear("blk.0.attn_q.weight"));
         assert!(!is_matrix_weight("blk.0.attn_q_norm.weight"));
+    }
+
+    #[test]
+    fn reads_huggingface_tokenizer_vocab_and_merges() {
+        let directory = std::env::temp_dir();
+        let path = directory.join(format!(
+            "quantinfer-tokenizer-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{
+                "model": {
+                    "vocab": {"h": 0, "i": 1, "hi": 2},
+                    "merges": [["h", "i"]]
+                },
+                "added_tokens": [{"id": 3, "content": "<|im_end|>", "special": true}]
+            }"#,
+        )
+        .unwrap();
+        let metadata = load_tokenizer_metadata(
+            &path,
+            r#"{"bos_token_id": 0, "eos_token_id": 3}"#,
+        )
+        .unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(metadata.tokens, vec!["h", "i", "hi", "<|im_end|>"]);
+        assert_eq!(metadata.merges, vec!["h i"]);
+        assert_eq!(metadata.eos_token_id, Some(3));
     }
 }
