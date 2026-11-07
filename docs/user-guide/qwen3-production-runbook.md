@@ -123,17 +123,24 @@ model.layers.*.mlp.down_proj.weight
 
 当前 QuantInfer 转换器要求单个 SafeTensors 文件。Qwen 官方 `Qwen/Qwen3-0.6B` 仓库提供单个 `model.safetensors`，可以直接下载并进入本 runbook。
 
-先安装 Hugging Face Hub CLI。
+在 Debian/Ubuntu 上使用项目专用 Python 虚拟环境安装 Hugging Face Hub CLI。
 
 ```bash
-python3 -m pip install --upgrade huggingface_hub
+sudo apt-get update
+sudo apt-get install -y python3-full python3-venv
+python3 -m venv /opt/quantinfer/.venv
+/opt/quantinfer/.venv/bin/python -m pip install --upgrade pip huggingface_hub
 ```
 
-公共模型可以直接下载。私有或受限模型先执行 `hf auth login`。
+公共模型可以直接下载。私有或受限模型先执行登录。
+
+```bash
+/opt/quantinfer/.venv/bin/hf auth login
+```
 
 ```bash
 mkdir -p /opt/quantinfer/models/source/qwen3-0.6b
-hf download Qwen/Qwen3-0.6B \
+/opt/quantinfer/.venv/bin/hf download Qwen/Qwen3-0.6B \
   config.json \
   tokenizer.json \
   tokenizer_config.json \
