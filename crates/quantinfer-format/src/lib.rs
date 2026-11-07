@@ -400,7 +400,7 @@ impl GgufReader {
     pub fn tensor_f32(&self, name: &str) -> Result<Tensor> {
         let info = self.tensor_info(name)?;
         let bytes = self.tensor_bytes(name)?;
-        let values = match info.dtype {
+        let values: Vec<f32> = match info.dtype {
             GgmlType::F32 => {
                 let (chunks, remainder) = bytes.as_chunks::<4>();
                 if !remainder.is_empty() {
