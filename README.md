@@ -49,7 +49,9 @@ cargo run -p quantinfer-cli -- generate \
   --input model.gguf \
   --prompt "Hello, QuantInfer" \
   --chat \
-  --max-new-tokens 16
+  --max-new-tokens 16 \
+  --temperature 0.7 \
+  --seed 42
 ```
 
 The token-id form remains available for runtime smoke tests.
@@ -62,4 +64,4 @@ cargo run -p quantinfer-cli -- generate \
   --eos-token-id 2
 ```
 
-`ByteTokenizer` remains a deterministic fixture for unit tests. Production text prompts use the byte-level BPE metadata embedded by the converter.
+The GGUF reader accepts F32, F16, BF16, and Q8_0 tensors. Linear Q8_0 weights execute through the CPU reference kernel, while floating point tensors are normalized to F32 at load time. `--temperature` and `--seed` enable deterministic seeded sampling. `ByteTokenizer` remains a deterministic fixture for unit tests.

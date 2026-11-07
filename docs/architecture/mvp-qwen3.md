@@ -14,7 +14,7 @@ The first generation path is single-sequence Prefill and Decode with a KV cache.
 
 ## Quantization boundary
 
-The first quantization format is Q8_0 with 32 values per block. Linear projection weights are quantized; RMSNorm, embeddings, and the language-model head remain F32 or F16 for the initial accuracy baseline.
+The first quantization format is Q8_0 with 32 values per block. Linear projection weights are quantized; RMSNorm, embeddings, and the language-model head remain floating point. The GGUF reader accepts F32, F16, and BF16 floating point tensors and converts them to F32 for the reference runtime.
 
 ## Direct-main submission policy
 
@@ -33,4 +33,4 @@ The implementation order is:
 
 ## Current end-to-end path
 
-The CLI generation path loads canonical GGUF directly into `Qwen3Model`, constructs the Qwen3 byte-level BPE tokenizer from GGUF metadata, renders an optional chat prompt, and runs CPU Prefill and Decode. It accepts either a natural-language prompt or comma-separated token IDs. EOS metadata is read from GGUF and can be overridden on the command line. `ByteTokenizer` remains a deterministic fixture for unit tests.
+The CLI generation path loads canonical GGUF directly into `Qwen3Model`, constructs the Qwen3 byte-level BPE tokenizer from GGUF metadata, renders an optional chat prompt, and runs CPU Prefill and Decode. It accepts either a natural-language prompt or comma-separated token IDs. EOS metadata is read from GGUF and can be overridden on the command line. A seed makes temperature sampling reproducible. `ByteTokenizer` remains a deterministic fixture for unit tests.
