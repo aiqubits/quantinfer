@@ -119,6 +119,43 @@ model.layers.*.mlp.down_proj.weight
 
 如果模型是分片 SafeTensors，先在模型准备阶段合并为一个文件，再进入本流程。不要把分片中的单个文件直接交给转换器。
 
+## 4.1 直接下载官方 Qwen3 0.6B 文件
+
+当前 QuantInfer 转换器要求单个 SafeTensors 文件。Qwen 官方 `Qwen/Qwen3-0.6B` 仓库提供单个 `model.safetensors`，可以直接下载并进入本 runbook。
+
+先安装 Hugging Face Hub CLI。
+
+```bash
+python3 -m pip install --upgrade huggingface_hub
+```
+
+公共模型可以直接下载。私有或受限模型先执行 `hf auth login`。
+
+```bash
+mkdir -p /opt/quantinfer/models/source/qwen3-0.6b
+hf download Qwen/Qwen3-0.6B \
+  config.json \
+  tokenizer.json \
+  tokenizer_config.json \
+  merges.txt \
+  vocab.json \
+  model.safetensors \
+  --local-dir /opt/quantinfer/models/source/qwen3-0.6b
+```
+
+核对文件和校验和。
+
+```bash
+cd /opt/quantinfer/models/source/qwen3-0.6b
+ls -lh config.json tokenizer.json model.safetensors
+sha256sum config.json tokenizer.json tokenizer_config.json merges.txt vocab.json model.safetensors \
+  | tee input.sha256
+```
+
+把 `config.json`、`tokenizer.json` 和 `model.safetensors` 作为第 5 节转换命令的输入。`tokenizer_config.json`、`merges.txt` 和 `vocab.json` 保留在源模型目录，便于审计和 tokenizer 对照。
+
+Qwen3-1.7B、8B 等较大模型通常包含 `model.safetensors.index.json` 和多个 `model-*.safetensors` 分片。当前 QuantInfer 转换器接收单个 `--weights` 文件，下载这些分片后需要先在外部合并，或者等待分片 SafeTensors 支持加入转换器。不要把 index 文件或任意单个分片直接作为 `--weights` 输入。
+
 ## 5. 执行 Q8_0 转换
 
 先计算输入文件校验和，并把校验和写入发布记录。
