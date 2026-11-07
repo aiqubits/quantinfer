@@ -156,6 +156,18 @@ sha256sum config.json tokenizer.json tokenizer_config.json merges.txt vocab.json
 
 Qwen3-1.7B、8B 等较大模型通常包含 `model.safetensors.index.json` 和多个 `model-*.safetensors` 分片。当前 QuantInfer 转换器接收单个 `--weights` 文件，下载这些分片后需要先在外部合并，或者等待分片 SafeTensors 支持加入转换器。不要把 index 文件或任意单个分片直接作为 `--weights` 输入。
 
+### Qwen3-4B-Instruct-2507 的适用性
+
+[`Qwen/Qwen3-4B-Instruct-2507`](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) 的 `config.json` 使用 `Qwen3ForCausalLM`、GQA、偶数 `head_dim`，并关闭 sliding-window 和 custom RoPE scaling，因此模型架构符合 QuantInfer 当前 Dense 校验。
+
+它仍然不适合作为当前 Runbook 的直接生产示例，原因如下。
+
+- 官方仓库提供 `model.safetensors.index.json` 和多个权重分片，当前转换器不能直接读取。
+- 4B 模型在 CPU Scalar 下的内存和延迟预算显著高于 0.6B，必须先用目标主机完成 RSS、Prefill 和 Decode 压测。
+- 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 `Qwen3ChatTemplate` 是简化模板，并会在非 thinking 模式追加 `/no_think`，不能直接视为官方模板等价物。
+
+因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再把 4B 设为生产模型。
+
 ## 5. 执行 Q8_0 转换
 
 先计算输入文件校验和，并把校验和写入发布记录。
