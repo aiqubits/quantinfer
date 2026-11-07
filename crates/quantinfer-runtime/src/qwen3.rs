@@ -297,9 +297,7 @@ impl<B: KernelBackend> Qwen3Model<B> {
         let embedding = reader.tensor_f32("token_embd.weight")?;
         let final_norm = reader.tensor_f32("output_norm.weight")?;
         let lm_head = match reader.tensor_info("output.weight") {
-            Ok(info)
-                if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) =>
-            {
+            Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
                 reader.tensor_f32("output.weight")?
             }
             Ok(info) => {
