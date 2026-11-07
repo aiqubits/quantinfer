@@ -93,6 +93,14 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("invalid --eos-token-id: {error}"))
         })
         .transpose()?;
+    let seed = option_value(arguments, "--seed")?
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid --seed: {error}"))
+        })
+        .transpose()?
+        .unwrap_or(GenerationConfig::default().seed);
     let reader = GgufReader::open(
         fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
     )
@@ -157,6 +165,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     let generation_config = GenerationConfig {
         max_new_tokens,
         temperature,
+        seed,
         eos_token_id: eos_token_id.or_else(|| {
             tokenizer
                 .as_ref()
@@ -285,7 +294,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf\n  generate --input MODEL.gguf (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--temperature T] [--eos-token-id ID]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf\n  generate --input MODEL.gguf (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--temperature T] [--seed N] [--eos-token-id ID]"
     );
 }
 

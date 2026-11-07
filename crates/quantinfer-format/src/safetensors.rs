@@ -53,11 +53,12 @@ impl SafeTensorFile {
                 "SafeTensors file is truncated".to_owned(),
             ));
         }
-        let header_size = u64::from_le_bytes(
+        let header_size = usize::try_from(u64::from_le_bytes(
             data[0..8]
                 .try_into()
                 .map_err(|_| FormatError::Invalid("invalid SafeTensors header".to_owned()))?,
-        ) as usize;
+        ))
+        .map_err(|_| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
         let header_start: usize = 8;
         let data_start = header_start
             .checked_add(header_size)
@@ -99,9 +100,18 @@ impl SafeTensorFile {
                 .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no shape")))?
                 .iter()
                 .map(|value| {
-                    value.as_u64().map(|value| value as usize).ok_or_else(|| {
-                        FormatError::Invalid(format!("tensor {name} has an invalid shape"))
-                    })
+                    value
+                        .as_u64()
+                        .ok_or_else(|| {
+                            FormatError::Invalid(format!("tensor {name} has an invalid shape"))
+                        })
+                        .and_then(|value| {
+                            usize::try_from(value).map_err(|_| {
+                                FormatError::Invalid(format!(
+                                    "tensor {name} shape overflows usize"
+                                ))
+                            })
+                        })
                 })
                 .collect::<Result<Vec<_>>>()?;
             let offsets = entry
@@ -117,16 +127,51 @@ impl SafeTensorFile {
             }
             let start = offsets[0]
                 .as_u64()
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))?
-                as usize;
+                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
+                .and_then(|value| {
+                    usize::try_from(value).map_err(|_| {
+                        FormatError::Invalid(format!(
+                            "tensor {name} start offset overflows usize"
+                        ))
+                    })
+                })?;
             let end = offsets[1]
                 .as_u64()
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))?
-                as usize;
-            if start > end || data_start.checked_add(end).is_none() || data_start + end > data.len()
-            {
+                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
+                .and_then(|value| {
+                    usize::try_from(value).map_err(|_| {
+                        FormatError::Invalid(format!(
+                            "tensor {name} end offset overflows usize"
+                        ))
+                    })
+                })?;
+            if start > end {
                 return Err(FormatError::Invalid(format!(
                     "tensor {name} offsets exceed file bounds"
+                )));
+            }
+            let byte_start = data_start.checked_add(start).ok_or_else(|| {
+                FormatError::Invalid(format!("tensor {name} start exceeds file bounds"))
+            })?;
+            let byte_end = data_start.checked_add(end).ok_or_else(|| {
+                FormatError::Invalid(format!("tensor {name} end exceeds file bounds"))
+            })?;
+            if byte_end > data.len() {
+                return Err(FormatError::Invalid(format!(
+                    "tensor {name} offsets exceed file bounds"
+                )));
+            }
+            let elements = shape.iter().try_fold(1usize, |product, dimension| {
+                product.checked_mul(*dimension).ok_or_else(|| {
+                    FormatError::Invalid(format!("tensor {name} shape overflows usize"))
+                })
+            })?;
+            let expected_size = elements
+                .checked_mul(dtype.element_size())
+                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} size overflows usize")))?;
+            if byte_end - byte_start != expected_size {
+                return Err(FormatError::Invalid(format!(
+                    "tensor {name} byte length does not match its shape"
                 )));
             }
             tensors.insert(
@@ -159,8 +204,14 @@ impl SafeTensorFile {
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
-        let start = self.data_start + info.data_offsets.0;
-        let end = self.data_start + info.data_offsets.1;
+        let start = self
+            .data_start
+            .checked_add(info.data_offsets.0)
+            .ok_or_else(|| FormatError::Invalid("SafeTensors start offset overflows usize".to_owned()))?;
+        let end = self
+            .data_start
+            .checked_add(info.data_offsets.1)
+            .ok_or_else(|| FormatError::Invalid("SafeTensors end offset overflows usize".to_owned()))?;
         self.data
             .get(start..end)
             .ok_or_else(|| FormatError::Invalid("SafeTensors data is truncated".to_owned()))
@@ -216,5 +267,16 @@ mod tests {
         let file = SafeTensorFile::open(bytes).unwrap();
         assert_eq!(file.metadata().get("format"), Some(&"pt".to_owned()));
         assert_eq!(file.tensor_f32("weight").unwrap(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn rejects_tensor_bytes_that_do_not_match_shape() {
+        let header =
+            br#"{"weight":{"dtype":"F32","shape":[2],"data_offsets":[0,4]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        assert!(SafeTensorFile::open(bytes).is_err());
     }
 }

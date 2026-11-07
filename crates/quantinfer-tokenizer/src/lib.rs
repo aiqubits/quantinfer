@@ -126,6 +126,14 @@ impl GgufBpeTokenizer {
         if text.is_empty() {
             return Ok(Vec::new());
         }
+        let mut encoded = Vec::new();
+        for segment in byte_level_segments(text)? {
+            encoded.extend(self.encode_piece(segment)?);
+        }
+        Ok(encoded)
+    }
+
+    fn encode_piece(&self, text: &str) -> Result<Vec<usize>> {
         let mut symbols: Vec<String> = text
             .as_bytes()
             .iter()
@@ -164,6 +172,84 @@ impl GgufBpeTokenizer {
             })
             .collect()
     }
+}
+
+fn byte_level_segments(text: &str) -> Result<Vec<&str>> {
+    let mut segments = Vec::new();
+    let mut cursor = 0;
+    while cursor < text.len() {
+        let start = cursor;
+        let rest = &text[cursor..];
+        if let Some(length) = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
+            .iter()
+            .find_map(|suffix| rest.starts_with(suffix).then_some(suffix.len()))
+        {
+            cursor += length;
+            segments.push(&text[start..cursor]);
+            continue;
+        }
+        let mut character = rest
+            .chars()
+            .next()
+            .expect("cursor is below text length");
+        if character == ' ' {
+            let next = rest[character.len_utf8()..].chars().next();
+            if next.is_some_and(|next| !next.is_whitespace()) {
+                cursor += character.len_utf8();
+                character = next.expect("space is followed by a character");
+            }
+        }
+        if character.is_alphabetic() {
+            cursor += character.len_utf8();
+            while cursor < text.len() {
+                let next = text[cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is below text length");
+                if !next.is_alphabetic() {
+                    break;
+                }
+                cursor += next.len_utf8();
+            }
+        } else if character.is_numeric() {
+            cursor += character.len_utf8();
+            for _ in 1..3 {
+                let Some(next) = text[cursor..].chars().next() else {
+                    break;
+                };
+                if !next.is_numeric() {
+                    break;
+                }
+                cursor += next.len_utf8();
+            }
+        } else if character.is_whitespace() {
+            cursor += character.len_utf8();
+            while cursor < text.len() {
+                let next = text[cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is below text length");
+                if !next.is_whitespace() {
+                    break;
+                }
+                cursor += next.len_utf8();
+            }
+        } else {
+            cursor += character.len_utf8();
+            while cursor < text.len() {
+                let next = text[cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is below text length");
+                if next.is_alphanumeric() || next.is_whitespace() {
+                    break;
+                }
+                cursor += next.len_utf8();
+            }
+        }
+        segments.push(&text[start..cursor]);
+    }
+    Ok(segments)
 }
 
 impl Tokenizer for GgufBpeTokenizer {
@@ -414,5 +500,24 @@ mod tests {
         let ids = tokenizer.encode("hi the<|im_end|>").unwrap();
         assert_eq!(ids, vec![2, 9, 10]);
         assert_eq!(tokenizer.decode(&ids).unwrap(), "hi the");
+    }
+
+    #[test]
+    fn byte_level_pretokenization_prevents_cross_word_merges() {
+        let tokenizer = GgufBpeTokenizer::new(
+            vec![
+                "a".to_owned(),
+                "Ġ".to_owned(),
+                "b".to_owned(),
+                "aĠ".to_owned(),
+                "Ġb".to_owned(),
+            ],
+            &["a Ġ".to_owned(), "Ġ b".to_owned()],
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(tokenizer.encode("a b").unwrap(), vec![0, 4]);
     }
 }

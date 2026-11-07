@@ -67,6 +67,9 @@ impl Qwen3Config {
         if self.head_dim == Some(0) {
             return Err("head_dim must be greater than zero".to_owned());
         }
+        if self.effective_head_dim() % 2 != 0 {
+            return Err("head_dim must be even for RoPE".to_owned());
+        }
         if self.head_dim.is_none() && !self.hidden_size.is_multiple_of(self.num_attention_heads) {
             return Err(
                 "hidden size must be divisible by attention heads when head_dim is absent"

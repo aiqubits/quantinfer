@@ -188,6 +188,7 @@ pub struct GenerationConfig {
     pub top_k: Option<usize>,
     pub top_p: Option<f32>,
     pub eos_token_id: Option<usize>,
+    pub seed: u64,
 }
 
 impl Default for GenerationConfig {
@@ -198,6 +199,7 @@ impl Default for GenerationConfig {
             top_k: None,
             top_p: None,
             eos_token_id: None,
+            seed: 0,
         }
     }
 }
@@ -258,36 +260,78 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
         return argmax(logits);
     }
 
-    // The first MVP keeps sampling deterministic. Temperature and candidate filters
-    // select the highest-scoring surviving token; stochastic sampling is added later.
-    let mut candidates: Vec<(usize, f32)> = values.iter().copied().enumerate().collect();
+    let temperature = if config.temperature == 0.0 {
+        1.0
+    } else {
+        config.temperature
+    };
+    let mut candidates: Vec<(usize, f32)> = values
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, value)| (index, value / temperature))
+        .collect();
     candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
     if let Some(top_k) = config.top_k {
         candidates.truncate(top_k.min(candidates.len()));
     }
+    let maximum = candidates[0].1;
+    let weights: Vec<f32> = candidates
+        .iter()
+        .map(|(_, value)| (*value - maximum).exp())
+        .collect();
     if let Some(top_p) = config.top_p {
-        let maximum = candidates[0].1;
+        let total = weights.iter().sum::<f32>();
         let mut cumulative = 0.0;
         let mut kept = 0;
-        for (_, value) in &candidates {
-            cumulative += (*value - maximum).exp();
+        for weight in &weights {
+            cumulative += *weight;
             kept += 1;
-            if cumulative
-                / candidates
-                    .iter()
-                    .map(|(_, item)| (*item - maximum).exp())
-                    .sum::<f32>()
-                >= top_p
-            {
+            if cumulative / total >= top_p {
                 break;
             }
         }
         candidates.truncate(kept.max(1));
     }
+    if config.temperature == 0.0 {
+        return candidates
+            .first()
+            .map(|(index, _)| *index)
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("sampling candidate set is empty".to_owned())
+            });
+    }
+    let maximum = candidates[0].1;
+    let weights: Vec<f32> = candidates
+        .iter()
+        .map(|(_, value)| (*value - maximum).exp())
+        .collect();
+    let total = weights.iter().sum::<f32>();
+    let target = deterministic_unit(config.seed, values);
+    let mut cumulative = 0.0;
+    for ((index, _), weight) in candidates.iter().zip(weights) {
+        cumulative += weight / total;
+        if target <= cumulative {
+            return Ok(*index);
+        }
+    }
     candidates
-        .first()
+        .last()
         .map(|(index, _)| *index)
         .ok_or_else(|| RuntimeError::InvalidInput("sampling candidate set is empty".to_owned()))
+}
+
+fn deterministic_unit(seed: u64, values: &[f32]) -> f32 {
+    let mut state = seed ^ values.len() as u64;
+    for value in values {
+        state ^= u64::from(value.to_bits());
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        state = state.rotate_left(17);
+    }
+    let unit = (state >> 40) as f32 / (1_u64 << 24) as f32;
+    unit.min(1.0 - f32::EPSILON)
 }
 
 #[cfg(test)]

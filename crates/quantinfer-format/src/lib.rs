@@ -118,12 +118,21 @@ impl GgufWriter {
         values: &[f32],
     ) -> Result<()> {
         let shape = shape.into();
-        if shape.iter().product::<usize>() != values.len() {
+        let elements = shape.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| FormatError::Invalid("tensor shape overflows usize".to_owned()))
+        })?;
+        if elements != values.len() {
             return Err(FormatError::Invalid(
                 "F32 tensor shape does not match data length".to_owned(),
             ));
         }
-        let mut data = Vec::with_capacity(values.len() * 4);
+        let data_size = values
+            .len()
+            .checked_mul(4)
+            .ok_or_else(|| FormatError::Invalid("F32 tensor size overflows usize".to_owned()))?;
+        let mut data = Vec::with_capacity(data_size);
         for value in values {
             data.extend_from_slice(&value.to_le_bytes());
         }
@@ -151,24 +160,51 @@ impl GgufWriter {
     }
 
     pub fn finish(mut self) -> Result<Vec<u8>> {
+        let mut names = std::collections::BTreeSet::new();
+        for tensor in &self.tensors {
+            if !names.insert(&tensor.name) {
+                return Err(FormatError::Invalid(format!(
+                    "duplicate GGUF tensor name {}",
+                    tensor.name
+                )));
+            }
+        }
         self.metadata
             .entry("general.alignment".to_owned())
             .or_insert(GgufValue::U32(self.alignment as u32));
         let metadata = encode_metadata(&self.metadata)?;
         let mut infos = Vec::new();
         let tensor_info_size = self.tensors.iter().try_fold(0usize, |size, tensor| {
-            Ok::<_, FormatError>(size + tensor_info_size(tensor)?)
+            size.checked_add(tensor_info_size(tensor)?)
+                .ok_or_else(|| FormatError::Invalid("GGUF header size overflows usize".to_owned()))
         })?;
-        let header_size = 4 + 4 + 8 + 8 + metadata.len() + tensor_info_size;
-        let data_start = align_up(header_size as u64, self.alignment) as usize;
+        let header_size = 4usize
+            .checked_add(4)
+            .and_then(|size| size.checked_add(8))
+            .and_then(|size| size.checked_add(8))
+            .and_then(|size| size.checked_add(metadata.len()))
+            .and_then(|size| size.checked_add(tensor_info_size))
+            .ok_or_else(|| FormatError::Invalid("GGUF header size overflows usize".to_owned()))?;
+        let data_start = usize::try_from(align_up(header_size as u64, self.alignment)?)
+            .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
         let mut data_offset = 0_u64;
         for tensor in &self.tensors {
-            data_offset = align_up(data_offset, self.alignment);
+            data_offset = align_up(data_offset, self.alignment)?;
             encode_tensor_info(&mut infos, tensor, data_offset)?;
-            data_offset += tensor.data.len() as u64;
+            data_offset = data_offset
+                .checked_add(
+                    u64::try_from(tensor.data.len())
+                        .map_err(|_| FormatError::Invalid("GGUF tensor size overflows u64".to_owned()))?,
+                )
+                .ok_or_else(|| FormatError::Invalid("GGUF data size overflows u64".to_owned()))?;
         }
 
-        let mut output = Vec::with_capacity(data_start + data_offset as usize);
+        let data_size = usize::try_from(data_offset)
+            .map_err(|_| FormatError::Invalid("GGUF data size overflows usize".to_owned()))?;
+        let capacity = data_start
+            .checked_add(data_size)
+            .ok_or_else(|| FormatError::Invalid("GGUF output size overflows usize".to_owned()))?;
+        let mut output = Vec::with_capacity(capacity);
         output.extend_from_slice(GGUF_MAGIC);
         output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
         output.extend_from_slice(&(self.tensors.len() as u64).to_le_bytes());
@@ -177,8 +213,13 @@ impl GgufWriter {
         output.extend_from_slice(&infos);
         output.resize(data_start, 0);
         for tensor in self.tensors {
+            let relative = u64::try_from(output.len() - data_start)
+                .map_err(|_| FormatError::Invalid("GGUF output offset overflows u64".to_owned()))?;
             let target = data_start
-                + align_up(output.len() as u64 - data_start as u64, self.alignment) as usize;
+                .checked_add(usize::try_from(align_up(relative, self.alignment)?).map_err(
+                    |_| FormatError::Invalid("GGUF output offset overflows usize".to_owned()),
+                )?)
+                .ok_or_else(|| FormatError::Invalid("GGUF output size overflows usize".to_owned()))?;
             output.resize(target, 0);
             output.extend_from_slice(&tensor.data);
         }
@@ -203,8 +244,16 @@ impl GgufReader {
         if cursor.read_u32()? != GGUF_VERSION {
             return Err(FormatError::Invalid("unsupported GGUF version".to_owned()));
         }
-        let tensor_count = cursor.read_u64()? as usize;
-        let metadata_count = cursor.read_u64()? as usize;
+        let tensor_count = usize::try_from(cursor.read_u64()?)
+            .map_err(|_| FormatError::Invalid("GGUF tensor count overflows usize".to_owned()))?;
+        let metadata_count = usize::try_from(cursor.read_u64()?).map_err(|_| {
+            FormatError::Invalid("GGUF metadata count overflows usize".to_owned())
+        })?;
+        if tensor_count > bytes.len() / 16 || metadata_count > bytes.len() / 9 {
+            return Err(FormatError::Invalid(
+                "GGUF header counts exceed file capacity".to_owned(),
+            ));
+        }
         let mut metadata = BTreeMap::new();
         for _ in 0..metadata_count {
             let key = cursor.read_string()?;
@@ -215,13 +264,20 @@ impl GgufReader {
             Some(GgufValue::U64(value)) => *value,
             _ => DEFAULT_ALIGNMENT,
         };
+        if alignment == 0 || !alignment.is_power_of_two() {
+            return Err(FormatError::Invalid(
+                "GGUF alignment must be a non-zero power of two".to_owned(),
+            ));
+        }
         let mut tensors = Vec::with_capacity(tensor_count);
         for _ in 0..tensor_count {
             let name = cursor.read_string()?;
             let dimensions = cursor.read_u32()? as usize;
             let mut shape = Vec::with_capacity(dimensions);
             for _ in 0..dimensions {
-                shape.push(cursor.read_u64()? as usize);
+                shape.push(usize::try_from(cursor.read_u64()?).map_err(|_| {
+                    FormatError::Invalid("GGUF tensor dimension overflows usize".to_owned())
+                })?);
             }
             let dtype = GgmlType::try_from(cursor.read_u32()?)?;
             let offset = cursor.read_u64()?;
@@ -234,7 +290,8 @@ impl GgufReader {
                 size,
             });
         }
-        let data_start = align_up(cursor.position() as u64, alignment) as usize;
+        let data_start = usize::try_from(align_up(cursor.position() as u64, alignment)?)
+            .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
         Ok(Self {
             bytes,
             metadata,
@@ -253,8 +310,15 @@ impl GgufReader {
 
     pub fn tensor_bytes(&self, name: &str) -> Result<&[u8]> {
         let info = self.tensor_info(name)?;
-        let start = self.data_start + info.offset as usize;
-        let end = start + info.size;
+        let offset = usize::try_from(info.offset)
+            .map_err(|_| FormatError::Invalid("GGUF tensor offset overflows usize".to_owned()))?;
+        let start = self
+            .data_start
+            .checked_add(offset)
+            .ok_or_else(|| FormatError::Invalid("GGUF tensor offset overflows usize".to_owned()))?;
+        let end = start
+            .checked_add(info.size)
+            .ok_or_else(|| FormatError::Invalid("GGUF tensor size overflows usize".to_owned()))?;
         self.bytes
             .get(start..end)
             .ok_or_else(|| FormatError::Invalid("GGUF tensor data is truncated".to_owned()))
@@ -327,14 +391,26 @@ impl GgufReader {
 }
 
 fn tensor_info_size(tensor: &PendingTensor) -> Result<usize> {
-    Ok(8 + tensor.name.len() + 4 + tensor.shape.len() * 8 + 4 + 8)
+    8usize
+        .checked_add(tensor.name.len())
+        .and_then(|size| size.checked_add(4))
+        .and_then(|size| size.checked_add(tensor.shape.len().checked_mul(8)?))
+        .and_then(|size| size.checked_add(4))
+        .and_then(|size| size.checked_add(8))
+        .ok_or_else(|| FormatError::Invalid("GGUF tensor info size overflows usize".to_owned()))
 }
 
 fn encode_tensor_info(output: &mut Vec<u8>, tensor: &PendingTensor, offset: u64) -> Result<()> {
     write_string(output, &tensor.name)?;
-    output.extend_from_slice(&(tensor.shape.len() as u32).to_le_bytes());
+    let dimensions = u32::try_from(tensor.shape.len())
+        .map_err(|_| FormatError::Invalid("GGUF tensor rank overflows u32".to_owned()))?;
+    output.extend_from_slice(&dimensions.to_le_bytes());
     for dimension in &tensor.shape {
-        output.extend_from_slice(&(*dimension as u64).to_le_bytes());
+        output.extend_from_slice(
+            &u64::try_from(*dimension)
+                .map_err(|_| FormatError::Invalid("GGUF dimension overflows u64".to_owned()))?
+                .to_le_bytes(),
+        );
     }
     output.extend_from_slice(&(tensor.dtype as u32).to_le_bytes());
     output.extend_from_slice(&offset.to_le_bytes());
@@ -368,7 +444,11 @@ fn encode_value(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
         }
         output.extend_from_slice(&9_u32.to_le_bytes());
         output.extend_from_slice(&element_kind.to_le_bytes());
-        output.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        output.extend_from_slice(
+            &u64::try_from(values.len())
+                .map_err(|_| FormatError::Invalid("GGUF metadata array is too large".to_owned()))?
+                .to_le_bytes(),
+        );
         for item in values {
             encode_scalar(output, item)?;
         }
@@ -427,19 +507,36 @@ fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
                     "Q8_0 tensor is not block aligned".to_owned(),
                 ));
             }
-            Ok(elements / 32 * 34)
+            (elements / 32)
+                .checked_mul(34)
+                .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned()))
         }
     }
 }
 
 fn write_string(output: &mut Vec<u8>, value: &str) -> Result<()> {
-    output.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    output.extend_from_slice(
+        &u64::try_from(value.len())
+            .map_err(|_| FormatError::Invalid("GGUF string is too large".to_owned()))?
+            .to_le_bytes(),
+    );
     output.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
-fn align_up(value: u64, alignment: u64) -> u64 {
-    value.div_ceil(alignment) * alignment
+fn align_up(value: u64, alignment: u64) -> Result<u64> {
+    if alignment == 0 {
+        return Err(FormatError::Invalid(
+            "GGUF alignment must be non-zero".to_owned(),
+        ));
+    }
+    let remainder = value % alignment;
+    if remainder == 0 {
+        return Ok(value);
+    }
+    value
+        .checked_add(alignment - remainder)
+        .ok_or_else(|| FormatError::Invalid("GGUF alignment overflows u64".to_owned()))
 }
 
 struct Cursor<'a> {
@@ -457,7 +554,10 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_exact(&mut self, length: usize) -> Result<&'a [u8]> {
-        let end = self.position + length;
+        let end = self
+            .position
+            .checked_add(length)
+            .ok_or_else(|| FormatError::Invalid("GGUF cursor overflows usize".to_owned()))?;
         let slice = self
             .bytes
             .get(self.position..end)
@@ -475,7 +575,8 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_string(&mut self) -> Result<String> {
-        let length = self.read_u64()? as usize;
+        let length = usize::try_from(self.read_u64()?)
+            .map_err(|_| FormatError::Invalid("GGUF string length overflows usize".to_owned()))?;
         String::from_utf8(self.read_exact(length)?.to_vec())
             .map_err(|_| FormatError::Invalid("GGUF string is not UTF-8".to_owned()))
     }
@@ -484,7 +585,14 @@ impl<'a> Cursor<'a> {
         let kind = self.read_u32()?;
         if kind == 9 {
             let element_kind = self.read_u32()?;
-            let length = self.read_u64()? as usize;
+            let length = usize::try_from(self.read_u64()?).map_err(|_| {
+                FormatError::Invalid("GGUF metadata array length overflows usize".to_owned())
+            })?;
+            if length > self.bytes.len().saturating_sub(self.position) {
+                return Err(FormatError::Invalid(
+                    "GGUF metadata array exceeds file capacity".to_owned(),
+                ));
+            }
             let mut values = Vec::with_capacity(length);
             for _ in 0..length {
                 values.push(self.read_scalar(element_kind)?);
@@ -516,7 +624,7 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{GgmlType, GgufReader, GgufValue, GgufWriter};
+    use super::{FormatError, GgmlType, GgufReader, GgufValue, GgufWriter};
     use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor};
 
     #[test]
@@ -579,5 +687,22 @@ mod tests {
             reader.tensor_q8_0("blk.0.attn_q.weight").unwrap(),
             quantized
         );
+    }
+
+    #[test]
+    fn rejects_zero_alignment_in_untrusted_gguf() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&17_u64.to_le_bytes());
+        bytes.extend_from_slice(b"general.alignment");
+        bytes.extend_from_slice(&4_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u32.to_le_bytes());
+        assert!(matches!(
+            GgufReader::open(bytes),
+            Err(FormatError::Invalid(_))
+        ));
     }
 }

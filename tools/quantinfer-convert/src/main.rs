@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use quantinfer_core::Tensor;
@@ -159,18 +160,25 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    let mut written_names = BTreeSet::new();
     for (name, info) in weights.tensors() {
         let values = weights
             .tensor_f32(name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
         let canonical_name = canonical_tensor_name(name);
+        let output_name = canonical_name.as_deref().unwrap_or(name);
+        if !written_names.insert(output_name.to_owned()) {
+            return Err(format!(
+                "multiple SafeTensors entries map to GGUF tensor {output_name}"
+            ));
+        }
         let (shape, values) = canonicalize_tensor_layout(
-            canonical_name.as_deref().unwrap_or(name),
+            output_name,
             &info.shape,
             values,
         )?;
         if quantization.as_deref() == Some("q8_0")
-            && is_quantizable_linear(canonical_name.as_deref().unwrap_or(name))
+            && is_quantizable_linear(output_name)
             && values
                 .len()
                 .is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE)
@@ -179,13 +187,14 @@ fn run() -> Result<(), String> {
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q8_0(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            writer.add_q8_0_tensor(canonical_name.as_deref().unwrap_or(name), &quantized);
+            writer.add_q8_0_tensor(output_name, &quantized);
         } else {
             writer
-                .add_f32_tensor(canonical_name.as_deref().unwrap_or(name), shape, &values)
+                .add_f32_tensor(output_name, shape, &values)
                 .map_err(|error| format!("cannot add tensor {name}: {error}"))?;
         }
     }
+    validate_required_tensors(&config, &written_names)?;
     let bytes = writer
         .finish()
         .map_err(|error| format!("cannot write GGUF: {error}"))?;
@@ -197,6 +206,45 @@ fn run() -> Result<(), String> {
         output_path.display()
     );
     Ok(())
+}
+
+fn validate_required_tensors(
+    config: &Qwen3Config,
+    written_names: &BTreeSet<String>,
+) -> Result<(), String> {
+    let mut required = vec!["token_embd.weight".to_owned(), "output_norm.weight".to_owned()];
+    if !config.tie_word_embeddings {
+        required.push("output.weight".to_owned());
+    }
+    for layer in 0..config.num_hidden_layers {
+        for suffix in [
+            "attn_norm",
+            "attn_q",
+            "attn_q_norm",
+            "attn_k",
+            "attn_k_norm",
+            "attn_v",
+            "attn_output",
+            "ffn_norm",
+            "ffn_gate",
+            "ffn_up",
+            "ffn_down",
+        ] {
+            required.push(format!("blk.{layer}.{suffix}.weight"));
+        }
+    }
+    let missing: Vec<_> = required
+        .into_iter()
+        .filter(|name| !written_names.contains(name))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "converted checkpoint is missing required Qwen3 tensors: {}",
+            missing.join(", ")
+        ))
+    }
 }
 
 fn required_path(arguments: &[String], flag: &str) -> Result<PathBuf, String> {
@@ -244,7 +292,12 @@ fn load_tokenizer_metadata(
         .filter_map(Value::as_u64)
         .max()
         .ok_or_else(|| "tokenizer.json model.vocab is empty".to_owned())?;
-    let mut tokens = vec![None; usize::try_from(maximum_id).unwrap_or(usize::MAX) + 1];
+    let maximum_id = usize::try_from(maximum_id)
+        .map_err(|_| "tokenizer vocabulary id overflows usize".to_owned())?;
+    let token_count = maximum_id
+        .checked_add(1)
+        .ok_or_else(|| "tokenizer vocabulary size overflows usize".to_owned())?;
+    let mut tokens = vec![None; token_count];
     for (token, value) in vocab {
         let token_id = value
             .as_u64()
