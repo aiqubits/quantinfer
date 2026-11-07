@@ -245,6 +245,12 @@ dependencies = [
 [[package]]
 name = "quantinfer-xtask"
 version = "0.1.0"
+dependencies = [
+ "quantinfer-backend-cpu",
+ "quantinfer-core",
+ "quantinfer-kernel",
+ "quantinfer-quant",
+]
 
 [[package]]
 name = "quote"

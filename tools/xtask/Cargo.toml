@@ -3,3 +3,9 @@ name = "quantinfer-xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+quantinfer-backend-cpu = { workspace = true }
+quantinfer-core = { workspace = true }
+quantinfer-kernel = { workspace = true }
+quantinfer-quant = { workspace = true }
