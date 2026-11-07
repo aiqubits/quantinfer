@@ -192,10 +192,9 @@ impl GgufWriter {
             data_offset = align_up(data_offset, self.alignment)?;
             encode_tensor_info(&mut infos, tensor, data_offset)?;
             data_offset = data_offset
-                .checked_add(
-                    u64::try_from(tensor.data.len())
-                        .map_err(|_| FormatError::Invalid("GGUF tensor size overflows u64".to_owned()))?,
-                )
+                .checked_add(u64::try_from(tensor.data.len()).map_err(|_| {
+                    FormatError::Invalid("GGUF tensor size overflows u64".to_owned())
+                })?)
                 .ok_or_else(|| FormatError::Invalid("GGUF data size overflows u64".to_owned()))?;
         }
 
@@ -216,10 +215,14 @@ impl GgufWriter {
             let relative = u64::try_from(output.len() - data_start)
                 .map_err(|_| FormatError::Invalid("GGUF output offset overflows u64".to_owned()))?;
             let target = data_start
-                .checked_add(usize::try_from(align_up(relative, self.alignment)?).map_err(
-                    |_| FormatError::Invalid("GGUF output offset overflows usize".to_owned()),
-                )?)
-                .ok_or_else(|| FormatError::Invalid("GGUF output size overflows usize".to_owned()))?;
+                .checked_add(
+                    usize::try_from(align_up(relative, self.alignment)?).map_err(|_| {
+                        FormatError::Invalid("GGUF output offset overflows usize".to_owned())
+                    })?,
+                )
+                .ok_or_else(|| {
+                    FormatError::Invalid("GGUF output size overflows usize".to_owned())
+                })?;
             output.resize(target, 0);
             output.extend_from_slice(&tensor.data);
         }
@@ -246,9 +249,8 @@ impl GgufReader {
         }
         let tensor_count = usize::try_from(cursor.read_u64()?)
             .map_err(|_| FormatError::Invalid("GGUF tensor count overflows usize".to_owned()))?;
-        let metadata_count = usize::try_from(cursor.read_u64()?).map_err(|_| {
-            FormatError::Invalid("GGUF metadata count overflows usize".to_owned())
-        })?;
+        let metadata_count = usize::try_from(cursor.read_u64()?)
+            .map_err(|_| FormatError::Invalid("GGUF metadata count overflows usize".to_owned()))?;
         if tensor_count > bytes.len() / 16 || metadata_count > bytes.len() / 9 {
             return Err(FormatError::Invalid(
                 "GGUF header counts exceed file capacity".to_owned(),

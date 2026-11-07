@@ -188,10 +188,7 @@ fn byte_level_segments(text: &str) -> Result<Vec<&str>> {
             segments.push(&text[start..cursor]);
             continue;
         }
-        let mut character = rest
-            .chars()
-            .next()
-            .expect("cursor is below text length");
+        let mut character = rest.chars().next().expect("cursor is below text length");
         if character == ' ' {
             let next = rest[character.len_utf8()..].chars().next();
             if next.is_some_and(|next| !next.is_whitespace()) {

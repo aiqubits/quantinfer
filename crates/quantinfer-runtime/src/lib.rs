@@ -294,12 +294,9 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
         candidates.truncate(kept.max(1));
     }
     if config.temperature == 0.0 {
-        return candidates
-            .first()
-            .map(|(index, _)| *index)
-            .ok_or_else(|| {
-                RuntimeError::InvalidInput("sampling candidate set is empty".to_owned())
-            });
+        return candidates.first().map(|(index, _)| *index).ok_or_else(|| {
+            RuntimeError::InvalidInput("sampling candidate set is empty".to_owned())
+        });
     }
     let maximum = candidates[0].1;
     let weights: Vec<f32> = candidates

@@ -1,6 +1,6 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use quantinfer_core::Tensor;
@@ -172,11 +172,7 @@ fn run() -> Result<(), String> {
                 "multiple SafeTensors entries map to GGUF tensor {output_name}"
             ));
         }
-        let (shape, values) = canonicalize_tensor_layout(
-            output_name,
-            &info.shape,
-            values,
-        )?;
+        let (shape, values) = canonicalize_tensor_layout(output_name, &info.shape, values)?;
         if quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(output_name)
             && values
@@ -212,7 +208,10 @@ fn validate_required_tensors(
     config: &Qwen3Config,
     written_names: &BTreeSet<String>,
 ) -> Result<(), String> {
-    let mut required = vec!["token_embd.weight".to_owned(), "output_norm.weight".to_owned()];
+    let mut required = vec![
+        "token_embd.weight".to_owned(),
+        "output_norm.weight".to_owned(),
+    ];
     if !config.tie_word_embeddings {
         required.push("output.weight".to_owned());
     }
