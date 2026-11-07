@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use half::f16;
+use half::{bf16, f16};
 use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor, Q8_0_BLOCK_SIZE};
 
 pub type Result<T> = std::result::Result<T, FormatError>;
@@ -58,7 +58,9 @@ pub enum GgufValue {
 #[repr(u32)]
 pub enum GgmlType {
     F32 = 0,
+    F16 = 1,
     Q8_0 = 8,
+    BF16 = 30,
 }
 
 impl TryFrom<u32> for GgmlType {
@@ -67,7 +69,9 @@ impl TryFrom<u32> for GgmlType {
     fn try_from(value: u32) -> Result<Self> {
         match value {
             0 => Ok(Self::F32),
+            1 => Ok(Self::F16),
             8 => Ok(Self::Q8_0),
+            30 => Ok(Self::BF16),
             _ => Err(FormatError::Invalid(format!(
                 "unsupported GGML tensor type {value}"
             ))),
@@ -140,6 +144,66 @@ impl GgufWriter {
             name: name.into(),
             shape,
             dtype: GgmlType::F32,
+            data,
+        });
+        Ok(())
+    }
+
+    pub fn add_f16_tensor(
+        &mut self,
+        name: impl Into<String>,
+        shape: impl Into<Vec<usize>>,
+        values: &[f32],
+    ) -> Result<()> {
+        let shape = shape.into();
+        let elements = shape.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| FormatError::Invalid("tensor shape overflows usize".to_owned()))
+        })?;
+        if elements != values.len() {
+            return Err(FormatError::Invalid(
+                "F16 tensor shape does not match data length".to_owned(),
+            ));
+        }
+        let mut data = Vec::with_capacity(values.len() * std::mem::size_of::<f16>());
+        for value in values {
+            data.extend_from_slice(&f16::from_f32(*value).to_le_bytes());
+        }
+        self.tensors.push(PendingTensor {
+            name: name.into(),
+            shape,
+            dtype: GgmlType::F16,
+            data,
+        });
+        Ok(())
+    }
+
+    pub fn add_bf16_tensor(
+        &mut self,
+        name: impl Into<String>,
+        shape: impl Into<Vec<usize>>,
+        values: &[f32],
+    ) -> Result<()> {
+        let shape = shape.into();
+        let elements = shape.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| FormatError::Invalid("tensor shape overflows usize".to_owned()))
+        })?;
+        if elements != values.len() {
+            return Err(FormatError::Invalid(
+                "BF16 tensor shape does not match data length".to_owned(),
+            ));
+        }
+        let mut data = Vec::with_capacity(values.len() * std::mem::size_of::<bf16>());
+        for value in values {
+            data.extend_from_slice(&bf16::from_f32(*value).to_le_bytes());
+        }
+        self.tensors.push(PendingTensor {
+            name: name.into(),
+            shape,
+            dtype: GgmlType::BF16,
             data,
         });
         Ok(())
@@ -335,21 +399,53 @@ impl GgufReader {
 
     pub fn tensor_f32(&self, name: &str) -> Result<Tensor> {
         let info = self.tensor_info(name)?;
-        if info.dtype != GgmlType::F32 {
-            return Err(FormatError::Invalid(format!(
-                "GGUF tensor {name} has type {:?}, expected F32",
-                info.dtype
-            )));
-        }
         let bytes = self.tensor_bytes(name)?;
-        let mut values = Vec::with_capacity(info.shape.iter().product::<usize>());
-        let (chunks, remainder) = bytes.as_chunks::<4>();
-        for chunk in chunks {
-            values.push(f32::from_le_bytes(*chunk));
-        }
-        if !remainder.is_empty() || values.len() != info.shape.iter().product::<usize>() {
+        let values = match info.dtype {
+            GgmlType::F32 => {
+                let (chunks, remainder) = bytes.as_chunks::<4>();
+                if !remainder.is_empty() {
+                    return Err(FormatError::Invalid(format!(
+                        "GGUF F32 tensor {name} has an invalid byte length"
+                    )));
+                }
+                chunks
+                    .iter()
+                    .map(|chunk| f32::from_le_bytes(*chunk))
+                    .collect()
+            }
+            GgmlType::F16 => {
+                let (chunks, remainder) = bytes.as_chunks::<2>();
+                if !remainder.is_empty() {
+                    return Err(FormatError::Invalid(format!(
+                        "GGUF F16 tensor {name} has an invalid byte length"
+                    )));
+                }
+                chunks
+                    .iter()
+                    .map(|chunk| f16::from_le_bytes(*chunk).to_f32())
+                    .collect()
+            }
+            GgmlType::BF16 => {
+                let (chunks, remainder) = bytes.as_chunks::<2>();
+                if !remainder.is_empty() {
+                    return Err(FormatError::Invalid(format!(
+                        "GGUF BF16 tensor {name} has an invalid byte length"
+                    )));
+                }
+                chunks
+                    .iter()
+                    .map(|chunk| bf16::from_le_bytes(*chunk).to_f32())
+                    .collect()
+            }
+            GgmlType::Q8_0 => {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {name} has type Q8_0, expected floating point"
+                )))
+            }
+        };
+        if values.len() != info.shape.iter().product::<usize>() {
             return Err(FormatError::Invalid(format!(
-                "GGUF F32 tensor {name} has an invalid byte length"
+                "GGUF tensor {name} has an invalid byte length"
             )));
         }
         Ok(Tensor::from_f32(info.shape.clone(), values)?)
@@ -503,6 +599,9 @@ fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
         GgmlType::F32 => elements
             .checked_mul(4)
             .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned())),
+        GgmlType::F16 | GgmlType::BF16 => elements
+            .checked_mul(2)
+            .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned())),
         GgmlType::Q8_0 => {
             if !elements.is_multiple_of(32) {
                 return Err(FormatError::Invalid(
@@ -640,6 +739,12 @@ mod tests {
         writer
             .add_f32_tensor("token_embd.weight", vec![2, 2], &[1.0, 2.0, 3.0, 4.0])
             .unwrap();
+        writer
+            .add_f16_tensor("f16.weight", vec![2], &[1.0, 2.0])
+            .unwrap();
+        writer
+            .add_bf16_tensor("bf16.weight", vec![2], &[3.0, 4.0])
+            .unwrap();
         let bytes = writer.finish().unwrap();
         let reader = GgufReader::open(bytes).unwrap();
         assert_eq!(
@@ -651,6 +756,14 @@ mod tests {
         assert_eq!(
             reader.tensor_f32("token_embd.weight").unwrap(),
             Tensor::from_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap()
+        );
+        assert_eq!(
+            reader.tensor_f32("f16.weight").unwrap(),
+            Tensor::from_f32(vec![2], vec![1.0, 2.0]).unwrap()
+        );
+        assert_eq!(
+            reader.tensor_f32("bf16.weight").unwrap(),
+            Tensor::from_f32(vec![2], vec![3.0, 4.0]).unwrap()
         );
     }
 

@@ -297,7 +297,11 @@ impl<B: KernelBackend> Qwen3Model<B> {
         let embedding = reader.tensor_f32("token_embd.weight")?;
         let final_norm = reader.tensor_f32("output_norm.weight")?;
         let lm_head = match reader.tensor_info("output.weight") {
-            Ok(info) if info.dtype == GgmlType::F32 => reader.tensor_f32("output.weight")?,
+            Ok(info)
+                if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) =>
+            {
+                reader.tensor_f32("output.weight")?
+            }
             Ok(info) => {
                 return Err(RuntimeError::InvalidInput(format!(
                     "GGUF output.weight has unsupported type {:?}",
@@ -330,7 +334,9 @@ impl<B: KernelBackend> Qwen3Model<B> {
 
 fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
     match reader.tensor_info(name)?.dtype {
-        GgmlType::F32 => Ok(LinearWeight::F32(reader.tensor_f32(name)?)),
+        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
+            Ok(LinearWeight::F32(reader.tensor_f32(name)?))
+        }
         GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
     }
 }
