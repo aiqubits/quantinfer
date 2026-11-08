@@ -191,11 +191,11 @@ impl KernelBackend for CpuScalar {
                     token * pair_count
                 };
                 for pair in 0..pair_count {
-                    let first = input_values[start + pair * 2];
-                    let second = input_values[start + pair * 2 + 1];
-                    output[start + pair * 2] =
+                    let first = input_values[start + pair];
+                    let second = input_values[start + pair_count + pair];
+                    output[start + pair] =
                         first * cos[table_offset + pair] - second * sin[table_offset + pair];
-                    output[start + pair * 2 + 1] =
+                    output[start + pair_count + pair] =
                         first * sin[table_offset + pair] + second * cos[table_offset + pair];
                 }
             }
@@ -246,5 +246,15 @@ mod tests {
             .unwrap();
         let result = backend.matmul_q8_0(&lhs, &rhs).unwrap();
         assert_eq!(result.as_f32().unwrap(), &[64.0]);
+    }
+
+    #[test]
+    fn applies_half_split_rope_rotation() {
+        let backend = CpuScalar::new();
+        let input = Tensor::from_f32(vec![1, 1, 4], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let output = backend
+            .apply_rope(&input, &[0.0, 1.0], &[1.0, 0.0])
+            .unwrap();
+        assert_eq!(output.as_f32().unwrap(), &[-3.0, 2.0, 1.0, 4.0]);
     }
 }
