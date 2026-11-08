@@ -79,6 +79,14 @@ impl Qwen3Config {
         if self.rms_norm_eps <= 0.0 || self.rope_theta <= 0.0 {
             return Err("Qwen3 normalization epsilon and RoPE theta must be positive".to_owned());
         }
+        if !self.architectures.is_empty()
+            && !self
+                .architectures
+                .iter()
+                .any(|architecture| architecture == "Qwen3ForCausalLM")
+        {
+            return Err("Qwen3 config does not declare Qwen3ForCausalLM".to_owned());
+        }
         if self.use_sliding_window || self.sliding_window.is_some() {
             return Err("sliding-window attention is not implemented in the first MVP".to_owned());
         }

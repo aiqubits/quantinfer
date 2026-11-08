@@ -124,15 +124,14 @@ fn run() -> Result<(), String> {
                 config.vocab_size
             ));
         }
+        let mut tokens = tokenizer.tokens;
+        while tokens.len() < config.vocab_size {
+            let token_id = tokens.len();
+            tokens.push(format!("<|reserved_{token_id}|>"));
+        }
         writer.insert_metadata(
             "tokenizer.ggml.tokens",
-            GgufValue::Array(
-                tokenizer
-                    .tokens
-                    .into_iter()
-                    .map(GgufValue::String)
-                    .collect(),
-            ),
+            GgufValue::Array(tokens.into_iter().map(GgufValue::String).collect()),
         );
         if !tokenizer.merges.is_empty() {
             writer.insert_metadata(

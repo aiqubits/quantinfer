@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use unicode_normalization::UnicodeNormalization;
+
 pub type Result<T> = std::result::Result<T, TokenizerError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,77 +182,142 @@ fn byte_level_segments(text: &str) -> Result<Vec<&str>> {
     while cursor < text.len() {
         let start = cursor;
         let rest = &text[cursor..];
-        if let Some(length) = ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
-            .iter()
-            .find_map(|suffix| rest.starts_with(suffix).then_some(suffix.len()))
-        {
+        if let Some(length) = contraction_length(rest) {
             cursor += length;
             segments.push(&text[start..cursor]);
             continue;
         }
-        let mut character = rest.chars().next().expect("cursor is below text length");
-        if character == ' ' {
-            let next = rest[character.len_utf8()..].chars().next();
-            if next.is_some_and(|next| !next.is_whitespace()) {
+        let character = rest.chars().next().expect("cursor is below text length");
+        let next = rest[character.len_utf8()..].chars().next();
+        if character.is_alphabetic()
+            || (!character.is_alphanumeric()
+                && character != '\r'
+                && character != '\n'
+                && next.is_some_and(char::is_alphabetic))
+        {
+            if !character.is_alphabetic() {
                 cursor += character.len_utf8();
-                character = next.expect("space is followed by a character");
             }
-        }
-        if character.is_alphabetic() {
-            cursor += character.len_utf8();
-            while cursor < text.len() {
-                let next = text[cursor..]
-                    .chars()
-                    .next()
-                    .expect("cursor is below text length");
-                if !next.is_alphabetic() {
-                    break;
-                }
-                cursor += next.len_utf8();
-            }
+            consume_while(text, &mut cursor, char::is_alphabetic);
         } else if character.is_numeric() {
             cursor += character.len_utf8();
-            for _ in 1..3 {
-                let Some(next) = text[cursor..].chars().next() else {
-                    break;
-                };
-                if !next.is_numeric() {
-                    break;
-                }
-                cursor += next.len_utf8();
-            }
-        } else if character.is_whitespace() {
+        } else if character == ' ' && next.is_some_and(is_punctuation) {
             cursor += character.len_utf8();
-            while cursor < text.len() {
-                let next = text[cursor..]
-                    .chars()
-                    .next()
-                    .expect("cursor is below text length");
-                if !next.is_whitespace() {
-                    break;
-                }
-                cursor += next.len_utf8();
-            }
+            consume_punctuation(text, &mut cursor);
+        } else if is_punctuation(character) {
+            consume_punctuation(text, &mut cursor);
+        } else if character.is_whitespace() {
+            consume_whitespace(text, &mut cursor);
         } else {
             cursor += character.len_utf8();
-            while cursor < text.len() {
-                let next = text[cursor..]
-                    .chars()
-                    .next()
-                    .expect("cursor is below text length");
-                if next.is_alphanumeric() || next.is_whitespace() {
-                    break;
-                }
-                cursor += next.len_utf8();
-            }
         }
         segments.push(&text[start..cursor]);
     }
     Ok(segments)
 }
 
+fn contraction_length(text: &str) -> Option<usize> {
+    ["'s", "'t", "'re", "'ve", "'m", "'ll", "'d"]
+        .iter()
+        .find_map(|suffix| {
+            text.get(..suffix.len())
+                .filter(|prefix| prefix.eq_ignore_ascii_case(suffix))
+                .map(|_| suffix.len())
+        })
+}
+
+fn is_punctuation(character: char) -> bool {
+    !character.is_alphanumeric() && !character.is_whitespace()
+}
+
+fn consume_while(text: &str, cursor: &mut usize, predicate: fn(char) -> bool) {
+    while *cursor < text.len() {
+        let character = text[*cursor..]
+            .chars()
+            .next()
+            .expect("cursor is below text length");
+        if !predicate(character) {
+            break;
+        }
+        *cursor += character.len_utf8();
+    }
+}
+
+fn consume_punctuation(text: &str, cursor: &mut usize) {
+    consume_while(text, cursor, is_punctuation);
+    while *cursor < text.len() {
+        let character = text[*cursor..]
+            .chars()
+            .next()
+            .expect("cursor is below text length");
+        if character != '\r' && character != '\n' {
+            break;
+        }
+        *cursor += character.len_utf8();
+    }
+}
+
+fn consume_whitespace(text: &str, cursor: &mut usize) {
+    let mut scan = *cursor;
+    while scan < text.len() {
+        let character = text[scan..]
+            .chars()
+            .next()
+            .expect("scan is below text length");
+        if !character.is_whitespace() {
+            break;
+        }
+        scan += character.len_utf8();
+    }
+    let whitespace = &text[*cursor..scan];
+    if whitespace
+        .chars()
+        .any(|character| character == '\r' || character == '\n')
+    {
+        let mut newline_end = *cursor;
+        while newline_end < text.len() {
+            let character = text[newline_end..]
+                .chars()
+                .next()
+                .expect("newline scan is below text length");
+            if character != '\r' && character != '\n' {
+                break;
+            }
+            newline_end += character.len_utf8();
+        }
+        if newline_end == *cursor {
+            while *cursor < text.len() {
+                let character = text[*cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is below text length");
+                if character != ' ' && character != '\t' {
+                    break;
+                }
+                *cursor += character.len_utf8();
+            }
+            while *cursor < text.len() {
+                let character = text[*cursor..]
+                    .chars()
+                    .next()
+                    .expect("cursor is below text length");
+                if character != '\r' && character != '\n' {
+                    break;
+                }
+                *cursor += character.len_utf8();
+            }
+        } else {
+            *cursor = newline_end;
+        }
+    } else {
+        *cursor = scan;
+    }
+}
+
 impl Tokenizer for GgufBpeTokenizer {
     fn encode(&self, text: &str) -> Result<Vec<usize>> {
+        let normalized = text.nfc().collect::<String>();
+        let text = normalized.as_str();
         let mut output = Vec::new();
         let mut segment_start = 0;
         let mut cursor = 0;
@@ -313,7 +380,16 @@ impl Tokenizer for GgufBpeTokenizer {
 }
 
 fn is_special_token(token: &str) -> bool {
-    token.starts_with("<|") && token.ends_with("|>")
+    (token.starts_with("<|") && token.ends_with("|>"))
+        || matches!(
+            token,
+            "<think>"
+                | "</think>"
+                | "<tool_call>"
+                | "</tool_call>"
+                | "<tool_response>"
+                | "</tool_response>"
+        )
 }
 
 fn byte_encoder() -> [char; 256] {
@@ -433,7 +509,7 @@ impl Qwen3ChatTemplate {
         if add_generation_prompt {
             output.push_str("<|im_start|>assistant\n");
             if thinking == ThinkingMode::Disabled {
-                output.push_str("/no_think\n");
+                output.push_str("<think>\n\n</think>\n\n");
             }
         }
         Ok(output)
@@ -464,7 +540,7 @@ mod tests {
             )
             .unwrap();
         assert!(prompt.contains("<|im_start|>user"));
-        assert!(prompt.ends_with("<|im_start|>assistant\n/no_think\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
     }
 
     #[test]

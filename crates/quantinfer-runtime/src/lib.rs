@@ -80,12 +80,17 @@ impl KvCache {
                 "KV cache dimensions must be greater than zero".to_owned(),
             ));
         }
-        let layer_capacity = max_sequence_length * num_key_value_heads * head_dim;
+        max_sequence_length
+            .checked_mul(num_key_value_heads)
+            .and_then(|value| value.checked_mul(head_dim))
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("KV cache dimensions overflow usize".to_owned())
+            })?;
         Ok(Self {
             layers: (0..num_layers)
                 .map(|_| LayerKvCache {
-                    keys: Vec::with_capacity(layer_capacity),
-                    values: Vec::with_capacity(layer_capacity),
+                    keys: Vec::new(),
+                    values: Vec::new(),
                     sequence_length: 0,
                 })
                 .collect(),

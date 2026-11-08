@@ -21,11 +21,11 @@ Qwen3 MoE、sliding-window、custom RoPE scaling、GPU 后端、分片 SafeTenso
 
 ## 2. 主机准备
 
-以下命令适用于 Debian/Ubuntu。部署目录由 `quantinfer` 用户管理。
+以下命令适用于 Debian/Ubuntu。模型、GGUF 和日志目录由 `quantinfer` 用户管理。
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential git ca-certificates coreutils python3-full python3-venv cargo rustc
+sudo apt-get install -y build-essential git ca-certificates coreutils python3-full python3-venv curl time
 sudo useradd --system --home /opt/quantinfer --shell /usr/sbin/nologin quantinfer || true
 sudo install -d -o quantinfer -g quantinfer -m 0750 \
   /opt/quantinfer/releases \
@@ -33,12 +33,21 @@ sudo install -d -o quantinfer -g quantinfer -m 0750 \
   /opt/quantinfer/models/source \
   /opt/quantinfer/jobs \
   /var/lib/quantinfer/logs
+if ! command -v rustup >/dev/null 2>&1; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
+if [ -f "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+rustup toolchain install stable
+rustup component add rustfmt clippy
 ```
 
 ## 3. 获取并固定代码
 
 ```bash
-sudo -u quantinfer git clone https://github.com/aiqubits/quantinfer.git /opt/quantinfer/src
+sudo git clone https://github.com/aiqubits/quantinfer.git /opt/quantinfer/src
 cd /opt/quantinfer/src
 git checkout f6a44e9fd265c5f06bf323cef02a2230a4ec5221
 git rev-parse HEAD
@@ -119,7 +128,7 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转�
 
 - 官方仓库提供 `model.safetensors.index.json` 和多个权重分片，当前转换器不能直接读取。
 - 4B 模型在 CPU Scalar 下的内存和延迟预算显著高于 0.6B，必须先用目标主机完成 RSS、Prefill 和 Decode 压测。
-- 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 `Qwen3ChatTemplate` 是简化模板，并会在非 thinking 模式追加 `/no_think`，不能直接视为官方模板等价物。
+- 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 `Qwen3ChatTemplate` 只覆盖单轮 Qwen3-0.6B prompt，不覆盖 4B-Instruct-2507 的完整模板语义。
 
 因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再把 4B 设为生产模型。
 
@@ -139,11 +148,12 @@ sha256sum "$MODEL_DIR/qwen3-q8_0.gguf" | sudo tee "$MODEL_DIR/qwen3-q8_0.gguf.sh
 sudo ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
 ```
 
-转换器会校验 Qwen3 必需 Tensor、canonical 名称重复、head_dim、sliding-window、RoPE scaling、tokenizer vocab 和 SafeTensors shape/offset。
+转换器会校验 SafeTensors 文件结构、Tensor 数据长度、Qwen3 配置约束、required Tensor 名称和 canonical 名称重复。完整 Tensor shape 语义会在 GGUF 模型加载时继续校验。
 
 ## 6. 检查 GGUF
 
 ```bash
+set -o pipefail
 /opt/quantinfer/current/quantinfer-cli \
   inspect-gguf \
   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
@@ -157,7 +167,14 @@ grep -E 'token_embd\.weight|output_norm\.weight|blk\.0\.attn_q\.weight|blk\.0\.f
   /var/lib/quantinfer/logs/inspect-qwen3.log
 ```
 
-`inspect-gguf` 当前输出 metadata 数量和 Tensor inventory，不输出 metadata 键值。Qwen3 metadata 和 tokenizer metadata 会在下面的模型加载与 prompt smoke test 中被实际读取，缺失时命令会失败。
+确认关键 metadata key 存在。
+
+```bash
+grep -E 'metadata_key=(general\.architecture|qwen3\.context_length|qwen3\.embedding_length|qwen3\.vocab_size|qwen3\.feed_forward_length|qwen3\.block_count|qwen3\.attention\.head_count|qwen3\.attention\.head_count_kv|qwen3\.attention\.head_dim|qwen3\.rope\.freq_base|qwen3\.attention\.layer_norm_rms_epsilon|tokenizer\.ggml\.tokens|tokenizer\.ggml\.merges|tokenizer\.ggml\.eos_token_id)' \
+  /var/lib/quantinfer/logs/inspect-qwen3.log
+```
+
+`inspect-gguf` 输出 metadata 数量、metadata key 和 Tensor inventory。metadata 值与 Tensor shape 会在模型加载和 prompt smoke test 中继续校验。
 
 执行第 5 至第 8 节前，确认发布入口存在。缺少该文件时先完成第 3 节，不能直接运行推理命令。
 
@@ -172,11 +189,13 @@ test -x /opt/quantinfer/current/quantinfer-cli
 显式 token ID 测试模型加载、Prefill、Decode、KV Cache 和 EOS。
 
 ```bash
+set -o pipefail
 /opt/quantinfer/current/quantinfer-cli \
   generate \
   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
   --tokens 1,2,3 \
   --max-new-tokens 16 \
+  --max-sequence-length 4096 \
   --temperature 0 \
   --eos-token-id 151645 \
   | tee /var/lib/quantinfer/logs/smoke-token-ids.log
@@ -184,7 +203,7 @@ test -x /opt/quantinfer/current/quantinfer-cli
 
 ### 7.2 自然语言对话测试
 
-`generate` 当前是非流式 CLI。`apps/quantinfer-cli/src/main.rs` 中的 `generate` 函数会完成模型加载、tokenizer 编码、Prefill 和 Decode，最后一次性打印 `prompt_tokens`、`generated_tokens` 和 `generated_text`。`--chat` 只调用 `Qwen3ChatTemplate` 生成 prompt，不会启用流式输出。stdout 重定向到文件时，终端不会显示结果，`cmp` 在两个文件相同时也不会输出任何文本。
+`generate` 当前是非流式 CLI。`apps/quantinfer-cli/src/main.rs` 中的 `generate` 函数会完成模型加载、tokenizer 编码、Prefill 和 Decode，最后一次性打印 token、阶段耗时和 `generated_text`。`--chat` 生成 Qwen3-0.6B 单轮 prompt，不会启用流式输出。stdout 重定向到文件时，终端不会显示结果，`cmp` 在两个文件相同时也不会输出任何文本。
 
 使用 `tee` 同时保留日志和终端输出，并让 pipeline 传播 CLI 失败状态。
 
@@ -197,6 +216,7 @@ for run in 1 2; do
     --prompt "请用一句话说明 QuantInfer 的用途。" \
     --chat \
     --max-new-tokens 16 \
+    --max-sequence-length 4096 \
     --temperature 0 \
     2>&1 | tee "/var/lib/quantinfer/logs/smoke-prompt-${run}.log"; then
     exit 1
@@ -228,11 +248,14 @@ cmp \
   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
   --prompt "health check" \
   --max-new-tokens 16 \
+  --max-sequence-length 4096 \
   --temperature 0 \
-  > /var/lib/quantinfer/logs/resource-baseline.log
+  > /var/lib/quantinfer/logs/resource-baseline.log 2>&1
 ```
 
-记录 CPU 型号、核心数、GGUF 大小、峰值 RSS、Prefill 时间和 Decode token 平均耗时。`quantinfer-xtask bench` 只验证 Q8_0 CPU 算子，不代表真实模型吞吐。
+记录 CPU 型号、核心数、GGUF 大小、峰值 RSS、`prefill_ms`、`decode_ms`、`decode_tokens` 和 `decode_tokens_per_sec`。`quantinfer-xtask bench` 只验证 Q8_0 CPU 算子，不代表真实模型吞吐。
+
+`--max-sequence-length` 限制 KV Cache 的最大序列长度。Qwen3-0.6B 的模型配置是 40960，keys 和 values 使用 F32 时理论容量约为 8.75 GiB。生产环境应先使用 4096 或更小值完成内存基线，再按业务上下文需求逐步增加。
 
 ## 9. 上线边界
 
