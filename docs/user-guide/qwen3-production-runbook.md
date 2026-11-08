@@ -1,14 +1,14 @@
-# QuantInfer Qwen3 量化与推理生产 Runbook
+# QuantInfer Qwen3-0.6B CPU 单机试运行 Runbook
 
-本文档适用于 Qwen3 Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口，`quantinfer-server` 不提供 HTTP 服务。
+本文档适用于 Qwen3-0.6B Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口，`quantinfer-server` 不提供 HTTP 服务。
 
-生产代码固定为经过 CI 验证的 commit。本文示例使用 `c79979a85d627648e7bf2bbbca09b3d4a276b283`，发布时替换为实际批准的 commit。
+运行代码固定为经过 CI 验证的 commit。本文示例使用 `c79979a85d627648e7bf2bbbca09b3d4a276b283`，发布时替换为实际批准的 commit。
 
 ## 1. 支持范围
 
 | 项目 | 支持范围 |
 | --- | --- |
-| 模型 | Qwen3 Dense |
+| 模型 | Qwen3-0.6B Dense |
 | 设备 | CPU Scalar |
 | 输入权重 | 单个 SafeTensors 文件 |
 | GGUF 浮点类型 | F32、F16、BF16，加载时转为 F32 |
@@ -124,13 +124,13 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转�
 
 [`Qwen/Qwen3-4B-Instruct-2507`](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507) 的 `config.json` 使用 `Qwen3ForCausalLM`、GQA、偶数 `head_dim`，并关闭 sliding-window 和 custom RoPE scaling，因此模型架构符合 QuantInfer 当前 Dense 校验。
 
-它不适合作为当前 Runbook 的直接生产示例，原因如下。
+它不适合作为当前 Runbook 的直接示例，原因如下。
 
 - 官方仓库提供 `model.safetensors.index.json` 和多个权重分片，当前转换器不能直接读取。
 - 4B 模型在 CPU Scalar 下的内存和延迟预算显著高于 0.6B，必须先用目标主机完成 RSS、Prefill 和 Decode 压测。
 - 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 `Qwen3ChatTemplate` 只覆盖单轮 Qwen3-0.6B prompt，不覆盖 4B-Instruct-2507 的完整模板语义。
 
-因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再把 4B 设为生产模型。
+因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再单独进行 4B 适配和验证。
 
 ## 5. 转换为 Q8_0 GGUF
 
@@ -237,7 +237,7 @@ cmp \
 - 有 `generated_tokens=` 但 `generated_text=` 为空，表示生成 token 全部被 `GgufBpeTokenizer::decode` 识别为 special token 并跳过。先用 token ID 检查生成结果，再检查 tokenizer metadata 与 EOS 配置。
 - 进程仍在运行且日志为空，表示当前实现还没有流式输出，仍在执行 Prefill 或 Decode。先将 `--max-new-tokens` 降到 1 或 4，确认路径后再增加长度。
 
-真实 tokenizer vectors 和真实 checkpoint logits 应在上线前加入回归门禁。
+真实 tokenizer vectors 和真实 checkpoint logits 应纳入后续版本的回归门禁。
 
 ## 8. 资源基线
 
@@ -255,8 +255,8 @@ cmp \
 
 记录 CPU 型号、核心数、GGUF 大小、峰值 RSS、`prefill_ms`、`decode_ms`、`decode_tokens` 和 `decode_tokens_per_sec`。`quantinfer-xtask bench` 只验证 Q8_0 CPU 算子，不代表真实模型吞吐。
 
-`--max-sequence-length` 限制 KV Cache 的最大序列长度。Qwen3-0.6B 的模型配置是 40960，keys 和 values 使用 F32 时理论容量约为 8.75 GiB。生产环境应先使用 4096 或更小值完成内存基线，再按业务上下文需求逐步增加。
+`--max-sequence-length` 限制 KV Cache 的最大序列长度。Qwen3-0.6B 的模型配置是 40960，keys 和 values 使用 F32 时理论容量约为 8.75 GiB。目标主机应先使用 4096 或更小值完成内存基线，再按业务上下文需求逐步增加。
 
-## 9. 上线边界
+## 9. 适用边界
 
-当前代码适合 CPU 单机、离线批处理和受控内网试运行。高并发在线服务需要常驻模型服务、多请求调度、真实 tokenizer golden 校验、真实 checkpoint 回归和性能压测。
+当前代码适合 Qwen3-0.6B CPU 单机、离线批处理和受控内网试运行。完整 Qwen3 在线生产平台属于第二版 MVP，待第二版 MVP 实现后单独补充对应运行手册。

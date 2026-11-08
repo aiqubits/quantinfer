@@ -1,3 +1,3 @@
 # User guide
 
-- [Qwen3 量化与推理生产 Runbook](qwen3-production-runbook.md)
+- [Qwen3-0.6B CPU 单机试运行 Runbook](qwen3-production-runbook.md)
