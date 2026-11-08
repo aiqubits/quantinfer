@@ -29,11 +29,15 @@ sudo apt-get install -y build-essential git ca-certificates coreutils python3-fu
 sudo useradd --system --home /opt/quantinfer --shell /usr/sbin/nologin quantinfer || true
 sudo install -d -o quantinfer -g quantinfer -m 0750 \
   /opt/quantinfer/releases \
-  /opt/quantinfer/models/qwen3 \
-  /opt/quantinfer/models/source \
+  /opt/quantinfer/models \
   /opt/quantinfer/jobs \
   /opt/quantinfer/.venv \
+  /opt/quantinfer/.cache \
   /var/lib/quantinfer/logs
+sudo install -d -o quantinfer -g quantinfer -m 0750 \
+  /opt/quantinfer/models/qwen3 \
+  /opt/quantinfer/models/source \
+  /opt/quantinfer/.cache/pip
 if ! command -v rustup >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 fi
@@ -86,22 +90,23 @@ readlink -f /opt/quantinfer/current/quantinfer-cli
 
 ```bash
 sudo install -d -o quantinfer -g quantinfer -m 0750 /opt/quantinfer/.venv
-sudo -u quantinfer python3 -m venv /opt/quantinfer/.venv
-sudo -u quantinfer /opt/quantinfer/.venv/bin/python -m pip install --upgrade pip huggingface_hub
+sudo install -d -o quantinfer -g quantinfer -m 0750 /opt/quantinfer/models /opt/quantinfer/models/source
+sudo -H -u quantinfer python3 -m venv /opt/quantinfer/.venv
+sudo -H -u quantinfer /opt/quantinfer/.venv/bin/python -m pip install --upgrade pip huggingface_hub
 ```
 
 公共模型无需登录。私有模型先执行以下命令。
 
 ```bash
-sudo -u quantinfer /opt/quantinfer/.venv/bin/hf auth login
+sudo -H -u quantinfer /opt/quantinfer/.venv/bin/hf auth login
 ```
 
 本示例固定 Hugging Face revision `c1899de289a04d12100db370d81485cdf75e47ca`，发布记录必须保留该值。
 
 ```bash
 MODEL_REVISION=c1899de289a04d12100db370d81485cdf75e47ca
-sudo -u quantinfer mkdir -p /opt/quantinfer/models/source/qwen3-0.6b
-sudo -u quantinfer /opt/quantinfer/.venv/bin/hf download Qwen/Qwen3-0.6B \
+sudo install -d -o quantinfer -g quantinfer -m 0750 /opt/quantinfer/models/source/qwen3-0.6b
+sudo -H -u quantinfer /opt/quantinfer/.venv/bin/hf download Qwen/Qwen3-0.6B \
   config.json \
   tokenizer.json \
   tokenizer_config.json \
