@@ -121,8 +121,8 @@ sudo -H -u quantinfer /opt/quantinfer/.venv/bin/hf download Qwen/Qwen3-0.6B \
 
 ```bash
 cd /opt/quantinfer/models/source/qwen3-0.6b
-sha256sum config.json tokenizer.json tokenizer_config.json merges.txt vocab.json model.safetensors \
-  | sudo tee input.sha256
+sudo -H -u quantinfer sha256sum config.json tokenizer.json tokenizer_config.json merges.txt vocab.json model.safetensors \
+  | sudo -H -u quantinfer tee input.sha256 >/dev/null
 ```
 
 Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转换器不能直接读取 `model.safetensors.index.json` 或单个分片。
@@ -146,8 +146,14 @@ set -euo pipefail
 SOURCE=/opt/quantinfer/models/source/qwen3-0.6b
 MODEL_DIR=/opt/quantinfer/models/qwen3/38a1ed1
 sudo install -d -o quantinfer -g quantinfer -m 0750 "$MODEL_DIR"
-sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-convert   --config "$SOURCE/config.json"   --weights "$SOURCE/model.safetensors"   --tokenizer "$SOURCE/tokenizer.json"   --output "$MODEL_DIR/qwen3-q8_0.gguf"   --quantize q8_0
-sudo -H -u quantinfer sha256sum "$MODEL_DIR/qwen3-q8_0.gguf"   | sudo -H -u quantinfer tee "$MODEL_DIR/qwen3-q8_0.gguf.sha256" >/dev/null
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-convert \
+  --config "$SOURCE/config.json" \
+  --weights "$SOURCE/model.safetensors" \
+  --tokenizer "$SOURCE/tokenizer.json" \
+  --output "$MODEL_DIR/qwen3-q8_0.gguf" \
+  --quantize q8_0
+sudo -H -u quantinfer sha256sum "$MODEL_DIR/qwen3-q8_0.gguf" \
+  | sudo -H -u quantinfer tee "$MODEL_DIR/qwen3-q8_0.gguf.sha256" >/dev/null
 sudo -H -u quantinfer ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
 ```
 
@@ -157,7 +163,10 @@ sudo -H -u quantinfer ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
 
 ```bash
 set -o pipefail
-sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli   inspect-gguf   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/inspect-qwen3.log
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli \
+  inspect-gguf \
+  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
+  | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/inspect-qwen3.log
 ```
 
 查看 Tensor inventory 中的关键 Tensor。
@@ -184,7 +193,15 @@ grep -E 'metadata_key=(general\.architecture|qwen3\.context_length|qwen3\.embedd
 
 ```bash
 set -o pipefail
-sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli   generate   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   --tokens 1,2,3   --max-new-tokens 16   --max-sequence-length 4096   --temperature 0   --eos-token-id 151645   | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/smoke-token-ids.log
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli \
+  generate \
+  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
+  --tokens 1,2,3 \
+  --max-new-tokens 16 \
+  --max-sequence-length 4096 \
+  --temperature 0 \
+  --eos-token-id 151645 \
+  | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/smoke-token-ids.log
 ```
 
 ### 7.2 自然语言对话测试
@@ -196,11 +213,20 @@ sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli   generate   --inpu
 ```bash
 set -euo pipefail
 for run in 1 2; do
-  if ! sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli     generate     --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf     --prompt "请用一句话说明 QuantInfer 的用途。"     --chat     --max-new-tokens 16     --max-sequence-length 4096     --temperature 0     2>&1 | sudo -H -u quantinfer tee "/var/lib/quantinfer/logs/smoke-prompt-${run}.log"; then
+  if ! sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli \
+    generate \
+    --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
+    --prompt "请用一句话说明 QuantInfer 的用途。" \
+    --chat \
+    --max-new-tokens 16 \
+    --max-sequence-length 4096 \
+    --temperature 0 \
+    2>&1 | sudo -H -u quantinfer tee "/var/lib/quantinfer/logs/smoke-prompt-${run}.log"; then
     exit 1
   fi
 done
-grep -E '^(prompt_tokens|generated_tokens|generated_text)='   /var/lib/quantinfer/logs/smoke-prompt-1.log
+grep -E '^(prompt_tokens|generated_tokens|generated_text)=' \
+  /var/lib/quantinfer/logs/smoke-prompt-1.log
 python3 - <<'PY'
 from pathlib import Path
 
@@ -213,8 +239,10 @@ for run in (1, 2):
     if not generated_text.strip():
         raise SystemExit(f"generated_text is empty or whitespace in smoke-prompt-{run}.log")
 PY
-cmp   <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-1.log)   <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-2.log)   && printf '%s
-' 'deterministic generated_tokens: PASS'
+cmp \
+  <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-1.log) \
+  <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-2.log) \
+  && printf '%s\n' 'deterministic generated_tokens: PASS'
 ```
 
 按以下顺序判断结果。
@@ -230,7 +258,15 @@ cmp   <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-1.log)  
 
 ```bash
 set -o pipefail
-sudo -H -u quantinfer /usr/bin/time -v   /opt/quantinfer/current/quantinfer-cli   generate   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   --prompt "health check"   --max-new-tokens 16   --max-sequence-length 4096   --temperature 0   2>&1 | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/resource-baseline.log >/dev/null
+sudo -H -u quantinfer /usr/bin/time -v \
+  /opt/quantinfer/current/quantinfer-cli \
+  generate \
+  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
+  --prompt "health check" \
+  --max-new-tokens 16 \
+  --max-sequence-length 4096 \
+  --temperature 0 \
+  2>&1 | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/resource-baseline.log >/dev/null
 ```
 
 记录 CPU 型号、核心数、GGUF 大小、峰值 RSS、`prefill_ms`、`decode_ms`、`decode_tokens` 和 `decode_tokens_per_sec`。`quantinfer-xtask bench` 只验证 Q8_0 CPU 算子，不代表真实模型吞吐。
