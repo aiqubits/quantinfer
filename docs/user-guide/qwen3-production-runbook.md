@@ -2,7 +2,7 @@
 
 本文档适用于 Qwen3 Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口，`quantinfer-server` 不提供 HTTP 服务。
 
-生产代码固定为经过 CI 验证的 commit。本文示例使用 `f6a44e9fd265c5f06bf323cef02a2230a4ec5221`，发布时替换为实际批准的 commit。
+生产代码固定为经过 CI 验证的 commit。本文示例使用 `c79979a85d627648e7bf2bbbca09b3d4a276b283`，发布时替换为实际批准的 commit。
 
 ## 1. 支持范围
 
@@ -49,7 +49,7 @@ rustup component add rustfmt clippy
 ```bash
 sudo git clone https://github.com/aiqubits/quantinfer.git /opt/quantinfer/src
 cd /opt/quantinfer/src
-git checkout f6a44e9fd265c5f06bf323cef02a2230a4ec5221
+git checkout c79979a85d627648e7bf2bbbca09b3d4a276b283
 git rev-parse HEAD
 ```
 
@@ -66,7 +66,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 构建并安装到版本目录。`RELEASE_ID` 使用代码 commit 的短 SHA 或内部发布编号。
 
 ```bash
-RELEASE_ID=f6a44e9
+RELEASE_ID=c79979a
 cargo build --release -p quantinfer-convert -p quantinfer-cli
 sudo install -d -o quantinfer -g quantinfer -m 0755 "/opt/quantinfer/releases/$RELEASE_ID"
 sudo install -m 0755 target/release/quantinfer-convert "/opt/quantinfer/releases/$RELEASE_ID/quantinfer-convert"
@@ -136,7 +136,7 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转�
 
 ```bash
 SOURCE=/opt/quantinfer/models/source/qwen3-0.6b
-MODEL_DIR=/opt/quantinfer/models/qwen3/f6a44e9
+MODEL_DIR=/opt/quantinfer/models/qwen3/c79979a
 sudo install -d -o quantinfer -g quantinfer -m 0750 "$MODEL_DIR"
 /opt/quantinfer/current/quantinfer-convert \
   --config "$SOURCE/config.json" \
