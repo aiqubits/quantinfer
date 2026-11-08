@@ -32,6 +32,7 @@ sudo install -d -o quantinfer -g quantinfer -m 0750 \
   /opt/quantinfer/models/qwen3 \
   /opt/quantinfer/models/source \
   /opt/quantinfer/jobs \
+  /opt/quantinfer/.venv \
   /var/lib/quantinfer/logs
 if ! command -v rustup >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -84,6 +85,7 @@ readlink -f /opt/quantinfer/current/quantinfer-cli
 创建项目专用虚拟环境并安装 Hugging Face Hub CLI。
 
 ```bash
+sudo install -d -o quantinfer -g quantinfer -m 0750 /opt/quantinfer/.venv
 sudo -u quantinfer python3 -m venv /opt/quantinfer/.venv
 sudo -u quantinfer /opt/quantinfer/.venv/bin/python -m pip install --upgrade pip huggingface_hub
 ```
