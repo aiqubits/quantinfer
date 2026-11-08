@@ -63,6 +63,9 @@ sudo install -d -o quantinfer -g quantinfer -m 0755 "/opt/quantinfer/releases/$R
 sudo install -m 0755 target/release/quantinfer-convert "/opt/quantinfer/releases/$RELEASE_ID/quantinfer-convert"
 sudo install -m 0755 target/release/quantinfer-cli "/opt/quantinfer/releases/$RELEASE_ID/quantinfer-cli"
 sudo ln -sfn "/opt/quantinfer/releases/$RELEASE_ID" /opt/quantinfer/current
+test -x "/opt/quantinfer/current/quantinfer-convert"
+test -x "/opt/quantinfer/current/quantinfer-cli"
+readlink -f /opt/quantinfer/current/quantinfer-cli
 ```
 
 ## 4. 下载 Qwen3 0.6B 模型
@@ -155,6 +158,12 @@ grep -E 'token_embd\.weight|output_norm\.weight|blk\.0\.attn_q\.weight|blk\.0\.f
 ```
 
 `inspect-gguf` 当前输出 metadata 数量和 Tensor inventory，不输出 metadata 键值。Qwen3 metadata 和 tokenizer metadata 会在下面的模型加载与 prompt smoke test 中被实际读取，缺失时命令会失败。
+
+执行第 5 至第 8 节前，确认发布入口存在。缺少该文件时先完成第 3 节，不能直接运行推理命令。
+
+```bash
+test -x /opt/quantinfer/current/quantinfer-cli
+```
 
 ## 7. 推理 smoke test
 
