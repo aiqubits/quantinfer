@@ -135,24 +135,20 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转�
 
 - 官方仓库提供 `model.safetensors.index.json` 和多个权重分片，当前转换器不能直接读取。
 - 4B 模型在 CPU Scalar 下的内存和延迟预算显著高于 0.6B，必须先用目标主机完成 RSS、Prefill 和 Decode 压测。
-- 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 `Qwen3ChatTemplate` 只覆盖单轮 Qwen3-0.6B prompt，不覆盖 4B-Instruct-2507 的完整模板语义。
+- 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 CLI 仅构造单轮 Qwen3-0.6B prompt，`Qwen3ChatTemplate` 未覆盖 4B-Instruct-2507 的完整 system、tool call、assistant prompt 和多轮模板语义。
 
 因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再单独进行 4B 适配和验证。
 
 ## 5. 转换为 Q8_0 GGUF
 
 ```bash
+set -euo pipefail
 SOURCE=/opt/quantinfer/models/source/qwen3-0.6b
 MODEL_DIR=/opt/quantinfer/models/qwen3/38a1ed1
 sudo install -d -o quantinfer -g quantinfer -m 0750 "$MODEL_DIR"
-/opt/quantinfer/current/quantinfer-convert \
-  --config "$SOURCE/config.json" \
-  --weights "$SOURCE/model.safetensors" \
-  --tokenizer "$SOURCE/tokenizer.json" \
-  --output "$MODEL_DIR/qwen3-q8_0.gguf" \
-  --quantize q8_0
-sha256sum "$MODEL_DIR/qwen3-q8_0.gguf" | sudo tee "$MODEL_DIR/qwen3-q8_0.gguf.sha256"
-sudo ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-convert   --config "$SOURCE/config.json"   --weights "$SOURCE/model.safetensors"   --tokenizer "$SOURCE/tokenizer.json"   --output "$MODEL_DIR/qwen3-q8_0.gguf"   --quantize q8_0
+sudo -H -u quantinfer sha256sum "$MODEL_DIR/qwen3-q8_0.gguf"   | sudo -H -u quantinfer tee "$MODEL_DIR/qwen3-q8_0.gguf.sha256" >/dev/null
+sudo -H -u quantinfer ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
 ```
 
 转换器会校验 SafeTensors 文件结构、Tensor 数据长度、Qwen3 配置约束、required Tensor 名称和 canonical 名称重复。完整 Tensor shape 语义会在 GGUF 模型加载时继续校验。
@@ -161,87 +157,71 @@ sudo ln -sfn "$MODEL_DIR" /opt/quantinfer/models/qwen3/current
 
 ```bash
 set -o pipefail
-/opt/quantinfer/current/quantinfer-cli \
-  inspect-gguf \
-  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
-  | tee /var/lib/quantinfer/logs/inspect-qwen3.log
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli   inspect-gguf   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/inspect-qwen3.log
 ```
 
-确认 Tensor inventory 包含关键 Tensor。
+查看 Tensor inventory 中的关键 Tensor。
 
 ```bash
 grep -E 'token_embd\.weight|output_norm\.weight|blk\.0\.attn_q\.weight|blk\.0\.ffn_down\.weight' \
   /var/lib/quantinfer/logs/inspect-qwen3.log
 ```
 
-确认关键 metadata key 存在。
+查看关键 metadata key。
 
 ```bash
 grep -E 'metadata_key=(general\.architecture|qwen3\.context_length|qwen3\.embedding_length|qwen3\.vocab_size|qwen3\.feed_forward_length|qwen3\.block_count|qwen3\.attention\.head_count|qwen3\.attention\.head_count_kv|qwen3\.attention\.head_dim|qwen3\.rope\.freq_base|qwen3\.attention\.layer_norm_rms_epsilon|tokenizer\.ggml\.tokens|tokenizer\.ggml\.merges|tokenizer\.ggml\.eos_token_id)' \
   /var/lib/quantinfer/logs/inspect-qwen3.log
 ```
 
-`inspect-gguf` 输出 metadata 数量、metadata key 和 Tensor inventory。metadata 值与 Tensor shape 会在模型加载和 prompt smoke test 中继续校验。
-
-执行第 5 至第 8 节前，确认发布入口存在。缺少该文件时先完成第 3 节，不能直接运行推理命令。
-
-```bash
-test -x /opt/quantinfer/current/quantinfer-cli
-```
+`inspect-gguf` 输出 metadata 数量、metadata key 和 Tensor inventory。模型加载阶段会读取必要 metadata 并校验其类型、必要字段和 Tensor shape，`inspect-gguf` 本身不校验 metadata 值。
 
 ## 7. 推理 smoke test
 
 ### 7.1 Token ID 测试
 
-显式 token ID 测试模型加载、Prefill、Decode、KV Cache 和 EOS。
+显式 token ID 测试模型加载、Prefill、Decode、KV Cache 和 EOS 参数处理。
 
 ```bash
 set -o pipefail
-/opt/quantinfer/current/quantinfer-cli \
-  generate \
-  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
-  --tokens 1,2,3 \
-  --max-new-tokens 16 \
-  --max-sequence-length 4096 \
-  --temperature 0 \
-  --eos-token-id 151645 \
-  | tee /var/lib/quantinfer/logs/smoke-token-ids.log
+sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli   generate   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   --tokens 1,2,3   --max-new-tokens 16   --max-sequence-length 4096   --temperature 0   --eos-token-id 151645   | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/smoke-token-ids.log
 ```
 
 ### 7.2 自然语言对话测试
 
-`generate` 当前是非流式 CLI。`apps/quantinfer-cli/src/main.rs` 中的 `generate` 函数会完成模型加载、tokenizer 编码、Prefill 和 Decode，最后一次性打印 token、阶段耗时和 `generated_text`。`--chat` 生成 Qwen3-0.6B 单轮 prompt，不会启用流式输出。stdout 重定向到文件时，终端不会显示结果，`cmp` 在两个文件相同时也不会输出任何文本。
+`generate` 当前是非流式 CLI。`apps/quantinfer-cli/src/main.rs` 中的 `generate` 函数会完成模型加载、tokenizer 编码、Prefill 和 Decode，最后一次性打印 token、阶段耗时和 `generated_text`。`--chat` 生成 Qwen3-0.6B 单轮 prompt，不会启用流式输出。stdout 重定向到文件时，终端不会显示结果，`cmp` 在两个文件相同时也不会输出任何文本。该测试验证生成字段存在、`generated_text` 非空白且两次生成 token 一致，不验证回答事实正确性。
 
 使用 `tee` 同时保留日志和终端输出，并让 pipeline 传播 CLI 失败状态。
 
 ```bash
-set -o pipefail
+set -euo pipefail
 for run in 1 2; do
-  if ! /opt/quantinfer/current/quantinfer-cli \
-    generate \
-    --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
-    --prompt "请用一句话说明 QuantInfer 的用途。" \
-    --chat \
-    --max-new-tokens 16 \
-    --max-sequence-length 4096 \
-    --temperature 0 \
-    2>&1 | tee "/var/lib/quantinfer/logs/smoke-prompt-${run}.log"; then
+  if ! sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-cli     generate     --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf     --prompt "请用一句话说明 QuantInfer 的用途。"     --chat     --max-new-tokens 16     --max-sequence-length 4096     --temperature 0     2>&1 | sudo -H -u quantinfer tee "/var/lib/quantinfer/logs/smoke-prompt-${run}.log"; then
     exit 1
   fi
 done
-grep -E '^(prompt_tokens|generated_tokens|generated_text)=' \
-  /var/lib/quantinfer/logs/smoke-prompt-1.log
-cmp \
-  <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-1.log) \
-  <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-2.log) \
-  && printf '%s\n' 'deterministic generated_tokens: PASS'
+grep -E '^(prompt_tokens|generated_tokens|generated_text)='   /var/lib/quantinfer/logs/smoke-prompt-1.log
+python3 - <<'PY'
+from pathlib import Path
+
+for run in (1, 2):
+    log = Path(f"/var/lib/quantinfer/logs/smoke-prompt-{run}.log").read_text()
+    for marker in ("prompt_tokens=", "generated_tokens=", "generated_text="):
+        if marker not in log:
+            raise SystemExit(f"missing {marker} in smoke-prompt-{run}.log")
+    generated_text = log.split("generated_text=", 1)[1]
+    if not generated_text.strip():
+        raise SystemExit(f"generated_text is empty or whitespace in smoke-prompt-{run}.log")
+PY
+cmp   <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-1.log)   <(grep '^generated_tokens=' /var/lib/quantinfer/logs/smoke-prompt-2.log)   && printf '%s
+' 'deterministic generated_tokens: PASS'
 ```
 
 按以下顺序判断结果。
 
 - 没有 `prompt_tokens=`，表示 tokenizer、Chat Template 或 GGUF tokenizer metadata 在 Prefill 前失败。查看日志中的 `quantinfer:` 错误。
 - 有 `prompt_tokens=` 但没有 `generated_tokens=`，表示模型加载、Prefill 或 Decode 失败。检查 `quantinfer:` 错误和进程退出码。
-- 有 `generated_tokens=` 但 `generated_text=` 为空，表示生成 token 全部被 `GgufBpeTokenizer::decode` 识别为 special token 并跳过。先用 token ID 检查生成结果，再检查 tokenizer metadata 与 EOS 配置。
+- 有 `generated_tokens=` 但 `generated_text=` 为空或只含空白，表示生成结果可能只包含 special token、换行或其它空白字符。先检查 `generated_tokens`，再检查 tokenizer metadata、Chat Template 和 EOS 配置。
 - 进程仍在运行且日志为空，表示当前实现还没有流式输出，仍在执行 Prefill 或 Decode。先将 `--max-new-tokens` 降到 1 或 4，确认路径后再增加长度。
 
 真实 tokenizer vectors 和真实 checkpoint logits 应纳入后续版本的回归门禁。
@@ -249,15 +229,8 @@ cmp \
 ## 8. 资源基线
 
 ```bash
-/usr/bin/time -v \
-  /opt/quantinfer/current/quantinfer-cli \
-  generate \
-  --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf \
-  --prompt "health check" \
-  --max-new-tokens 16 \
-  --max-sequence-length 4096 \
-  --temperature 0 \
-  > /var/lib/quantinfer/logs/resource-baseline.log 2>&1
+set -o pipefail
+sudo -H -u quantinfer /usr/bin/time -v   /opt/quantinfer/current/quantinfer-cli   generate   --input /opt/quantinfer/models/qwen3/current/qwen3-q8_0.gguf   --prompt "health check"   --max-new-tokens 16   --max-sequence-length 4096   --temperature 0   2>&1 | sudo -H -u quantinfer tee /var/lib/quantinfer/logs/resource-baseline.log >/dev/null
 ```
 
 记录 CPU 型号、核心数、GGUF 大小、峰值 RSS、`prefill_ms`、`decode_ms`、`decode_tokens` 和 `decode_tokens_per_sec`。`quantinfer-xtask bench` 只验证 Q8_0 CPU 算子，不代表真实模型吞吐。
@@ -266,4 +239,4 @@ cmp \
 
 ## 9. 适用边界
 
-当前代码适合 Qwen3-0.6B CPU 单机、离线批处理和受控内网试运行。完整 Qwen3 在线生产平台属于第二版 MVP，待第二版 MVP 实现后单独补充对应运行手册。
+当前代码适合 Qwen3-0.6B CPU 单机、离线单序列任务和受控内网试运行。完整 Qwen3 在线生产平台属于第二版 MVP，待第二版 MVP 实现后单独补充对应运行手册。
