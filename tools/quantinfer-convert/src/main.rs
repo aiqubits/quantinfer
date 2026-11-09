@@ -8,7 +8,7 @@ use quantinfer_format::{
     ExecutionVariant, GgufValue, GgufWriter, ModelManifest, SafeTensorFile, SafeTensorShards,
     TensorManifest,
 };
-use quantinfer_model::Qwen3Config;
+use quantinfer_model::{ModelAdapter, Qwen3Adapter, Qwen3Config};
 use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
 use serde_json::Value;
 
@@ -49,6 +49,8 @@ fn run() -> Result<(), String> {
     config
         .validate()
         .map_err(|error| format!("invalid Qwen3 config: {error}"))?;
+    let adapter = Qwen3Adapter::new(config.clone(), "qwen3")
+        .map_err(|error| format!("cannot build Qwen3 model adapter: {error}"))?;
     let weights = WeightSource::open(&weights_path)?;
 
     let mut writer = GgufWriter::new();
@@ -167,14 +169,14 @@ fn run() -> Result<(), String> {
         let values = weights
             .tensor_f32(&name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
-        let canonical_name = canonical_tensor_name(&name);
+        let canonical_name = adapter.canonical_tensor_name(&name);
         let output_name = canonical_name.as_deref().unwrap_or(&name);
         if !written_names.insert(output_name.to_owned()) {
             return Err(format!(
                 "multiple SafeTensors entries map to GGUF tensor {output_name}"
             ));
         }
-        let (shape, values) = canonicalize_tensor_layout(output_name, &shape, values)?;
+        let (shape, values) = adapter.canonicalize_tensor_layout(output_name, &shape, values)?;
         let use_q8 = quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(output_name)
             && values
@@ -488,85 +490,6 @@ fn token_id_from_value(value: Option<&Value>) -> Option<usize> {
     })
 }
 
-fn canonical_tensor_name(name: &str) -> Option<String> {
-    let parts: Vec<&str> = name.split('.').collect();
-    match parts.as_slice() {
-        ["model", "embed_tokens", "weight"] | ["model", "token_embeddings", "weight"] => {
-            Some("token_embd.weight".to_owned())
-        }
-        ["model", "norm", "weight"] => Some("output_norm.weight".to_owned()),
-        ["lm_head", "weight"] => Some("output.weight".to_owned()),
-        ["model", "layers", index, "input_layernorm", "weight"] => {
-            Some(format!("blk.{index}.attn_norm.weight"))
-        }
-        ["model", "layers", index, "self_attn", projection, "weight"] => {
-            let suffix = match *projection {
-                "q_proj" => "attn_q",
-                "q_norm" => "attn_q_norm",
-                "k_proj" => "attn_k",
-                "k_norm" => "attn_k_norm",
-                "v_proj" => "attn_v",
-                "o_proj" => "attn_output",
-                _ => return None,
-            };
-            Some(format!("blk.{index}.{suffix}.weight"))
-        }
-        ["model", "layers", index, "post_attention_layernorm", "weight"] => {
-            Some(format!("blk.{index}.ffn_norm.weight"))
-        }
-        ["model", "layers", index, "mlp", projection, "weight"] => {
-            let suffix = match *projection {
-                "gate_proj" => "ffn_gate",
-                "up_proj" => "ffn_up",
-                "down_proj" => "ffn_down",
-                _ => return None,
-            };
-            Some(format!("blk.{index}.{suffix}.weight"))
-        }
-        _ => None,
-    }
-}
-
-fn canonicalize_tensor_layout(
-    name: &str,
-    shape: &[usize],
-    values: Vec<f32>,
-) -> Result<(Vec<usize>, Vec<f32>), String> {
-    if !is_matrix_weight(name) {
-        return Ok((shape.to_vec(), values));
-    }
-    if shape.len() != 2 {
-        return Err(format!("linear tensor {name} must be rank 2"));
-    }
-    let rows = shape[0];
-    let columns = shape[1];
-    if values.len() != rows * columns {
-        return Err(format!("linear tensor {name} shape does not match data"));
-    }
-    let mut transposed = vec![0.0; values.len()];
-    for row in 0..rows {
-        for column in 0..columns {
-            transposed[column * rows + row] = values[row * columns + column];
-        }
-    }
-    Ok((vec![columns, rows], transposed))
-}
-
-fn is_matrix_weight(name: &str) -> bool {
-    name == "output.weight"
-        || [
-            "attn_q.weight",
-            "attn_k.weight",
-            "attn_v.weight",
-            "attn_output.weight",
-            "ffn_gate.weight",
-            "ffn_up.weight",
-            "ffn_down.weight",
-        ]
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
-}
-
 fn is_quantizable_linear(name: &str) -> bool {
     [
         "attn_q.weight",
@@ -589,45 +512,7 @@ fn print_help() {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        canonical_tensor_name, canonicalize_tensor_layout, is_matrix_weight, is_quantizable_linear,
-        load_tokenizer_metadata,
-    };
-
-    #[test]
-    fn maps_qwen3_huggingface_names_to_gguf_names() {
-        assert_eq!(
-            canonical_tensor_name("model.layers.2.self_attn.q_proj.weight"),
-            Some("blk.2.attn_q.weight".to_owned())
-        );
-        assert_eq!(
-            canonical_tensor_name("model.layers.2.mlp.down_proj.weight"),
-            Some("blk.2.ffn_down.weight".to_owned())
-        );
-        assert_eq!(
-            canonical_tensor_name("model.embed_tokens.weight"),
-            Some("token_embd.weight".to_owned())
-        );
-        assert_eq!(
-            canonical_tensor_name("model.norm.weight"),
-            Some("output_norm.weight".to_owned())
-        );
-    }
-
-    #[test]
-    fn transposes_runtime_linear_layout() {
-        let (shape, values) = canonicalize_tensor_layout(
-            "blk.0.attn_q.weight",
-            &[2, 3],
-            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
-        )
-        .unwrap();
-        assert_eq!(shape, vec![3, 2]);
-        assert_eq!(values, vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
-        assert!(is_matrix_weight("blk.0.attn_q.weight"));
-        assert!(is_quantizable_linear("blk.0.attn_q.weight"));
-        assert!(!is_matrix_weight("blk.0.attn_q_norm.weight"));
-    }
+    use super::load_tokenizer_metadata;
 
     #[test]
     fn reads_huggingface_tokenizer_vocab_and_merges() {
