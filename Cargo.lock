@@ -262,6 +262,7 @@ dependencies = [
  "quantinfer-model",
  "quantinfer-quant",
  "quantinfer-tokenizer",
+ "serde",
 ]
 
 [[package]]

@@ -2,9 +2,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod llama;
+pub mod profile;
 pub mod provider;
 pub mod qwen3;
 
+pub use llama::{LlamaLayerWeights, LlamaModel};
+pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
 pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
 
@@ -185,6 +189,13 @@ impl KvCache {
             layer.values.clear();
             layer.sequence_length = 0;
         }
+    }
+
+    pub fn memory_bytes(&self) -> usize {
+        self.layers
+            .iter()
+            .map(|layer| (layer.keys.len() + layer.values.len()) * std::mem::size_of::<f32>())
+            .sum()
     }
 }
 

@@ -29,7 +29,7 @@ impl LinearWeight {
         }
     }
 
-    fn matmul<B: KernelBackend>(&self, backend: &B, input: &Tensor) -> Result<Tensor> {
+    pub(crate) fn matmul<B: KernelBackend>(&self, backend: &B, input: &Tensor) -> Result<Tensor> {
         match self {
             Self::F32(weight) => Ok(backend.matmul(input, weight)?),
             Self::Q8_0(weight) => Ok(backend.matmul_q8_0(input, weight)?),
@@ -344,7 +344,7 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
     }
 }
 
-fn transpose_matrix(tensor: &Tensor) -> Result<Tensor> {
+pub(crate) fn transpose_matrix(tensor: &Tensor) -> Result<Tensor> {
     let dims = tensor.shape().dims();
     if dims.len() != 2 {
         return Err(RuntimeError::InvalidInput(
@@ -503,7 +503,7 @@ fn expect_shape(tensor: &Tensor, expected: &[usize], name: &str) -> Result<()> {
     Ok(())
 }
 
-fn add(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
+pub(crate) fn add(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
     if lhs.shape() != rhs.shape() {
         return Err(RuntimeError::InvalidInput(
             "residual tensors must have identical shapes".to_owned(),
@@ -518,7 +518,12 @@ fn add(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
     Ok(Tensor::from_f32(lhs.shape().clone(), values)?)
 }
 
-fn rope_tables(theta: f32, head_dim: usize, start: usize, length: usize) -> (Vec<f32>, Vec<f32>) {
+pub(crate) fn rope_tables(
+    theta: f32,
+    head_dim: usize,
+    start: usize,
+    length: usize,
+) -> (Vec<f32>, Vec<f32>) {
     let pair_count = head_dim / 2;
     let mut cos = Vec::with_capacity(length * pair_count);
     let mut sin = Vec::with_capacity(length * pair_count);
@@ -534,7 +539,7 @@ fn rope_tables(theta: f32, head_dim: usize, start: usize, length: usize) -> (Vec
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gqa_attention(
+pub(crate) fn gqa_attention(
     query: &Tensor,
     key_values: &[f32],
     value_values: &[f32],
