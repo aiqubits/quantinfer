@@ -3,8 +3,11 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use quantinfer_core::Tensor;
-use quantinfer_format::{GgufValue, GgufWriter, SafeTensorFile};
+use quantinfer_core::{DType, QuantizationScheme, Shape, Tensor, TensorStorageDescriptor};
+use quantinfer_format::{
+    ExecutionVariant, GgufValue, GgufWriter, ModelManifest, SafeTensorFile, SafeTensorShards,
+    TensorManifest,
+};
 use quantinfer_model::Qwen3Config;
 use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
 use serde_json::Value;
@@ -28,6 +31,7 @@ fn run() -> Result<(), String> {
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
     let output_path = required_path(&arguments, "--output")?;
+    let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let quantization = optional_value(&arguments, "--quantize");
     if let Some(value) = &quantization {
@@ -45,11 +49,7 @@ fn run() -> Result<(), String> {
     config
         .validate()
         .map_err(|error| format!("invalid Qwen3 config: {error}"))?;
-    let weights = SafeTensorFile::open(
-        fs::read(&weights_path)
-            .map_err(|error| format!("cannot read {}: {error}", weights_path.display()))?,
-    )
-    .map_err(|error| format!("cannot parse SafeTensors: {error}"))?;
+    let weights = WeightSource::open(&weights_path)?;
 
     let mut writer = GgufWriter::new();
     writer.insert_metadata(
@@ -162,35 +162,59 @@ fn run() -> Result<(), String> {
         }
     }
     let mut written_names = BTreeSet::new();
-    for (name, info) in weights.tensors() {
+    let mut manifest_tensors = Vec::new();
+    for (name, shape) in weights.tensors()? {
         let values = weights
-            .tensor_f32(name)
+            .tensor_f32(&name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
-        let canonical_name = canonical_tensor_name(name);
-        let output_name = canonical_name.as_deref().unwrap_or(name);
+        let canonical_name = canonical_tensor_name(&name);
+        let output_name = canonical_name.as_deref().unwrap_or(&name);
         if !written_names.insert(output_name.to_owned()) {
             return Err(format!(
                 "multiple SafeTensors entries map to GGUF tensor {output_name}"
             ));
         }
-        let (shape, values) = canonicalize_tensor_layout(output_name, &info.shape, values)?;
-        if quantization.as_deref() == Some("q8_0")
+        let (shape, values) = canonicalize_tensor_layout(output_name, &shape, values)?;
+        let use_q8 = quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(output_name)
             && values
                 .len()
-                .is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE)
-        {
+                .is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE);
+        let use_q4 = quantization.as_deref() == Some("q4_0")
+            && is_quantizable_linear(output_name)
+            && values
+                .len()
+                .is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE);
+        let descriptor = if use_q8 {
+            TensorStorageDescriptor::quantized(
+                DType::Q8_0,
+                QuantizationScheme::Q8_0,
+                Shape::from(shape.clone()),
+                quantinfer_core::Q8_0_BLOCK_SIZE,
+            )
+        } else if use_q4 {
+            TensorStorageDescriptor::quantized(
+                DType::Q4_0,
+                QuantizationScheme::Q4_0,
+                Shape::from(shape.clone()),
+                quantinfer_core::Q4_0_BLOCK_SIZE,
+            )
+        } else {
+            TensorStorageDescriptor::floating(DType::F32, Shape::from(shape.clone()))
+        }
+        .map_err(|error| format!("cannot describe tensor {name}: {error}"))?;
+        manifest_tensors.push(TensorManifest {
+            name: output_name.to_owned(),
+            descriptor,
+            checksum_sha256: None,
+        });
+        if use_q8 {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q8_0(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
             writer.add_q8_0_tensor(output_name, &quantized);
-        } else if quantization.as_deref() == Some("q4_0")
-            && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE)
-        {
+        } else if use_q4 {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q4_0(&tensor)
@@ -206,14 +230,88 @@ fn run() -> Result<(), String> {
     let bytes = writer
         .finish()
         .map_err(|error| format!("cannot write GGUF: {error}"))?;
-    fs::write(&output_path, bytes)
+    fs::write(&output_path, &bytes)
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
+    if let Some(manifest_path) = manifest_path {
+        let mut manifest = ModelManifest::new("qwen3", "qwen3");
+        manifest.source_format = "safetensors-to-gguf".to_owned();
+        manifest.quantization = match quantization.as_deref() {
+            Some("q8_0") => QuantizationScheme::Q8_0,
+            Some("q4_0") => QuantizationScheme::Q4_0,
+            _ => QuantizationScheme::None,
+        };
+        manifest.tensors = manifest_tensors;
+        manifest.execution_variants.push(ExecutionVariant {
+            name: "cpu-scalar".to_owned(),
+            quantization: manifest.quantization,
+            dtype: "f32-accumulation".to_owned(),
+            runtime_provider: "cpu-scalar".to_owned(),
+            kernel_provider: "cpu-scalar".to_owned(),
+        });
+        let output_name = output_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("model.gguf");
+        manifest.insert_checksum(output_name, &bytes);
+        let json = manifest
+            .to_json()
+            .map_err(|error| format!("cannot serialize model manifest: {error}"))?;
+        fs::write(&manifest_path, json)
+            .map_err(|error| format!("cannot write {}: {error}", manifest_path.display()))?;
+    }
     println!(
         "converted {} tensors to {}",
-        weights.tensors().len(),
+        weights.tensor_count(),
         output_path.display()
     );
     Ok(())
+}
+
+enum WeightSource {
+    Single(SafeTensorFile),
+    Sharded(SafeTensorShards),
+}
+
+impl WeightSource {
+    fn open(path: &PathBuf) -> Result<Self, String> {
+        if path.to_string_lossy().ends_with(".index.json") {
+            SafeTensorShards::open(path)
+                .map(Self::Sharded)
+                .map_err(|error| format!("cannot parse SafeTensors index: {error}"))
+        } else {
+            SafeTensorFile::open_path(path)
+                .map(Self::Single)
+                .map_err(|error| format!("cannot parse SafeTensors: {error}"))
+        }
+    }
+
+    fn tensors(&self) -> Result<Vec<(String, Vec<usize>)>, String> {
+        match self {
+            Self::Single(file) => Ok(file
+                .tensors()
+                .iter()
+                .map(|(name, info)| (name.clone(), info.shape.clone()))
+                .collect()),
+            Self::Sharded(files) => Ok(files
+                .tensors()
+                .map(|(name, info)| (name.to_owned(), info.shape.clone()))
+                .collect()),
+        }
+    }
+
+    fn tensor_f32(&self, name: &str) -> quantinfer_format::Result<Vec<f32>> {
+        match self {
+            Self::Single(file) => file.tensor_f32(name),
+            Self::Sharded(files) => files.tensor_f32(name),
+        }
+    }
+
+    fn tensor_count(&self) -> usize {
+        match self {
+            Self::Single(file) => file.tensors().len(),
+            Self::Sharded(files) => files.tensors().count(),
+        }
+    }
 }
 
 fn validate_required_tensors(
@@ -485,7 +583,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--quantize q8_0|q4_0]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0]"
     );
 }
 

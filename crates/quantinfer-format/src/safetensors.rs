@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use half::{bf16, f16};
 
@@ -47,6 +49,15 @@ pub struct SafeTensorFile {
 }
 
 impl SafeTensorFile {
+    pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        Self::open(
+            fs::read(path).map_err(|error| {
+                FormatError::Io(format!("cannot read {}: {error}", path.display()))
+            })?,
+        )
+    }
+
     pub fn open(data: Vec<u8>) -> Result<Self> {
         if data.len() < 8 {
             return Err(FormatError::Invalid(
@@ -249,9 +260,105 @@ impl SafeTensorFile {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SafeTensorShards {
+    index_path: PathBuf,
+    tensor_to_shard: BTreeMap<String, String>,
+    shards: BTreeMap<String, SafeTensorFile>,
+}
+
+impl SafeTensorShards {
+    pub fn open(index_path: impl AsRef<Path>) -> Result<Self> {
+        let index_path = index_path.as_ref().to_path_buf();
+        let index_bytes = fs::read(&index_path).map_err(|error| {
+            FormatError::Io(format!("cannot read {}: {error}", index_path.display()))
+        })?;
+        let value: serde_json::Value = serde_json::from_slice(&index_bytes).map_err(|error| {
+            FormatError::Invalid(format!(
+                "invalid SafeTensors index {}: {error}",
+                index_path.display()
+            ))
+        })?;
+        let weight_map = value
+            .get("weight_map")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                FormatError::Invalid("SafeTensors index is missing weight_map".to_owned())
+            })?;
+        let mut tensor_to_shard = BTreeMap::new();
+        for (tensor, shard) in weight_map {
+            let shard = shard.as_str().ok_or_else(|| {
+                FormatError::Invalid(format!("SafeTensors shard for {tensor} is not a string"))
+            })?;
+            tensor_to_shard.insert(tensor.clone(), shard.to_owned());
+        }
+        let parent = index_path.parent().unwrap_or_else(|| Path::new("."));
+        let mut shards = BTreeMap::new();
+        for shard in tensor_to_shard.values() {
+            if shards.contains_key(shard) {
+                continue;
+            }
+            let path = parent.join(shard);
+            let file = SafeTensorFile::open_path(&path).map_err(|error| {
+                FormatError::Io(format!(
+                    "cannot open SafeTensors shard {}: {error}",
+                    path.display()
+                ))
+            })?;
+            shards.insert(shard.clone(), file);
+        }
+        Ok(Self {
+            index_path,
+            tensor_to_shard,
+            shards,
+        })
+    }
+
+    pub fn index_path(&self) -> &Path {
+        &self.index_path
+    }
+
+    pub fn tensors(&self) -> impl Iterator<Item = (&str, &SafeTensorInfo)> {
+        self.tensor_to_shard.iter().filter_map(|(name, shard)| {
+            self.shards
+                .get(shard)
+                .and_then(|file| file.tensors().get(name))
+                .map(|info| (name.as_str(), info))
+        })
+    }
+
+    pub fn tensor_shard(&self, name: &str) -> Result<&str> {
+        self.tensor_to_shard
+            .get(name)
+            .map(String::as_str)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))
+    }
+
+    pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
+        let shard = self.tensor_shard(name)?;
+        self.shards
+            .get(shard)
+            .ok_or_else(|| FormatError::Invalid(format!("missing loaded shard {shard}")))?
+            .tensor_f32(name)
+    }
+
+    pub fn verify_shard_checksum(&self, shard: &str, expected_sha256: &str) -> Result<()> {
+        let parent = self.index_path.parent().unwrap_or_else(|| Path::new("."));
+        let bytes = fs::read(parent.join(shard))
+            .map_err(|error| FormatError::Io(format!("cannot read shard {shard}: {error}")))?;
+        let actual = super::manifest::sha256_hex(&bytes);
+        if actual != expected_sha256 {
+            return Err(FormatError::Invalid(format!(
+                "checksum mismatch for shard {shard}: expected {expected_sha256}, got {actual}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SafeTensorFile;
+    use super::{SafeTensorFile, SafeTensorShards};
 
     #[test]
     fn reads_f32_tensor_and_metadata() {
@@ -274,5 +381,37 @@ mod tests {
         bytes.extend_from_slice(header);
         bytes.extend_from_slice(&1.0_f32.to_le_bytes());
         assert!(SafeTensorFile::open(bytes).is_err());
+    }
+
+    #[test]
+    fn loads_tensors_from_a_sharded_index_without_merging_files() {
+        let directory =
+            std::env::temp_dir().join(format!("quantinfer-shards-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let write_shard = |name: &str, tensor: &str, value: f32| {
+            let header =
+                format!(r#"{{"{tensor}":{{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}}}"#);
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(header.as_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+            std::fs::write(directory.join(name), bytes).unwrap();
+        };
+        write_shard("model-00001-of-00002.safetensors", "a", 1.0);
+        write_shard("model-00002-of-00002.safetensors", "b", 2.0);
+        let index_path = directory.join("model.safetensors.index.json");
+        std::fs::write(
+            &index_path,
+            r#"{"metadata":{"total_size":8},"weight_map":{"a":"model-00001-of-00002.safetensors","b":"model-00002-of-00002.safetensors"}}"#,
+        )
+        .unwrap();
+        let shards = SafeTensorShards::open(&index_path).unwrap();
+        assert_eq!(
+            shards.tensor_shard("a").unwrap(),
+            "model-00001-of-00002.safetensors"
+        );
+        assert_eq!(shards.tensor_f32("b").unwrap(), vec![2.0]);
+        assert_eq!(shards.tensors().count(), 2);
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

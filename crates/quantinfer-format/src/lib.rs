@@ -17,7 +17,7 @@ pub mod manifest;
 pub mod safetensors;
 
 pub use manifest::*;
-pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo};
+pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo, SafeTensorShards};
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
@@ -234,7 +234,7 @@ impl GgufWriter {
         let mut data = Vec::with_capacity(tensor.blocks().len() * 18);
         for block in tensor.blocks() {
             data.extend_from_slice(&f16::from_f32(block.scale).to_le_bytes());
-            for pair in block.values.chunks_exact(2) {
+            for pair in block.values.as_chunks::<2>().0 {
                 data.push(pair[0] | (pair[1] << 4));
             }
         }
