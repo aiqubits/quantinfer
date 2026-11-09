@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use quantinfer_core::Tensor;
 use quantinfer_format::{GgufValue, GgufWriter, SafeTensorFile};
 use quantinfer_model::Qwen3Config;
-use quantinfer_quant::quantize_q8_0;
+use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
 use serde_json::Value;
 
 fn main() {
@@ -31,8 +31,10 @@ fn run() -> Result<(), String> {
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let quantization = optional_value(&arguments, "--quantize");
     if let Some(value) = &quantization {
-        if value != "q8_0" {
-            return Err(format!("unsupported quantization {value}; use q8_0"));
+        if value != "q8_0" && value != "q4_0" {
+            return Err(format!(
+                "unsupported quantization {value}; use q8_0 or q4_0"
+            ));
         }
     }
 
@@ -183,6 +185,17 @@ fn run() -> Result<(), String> {
             let quantized = quantize_q8_0(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
             writer.add_q8_0_tensor(output_name, &quantized);
+        } else if quantization.as_deref() == Some("q4_0")
+            && is_quantizable_linear(output_name)
+            && values
+                .len()
+                .is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE)
+        {
+            let tensor = Tensor::from_f32(shape.clone(), values)
+                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
+            let quantized = quantize_q4_0(&tensor)
+                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
+            writer.add_q4_0_tensor(output_name, &quantized);
         } else {
             writer
                 .add_f32_tensor(output_name, shape, &values)
@@ -472,7 +485,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--quantize q8_0]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--quantize q8_0|q4_0]"
     );
 }
 

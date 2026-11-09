@@ -4,7 +4,10 @@
 
 use std::fmt;
 
-use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor, Q8_0_BLOCK_SIZE};
+use quantinfer_core::{
+    DType, Q4_0Block, Q8_0Block, QuantizationScheme, QuantizedTensor, QuantizedTensor4, Tensor,
+    TensorStorageDescriptor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+};
 
 pub type Result<T> = std::result::Result<T, QuantizationError>;
 
@@ -69,9 +72,311 @@ pub fn dequantize_q8_0(input: &QuantizedTensor) -> Result<Tensor> {
     Ok(Tensor::from_f32(input.shape().clone(), values)?)
 }
 
+pub fn quantize_q4_0(input: &Tensor) -> Result<QuantizedTensor4> {
+    let values = input.as_f32()?;
+    if !values.len().is_multiple_of(Q4_0_BLOCK_SIZE) {
+        return Err(QuantizationError::InvalidInput(
+            "Q4_0 requires a multiple of 32 elements".to_owned(),
+        ));
+    }
+    let mut blocks = Vec::with_capacity(values.len() / Q4_0_BLOCK_SIZE);
+    for chunk in values.as_chunks::<Q4_0_BLOCK_SIZE>().0 {
+        let maximum = chunk.iter().copied().map(f32::abs).fold(0.0, f32::max);
+        let scale = if maximum == 0.0 { 1.0 } else { maximum / 7.0 };
+        let mut quantized = [0_u8; Q4_0_BLOCK_SIZE];
+        for (index, value) in chunk.iter().copied().enumerate() {
+            quantized[index] = ((value / scale).round().clamp(-8.0, 7.0) as i32 + 8) as u8;
+        }
+        blocks.push(Q4_0Block {
+            scale,
+            values: quantized,
+        });
+    }
+    Ok(QuantizedTensor4::from_blocks(
+        input.shape().clone(),
+        blocks,
+    )?)
+}
+
+pub fn dequantize_q4_0(input: &QuantizedTensor4) -> Result<Tensor> {
+    let values = input
+        .blocks()
+        .iter()
+        .flat_map(|block| {
+            block
+                .values
+                .iter()
+                .map(move |value| block.scale * (f32::from(*value) - 8.0))
+        })
+        .collect();
+    Ok(Tensor::from_f32(input.shape().clone(), values)?)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum QuantizedData {
+    Float(Tensor),
+    Q8_0(QuantizedTensor),
+    Q4_0(QuantizedTensor4),
+}
+
+impl QuantizedData {
+    pub fn scheme(&self) -> QuantizationScheme {
+        match self {
+            Self::Float(_) => QuantizationScheme::None,
+            Self::Q8_0(_) => QuantizationScheme::Q8_0,
+            Self::Q4_0(_) => QuantizationScheme::Q4_0,
+        }
+    }
+
+    pub fn shape(&self) -> &quantinfer_core::Shape {
+        match self {
+            Self::Float(tensor) => tensor.shape(),
+            Self::Q8_0(tensor) => tensor.shape(),
+            Self::Q4_0(tensor) => tensor.shape(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizationStats {
+    pub elements: usize,
+    pub min: f32,
+    pub max: f32,
+    pub mean_abs: f32,
+    pub max_abs: f32,
+}
+
+impl QuantizationStats {
+    pub fn inspect(input: &Tensor) -> Result<Self> {
+        let values = input.as_f32()?;
+        if values.is_empty() {
+            return Err(QuantizationError::InvalidInput(
+                "cannot inspect an empty tensor".to_owned(),
+            ));
+        }
+        let min = values.iter().copied().fold(f32::INFINITY, f32::min);
+        let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let sum_abs = values.iter().map(|value| value.abs()).sum::<f32>();
+        Ok(Self {
+            elements: values.len(),
+            min,
+            max,
+            mean_abs: sum_abs / values.len() as f32,
+            max_abs: min.abs().max(max.abs()),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizationErrorReport {
+    pub max_absolute_error: f32,
+    pub mean_absolute_error: f32,
+    pub relative_l2_error: f32,
+}
+
+pub trait QuantizationProvider {
+    fn scheme(&self) -> QuantizationScheme;
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor>;
+    fn inspect(&self, input: &Tensor) -> Result<QuantizationStats> {
+        QuantizationStats::inspect(input)
+    }
+    fn validate(&self, input: &Tensor) -> Result<()>;
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData>;
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor>;
+    fn error_report(
+        &self,
+        reference: &Tensor,
+        input: &QuantizedData,
+    ) -> Result<QuantizationErrorReport> {
+        let restored = self.dequantize(input)?;
+        let reference_values = reference.as_f32()?;
+        let restored_values = restored.as_f32()?;
+        if reference_values.len() != restored_values.len() {
+            return Err(QuantizationError::InvalidInput(
+                "error report tensors must have the same number of elements".to_owned(),
+            ));
+        }
+        let mut max_absolute_error: f32 = 0.0;
+        let mut sum_absolute_error: f32 = 0.0;
+        let mut sum_squared_reference: f32 = 0.0;
+        let mut sum_squared_error: f32 = 0.0;
+        for (reference, restored) in reference_values.iter().zip(restored_values) {
+            let error = *reference - *restored;
+            max_absolute_error = max_absolute_error.max(error.abs());
+            sum_absolute_error += error.abs();
+            sum_squared_reference += reference * reference;
+            sum_squared_error += error * error;
+        }
+        let denominator = sum_squared_reference.sqrt().max(f32::EPSILON);
+        Ok(QuantizationErrorReport {
+            max_absolute_error,
+            mean_absolute_error: sum_absolute_error / reference_values.len().max(1) as f32,
+            relative_l2_error: sum_squared_error.sqrt() / denominator,
+        })
+    }
+    fn export_layout(&self) -> &'static str;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FloatProvider;
+
+impl QuantizationProvider for FloatProvider {
+    fn scheme(&self) -> QuantizationScheme {
+        QuantizationScheme::None
+    }
+
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor> {
+        Ok(TensorStorageDescriptor::floating(DType::F32, shape)?)
+    }
+
+    fn validate(&self, _input: &Tensor) -> Result<()> {
+        Ok(())
+    }
+
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData> {
+        self.validate(input)?;
+        Ok(QuantizedData::Float(input.clone()))
+    }
+
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor> {
+        match input {
+            QuantizedData::Float(tensor) => Ok(tensor.clone()),
+            _ => Err(QuantizationError::InvalidInput(
+                "FloatProvider cannot dequantize a quantized tensor".to_owned(),
+            )),
+        }
+    }
+
+    fn export_layout(&self) -> &'static str {
+        "f32"
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NativeQ8_0Provider;
+
+impl QuantizationProvider for NativeQ8_0Provider {
+    fn scheme(&self) -> QuantizationScheme {
+        QuantizationScheme::Q8_0
+    }
+
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor> {
+        Ok(TensorStorageDescriptor::quantized(
+            DType::Q8_0,
+            QuantizationScheme::Q8_0,
+            shape,
+            Q8_0_BLOCK_SIZE,
+        )?)
+    }
+
+    fn validate(&self, input: &Tensor) -> Result<()> {
+        if !input.as_f32()?.len().is_multiple_of(Q8_0_BLOCK_SIZE) {
+            return Err(QuantizationError::InvalidInput(
+                "Q8_0 requires a multiple of 32 elements".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData> {
+        self.validate(input)?;
+        Ok(QuantizedData::Q8_0(quantize_q8_0(input)?))
+    }
+
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor> {
+        match input {
+            QuantizedData::Q8_0(tensor) => dequantize_q8_0(tensor),
+            _ => Err(QuantizationError::InvalidInput(
+                "NativeQ8_0Provider expects Q8_0 data".to_owned(),
+            )),
+        }
+    }
+
+    fn export_layout(&self) -> &'static str {
+        "ggml_q8_0"
+    }
+}
+
+/// The optional GGML adapter currently shares the validated native Rust
+/// implementation. A future FFI feature can replace its packing routine
+/// without changing the provider contract or runtime representation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GgmlQ8_0Provider;
+
+impl QuantizationProvider for GgmlQ8_0Provider {
+    fn scheme(&self) -> QuantizationScheme {
+        NativeQ8_0Provider.scheme()
+    }
+
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor> {
+        NativeQ8_0Provider.storage_descriptor(shape)
+    }
+
+    fn validate(&self, input: &Tensor) -> Result<()> {
+        NativeQ8_0Provider.validate(input)
+    }
+
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData> {
+        NativeQ8_0Provider.quantize(input)
+    }
+
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor> {
+        NativeQ8_0Provider.dequantize(input)
+    }
+
+    fn export_layout(&self) -> &'static str {
+        "ggml_q8_0"
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NativeQ4_0Provider;
+
+impl QuantizationProvider for NativeQ4_0Provider {
+    fn scheme(&self) -> QuantizationScheme {
+        QuantizationScheme::Q4_0
+    }
+
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor> {
+        Ok(TensorStorageDescriptor::quantized(
+            DType::Q4_0,
+            QuantizationScheme::Q4_0,
+            shape,
+            Q4_0_BLOCK_SIZE,
+        )?)
+    }
+
+    fn validate(&self, input: &Tensor) -> Result<()> {
+        if !input.as_f32()?.len().is_multiple_of(Q4_0_BLOCK_SIZE) {
+            return Err(QuantizationError::InvalidInput(
+                "Q4_0 requires a multiple of 32 elements".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData> {
+        self.validate(input)?;
+        Ok(QuantizedData::Q4_0(quantize_q4_0(input)?))
+    }
+
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor> {
+        match input {
+            QuantizedData::Q4_0(tensor) => dequantize_q4_0(tensor),
+            _ => Err(QuantizationError::InvalidInput(
+                "NativeQ4_0Provider expects Q4_0 data".to_owned(),
+            )),
+        }
+    }
+
+    fn export_layout(&self) -> &'static str {
+        "ggml_q4_0"
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dequantize_q8_0, quantize_q8_0};
+    use super::{dequantize_q8_0, quantize_q8_0, NativeQ4_0Provider, QuantizationProvider};
     use quantinfer_core::Tensor;
 
     #[test]
@@ -89,5 +394,26 @@ mod tests {
     fn rejects_non_block_aligned_input() {
         let input = Tensor::from_f32(vec![31], vec![1.0; 31]).unwrap();
         assert!(quantize_q8_0(&input).is_err());
+    }
+
+    #[test]
+    fn quantizes_q4_0_and_reports_error() {
+        let input = Tensor::from_f32(
+            vec![32],
+            (0..32).map(|value| value as f32 / 4.0 - 4.0).collect(),
+        )
+        .unwrap();
+        let provider = NativeQ4_0Provider;
+        let quantized = provider.quantize(&input).unwrap();
+        let restored = provider.dequantize(&quantized).unwrap();
+        assert!(
+            provider
+                .error_report(&input, &quantized)
+                .unwrap()
+                .max_absolute_error
+                < 0.4
+        );
+        assert_eq!(restored.shape(), input.shape());
+        assert_eq!(provider.export_layout(), "ggml_q4_0");
     }
 }

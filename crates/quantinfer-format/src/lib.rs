@@ -6,12 +6,17 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use half::{bf16, f16};
-use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor, Q8_0_BLOCK_SIZE};
+use quantinfer_core::{
+    Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, Tensor, Q4_0_BLOCK_SIZE,
+    Q8_0_BLOCK_SIZE,
+};
 
 pub type Result<T> = std::result::Result<T, FormatError>;
 
+pub mod manifest;
 pub mod safetensors;
 
+pub use manifest::*;
 pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo};
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
@@ -59,6 +64,7 @@ pub enum GgufValue {
 pub enum GgmlType {
     F32 = 0,
     F16 = 1,
+    Q4_0 = 2,
     Q8_0 = 8,
     BF16 = 30,
 }
@@ -70,6 +76,7 @@ impl TryFrom<u32> for GgmlType {
         match value {
             0 => Ok(Self::F32),
             1 => Ok(Self::F16),
+            2 => Ok(Self::Q4_0),
             8 => Ok(Self::Q8_0),
             30 => Ok(Self::BF16),
             _ => Err(FormatError::Invalid(format!(
@@ -219,6 +226,22 @@ impl GgufWriter {
             name: name.into(),
             shape: tensor.shape().dims().to_vec(),
             dtype: GgmlType::Q8_0,
+            data,
+        });
+    }
+
+    pub fn add_q4_0_tensor(&mut self, name: impl Into<String>, tensor: &QuantizedTensor4) {
+        let mut data = Vec::with_capacity(tensor.blocks().len() * 18);
+        for block in tensor.blocks() {
+            data.extend_from_slice(&f16::from_f32(block.scale).to_le_bytes());
+            for pair in block.values.chunks_exact(2) {
+                data.push(pair[0] | (pair[1] << 4));
+            }
+        }
+        self.tensors.push(PendingTensor {
+            name: name.into(),
+            shape: tensor.shape().dims().to_vec(),
+            dtype: GgmlType::Q4_0,
             data,
         });
     }
@@ -442,6 +465,11 @@ impl GgufReader {
                     "GGUF tensor {name} has type Q8_0, expected floating point"
                 )))
             }
+            GgmlType::Q4_0 => {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {name} has type Q4_0, expected floating point"
+                )))
+            }
         };
         if values.len() != info.shape.iter().product::<usize>() {
             return Err(FormatError::Invalid(format!(
@@ -485,6 +513,43 @@ impl GgufReader {
             blocks.push(Q8_0Block { scale, values });
         }
         Ok(QuantizedTensor::from_blocks(info.shape.clone(), blocks)?)
+    }
+
+    pub fn tensor_q4_0(&self, name: &str) -> Result<QuantizedTensor4> {
+        let info = self.tensor_info(name)?;
+        if info.dtype != GgmlType::Q4_0 {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} has type {:?}, expected Q4_0",
+                info.dtype
+            )));
+        }
+        let bytes = self.tensor_bytes(name)?;
+        let block_size = std::mem::size_of::<f16>() + Q4_0_BLOCK_SIZE / 2;
+        if !bytes.len().is_multiple_of(block_size) {
+            return Err(FormatError::Invalid(format!(
+                "GGUF Q4_0 tensor {name} has an invalid byte length"
+            )));
+        }
+        let mut blocks = Vec::with_capacity(bytes.len() / block_size);
+        for chunk in bytes.chunks_exact(block_size) {
+            let scale = f16::from_le_bytes(
+                chunk[..std::mem::size_of::<f16>()]
+                    .try_into()
+                    .map_err(|_| FormatError::Invalid("invalid Q4_0 scale".to_owned()))?,
+            )
+            .to_f32();
+            let mut values = [0_u8; Q4_0_BLOCK_SIZE];
+            for (index, packed) in chunk[std::mem::size_of::<f16>()..]
+                .iter()
+                .copied()
+                .enumerate()
+            {
+                values[index * 2] = packed & 0x0f;
+                values[index * 2 + 1] = packed >> 4;
+            }
+            blocks.push(Q4_0Block { scale, values });
+        }
+        Ok(QuantizedTensor4::from_blocks(info.shape.clone(), blocks)?)
     }
 }
 
@@ -602,6 +667,16 @@ fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
         GgmlType::F16 | GgmlType::BF16 => elements
             .checked_mul(2)
             .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned())),
+        GgmlType::Q4_0 => {
+            if !elements.is_multiple_of(Q4_0_BLOCK_SIZE) {
+                return Err(FormatError::Invalid(
+                    "Q4_0 tensor is not block aligned".to_owned(),
+                ));
+            }
+            (elements / Q4_0_BLOCK_SIZE)
+                .checked_mul(2 + Q4_0_BLOCK_SIZE / 2)
+                .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned()))
+        }
         GgmlType::Q8_0 => {
             if !elements.is_multiple_of(32) {
                 return Err(FormatError::Invalid(
@@ -726,7 +801,7 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{FormatError, GgmlType, GgufReader, GgufValue, GgufWriter};
-    use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor};
+    use quantinfer_core::{Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, Tensor};
 
     #[test]
     fn round_trips_scalar_metadata_and_f32_tensor() {
@@ -800,6 +875,28 @@ mod tests {
         );
         assert_eq!(
             reader.tensor_q8_0("blk.0.attn_q.weight").unwrap(),
+            quantized
+        );
+    }
+
+    #[test]
+    fn round_trips_q4_0_tensor_with_ggml_packing() {
+        let mut values = [0_u8; 32];
+        for (index, value) in values.iter_mut().enumerate() {
+            *value = (index % 16) as u8;
+        }
+        let quantized =
+            QuantizedTensor4::from_blocks(vec![32], vec![Q4_0Block { scale: 0.5, values }])
+                .unwrap();
+        let mut writer = GgufWriter::new();
+        writer.add_q4_0_tensor("blk.0.attn_q.weight", &quantized);
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        assert_eq!(
+            reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype,
+            GgmlType::Q4_0
+        );
+        assert_eq!(
+            reader.tensor_q4_0("blk.0.attn_q.weight").unwrap(),
             quantized
         );
     }

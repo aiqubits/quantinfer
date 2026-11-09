@@ -2,8 +2,10 @@
 
 #![forbid(unsafe_code)]
 
+pub mod provider;
 pub mod qwen3;
 
+pub use provider::*;
 pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
 
 use std::fmt;

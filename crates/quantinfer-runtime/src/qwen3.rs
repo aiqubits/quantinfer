@@ -1,4 +1,4 @@
-use quantinfer_core::{DType, QuantizedTensor, Shape, Tensor};
+use quantinfer_core::{DType, QuantizedTensor, QuantizedTensor4, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::Qwen3Config;
@@ -9,6 +9,7 @@ use crate::{KvCache, Result, RuntimeError};
 pub enum LinearWeight {
     F32(Tensor),
     Q8_0(QuantizedTensor),
+    Q4_0(QuantizedTensor4),
 }
 
 impl LinearWeight {
@@ -16,6 +17,7 @@ impl LinearWeight {
         match self {
             Self::F32(tensor) => tensor.shape(),
             Self::Q8_0(tensor) => tensor.shape(),
+            Self::Q4_0(tensor) => tensor.shape(),
         }
     }
 
@@ -23,6 +25,7 @@ impl LinearWeight {
         match self {
             Self::F32(_) => DType::F32,
             Self::Q8_0(_) => DType::Q8_0,
+            Self::Q4_0(_) => DType::Q4_0,
         }
     }
 
@@ -30,6 +33,7 @@ impl LinearWeight {
         match self {
             Self::F32(weight) => Ok(backend.matmul(input, weight)?),
             Self::Q8_0(weight) => Ok(backend.matmul_q8_0(input, weight)?),
+            Self::Q4_0(weight) => Ok(backend.matmul_q4_0(input, weight)?),
         }
     }
 }
@@ -336,6 +340,7 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
             Ok(LinearWeight::F32(reader.tensor_f32(name)?))
         }
         GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
+        GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
     }
 }
 

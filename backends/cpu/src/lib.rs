@@ -2,7 +2,9 @@
 
 #![forbid(unsafe_code)]
 
-use quantinfer_core::{QuantizedTensor, Shape, Tensor, Q8_0_BLOCK_SIZE};
+use quantinfer_core::{
+    QuantizedTensor, QuantizedTensor4, Shape, Tensor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+};
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -42,6 +44,14 @@ impl CpuScalar {
             .get(index / Q8_0_BLOCK_SIZE)
             .ok_or_else(|| KernelError::InvalidInput("Q8_0 index is out of bounds".to_owned()))?;
         Ok(block.scale * f32::from(block.values[index % Q8_0_BLOCK_SIZE]))
+    }
+
+    fn quantized_value_q4_0(&self, tensor: &QuantizedTensor4, index: usize) -> Result<f32> {
+        let block = tensor
+            .blocks()
+            .get(index / Q4_0_BLOCK_SIZE)
+            .ok_or_else(|| KernelError::InvalidInput("Q4_0 index is out of bounds".to_owned()))?;
+        Ok(block.scale * (f32::from(block.values[index % Q4_0_BLOCK_SIZE]) - 8.0))
     }
 }
 
@@ -86,6 +96,31 @@ impl KernelBackend for CpuScalar {
                 for inner in 0..k {
                     let rhs_index = inner * n + column;
                     sum += lhs_values[row * k + inner] * self.quantized_value(rhs, rhs_index)?;
+                }
+                output[row * n + column] = sum;
+            }
+        }
+        Ok(Tensor::from_f32(vec![m, n], output)?)
+    }
+
+    fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
+        let (m, k) = self.expect_matrix(lhs, "lhs")?;
+        let rhs_shape = rhs.shape().dims();
+        if rhs_shape.len() != 2 || rhs_shape[0] != k {
+            return Err(KernelError::InvalidInput(
+                "Q4_0 rhs must be a rank-2 matrix with a matching inner dimension".to_owned(),
+            ));
+        }
+        let n = rhs_shape[1];
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let mut output = vec![0.0; m * n];
+        for row in 0..m {
+            for column in 0..n {
+                let mut sum = 0.0;
+                for inner in 0..k {
+                    let rhs_index = inner * n + column;
+                    sum +=
+                        lhs_values[row * k + inner] * self.quantized_value_q4_0(rhs, rhs_index)?;
                 }
                 output[row * n + column] = sum;
             }
@@ -225,7 +260,7 @@ impl KernelBackend for CpuScalar {
 #[cfg(test)]
 mod tests {
     use super::{CpuScalar, KernelBackend};
-    use quantinfer_core::{Q8_0Block, QuantizedTensor, Tensor};
+    use quantinfer_core::{Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, Tensor};
 
     #[test]
     fn computes_matrix_product() {
@@ -246,6 +281,22 @@ mod tests {
             .unwrap();
         let result = backend.matmul_q8_0(&lhs, &rhs).unwrap();
         assert_eq!(result.as_f32().unwrap(), &[64.0]);
+    }
+
+    #[test]
+    fn computes_q4_matrix_product() {
+        let backend = CpuScalar::new();
+        let lhs = Tensor::from_f32(vec![1, 32], vec![1.0; 32]).unwrap();
+        let rhs = QuantizedTensor4::from_blocks(
+            vec![32, 1],
+            vec![Q4_0Block {
+                scale: 1.0,
+                values: [8_u8; 32],
+            }],
+        )
+        .unwrap();
+        let result = backend.matmul_q4_0(&lhs, &rhs).unwrap();
+        assert_eq!(result.as_f32().unwrap(), &[0.0]);
     }
 
     #[test]
