@@ -489,15 +489,29 @@ impl TensorStorageDescriptor {
     }
 
     pub fn validate(&self) -> Result<()> {
-        match (self.storage_type, self.quantization) {
-            (StorageType::Quantized, QuantizationScheme::None)
-            | (
-                StorageType::F32 | StorageType::F16 | StorageType::BF16,
-                QuantizationScheme::Q8_0 | QuantizationScheme::Q4_0,
-            ) => Err(CoreError::InvalidData(
-                "storage type and quantization scheme are inconsistent".to_owned(),
-            )),
-            _ => Ok(()),
+        let valid = match (self.storage_type, self.dtype, self.quantization) {
+            (StorageType::F32, DType::F32, QuantizationScheme::None)
+            | (StorageType::F16, DType::F16, QuantizationScheme::None)
+            | (StorageType::BF16, DType::BF16, QuantizationScheme::None) => {
+                self.block_size.is_none()
+                    && self.scale_type.is_none()
+                    && self.zero_point_type == ZeroPointType::None
+                    && matches!(self.quantization_axis, QuantizationAxis::None)
+            }
+            (StorageType::Quantized, DType::Q8_0, QuantizationScheme::Q8_0)
+            | (StorageType::Quantized, DType::Q4_0, QuantizationScheme::Q4_0) => {
+                self.block_size.is_some_and(|size| size > 0)
+                    && self.scale_type.is_some()
+                    && !matches!(self.quantization_axis, QuantizationAxis::None)
+            }
+            _ => false,
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(CoreError::InvalidData(
+                "storage type, dtype, and quantization scheme are inconsistent".to_owned(),
+            ))
         }
     }
 }
@@ -596,5 +610,8 @@ mod tests {
             32,
         )
         .is_err());
+        let mut invalid = descriptor;
+        invalid.quantization = super::QuantizationScheme::Q4_0;
+        assert!(invalid.validate().is_err());
     }
 }
