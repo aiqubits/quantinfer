@@ -1,0 +1,29 @@
+name: Model Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-format/**"
+      - "crates/quantinfer-model/**"
+      - "crates/quantinfer-quant/**"
+      - "crates/quantinfer-runtime/**"
+      - "crates/quantinfer-tokenizer/**"
+      - "backends/cpu/**"
+      - "tools/quantinfer-convert/**"
+      - ".github/workflows/model-conformance.yml"
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace --locked
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo run -p quantinfer-xtask -- bench

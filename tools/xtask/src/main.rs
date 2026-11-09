@@ -7,7 +7,7 @@ use std::time::Instant;
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::Tensor;
 use quantinfer_kernel::KernelBackend;
-use quantinfer_quant::quantize_q8_0;
+use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
 
 fn main() {
     let command = env::args().nth(1);
@@ -38,6 +38,7 @@ fn run_bench() {
     let rhs = Tensor::from_f32(vec![INPUT_COLUMNS, OUTPUT_COLUMNS], rhs_values)
         .expect("benchmark rhs shape is valid");
     let quantized = quantize_q8_0(&rhs).expect("benchmark rhs is Q8_0 block aligned");
+    let quantized_q4 = quantize_q4_0(&rhs).expect("benchmark rhs is Q4_0 block aligned");
     let backend = CpuScalar::new();
 
     let started = Instant::now();
@@ -51,6 +52,20 @@ fn run_bench() {
     let elapsed = started.elapsed();
     println!(
         "q8_0_matmul iterations={ITERATIONS} shape={INPUT_ROWS}x{INPUT_COLUMNS}x{OUTPUT_COLUMNS} elapsed_ns={} checksum={checksum:.6}",
+        elapsed.as_nanos()
+    );
+
+    let started = Instant::now();
+    let mut checksum = 0.0;
+    for _ in 0..ITERATIONS {
+        let result = backend
+            .matmul_q4_0(black_box(&lhs), black_box(&quantized_q4))
+            .expect("benchmark matmul should succeed");
+        checksum += result.as_f32().expect("benchmark result is F32")[0];
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "q4_0_matmul iterations={ITERATIONS} shape={INPUT_ROWS}x{INPUT_COLUMNS}x{OUTPUT_COLUMNS} elapsed_ns={} checksum={checksum:.6}",
         elapsed.as_nanos()
     );
 }
