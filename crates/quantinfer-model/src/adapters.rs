@@ -24,6 +24,14 @@ impl Qwen3Adapter {
         Ok(Self { config, spec })
     }
 
+    pub fn from_config(config: Qwen3Config) -> Result<Self, String> {
+        Self::new(config, "qwen3")
+    }
+
+    pub fn spec(&self) -> &ModelSpec {
+        &self.spec
+    }
+
     pub fn config(&self) -> &Qwen3Config {
         &self.config
     }
@@ -62,6 +70,14 @@ impl LlamaAdapter {
     pub fn new(config: LlamaConfig, model_id: impl Into<String>) -> Result<Self, String> {
         let spec = config.to_model_spec(model_id)?;
         Ok(Self { config, spec })
+    }
+
+    pub fn from_config(config: LlamaConfig) -> Result<Self, String> {
+        Self::new(config, "llama")
+    }
+
+    pub fn spec(&self) -> &ModelSpec {
+        &self.spec
     }
 
     pub fn config(&self) -> &LlamaConfig {

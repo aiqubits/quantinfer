@@ -108,6 +108,21 @@ pub trait RuntimeProvider: fmt::Debug + Send + Sync {
     }
 }
 
+pub trait ExecutionBackend: fmt::Debug + Send + Sync {
+    fn name(&self) -> &str;
+    fn capabilities(&self) -> &[KernelCapability];
+}
+
+impl<T: RuntimeProvider + ?Sized> ExecutionBackend for T {
+    fn name(&self) -> &str {
+        RuntimeProvider::name(self)
+    }
+
+    fn capabilities(&self) -> &[KernelCapability] {
+        RuntimeProvider::capabilities(self)
+    }
+}
+
 impl KernelCapability {
     fn operation_name(&self) -> &'static str {
         if self.quantization != QuantizationScheme::None {
@@ -122,6 +137,8 @@ impl KernelCapability {
 pub struct KernelRegistry {
     providers: Vec<Box<dyn RuntimeProvider>>,
 }
+
+pub type RuntimeProviderRegistry = KernelRegistry;
 
 impl KernelRegistry {
     pub fn new() -> Self {
@@ -149,6 +166,33 @@ impl KernelRegistry {
                     request
                 ))
             })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ExecutionResolver {
+    registry: KernelRegistry,
+}
+
+impl ExecutionResolver {
+    pub fn new(registry: KernelRegistry) -> Self {
+        Self { registry }
+    }
+
+    pub fn with_default_cpu() -> Self {
+        Self::new(default_registry())
+    }
+
+    pub fn registry(&self) -> &KernelRegistry {
+        &self.registry
+    }
+
+    pub fn registry_mut(&mut self) -> &mut KernelRegistry {
+        &mut self.registry
+    }
+
+    pub fn resolve(&self, request: &ExecutionRequest) -> Result<ExecutionPlan> {
+        self.registry.resolve(request)
     }
 }
 

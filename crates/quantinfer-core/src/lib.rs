@@ -422,6 +422,8 @@ pub struct TensorStorageDescriptor {
     pub backend_requirements: Vec<String>,
 }
 
+pub type QuantizedTensorDescriptor = TensorStorageDescriptor;
+
 impl TensorStorageDescriptor {
     pub fn floating(dtype: DType, logical_shape: Shape) -> Result<Self> {
         let storage_type = match dtype {
