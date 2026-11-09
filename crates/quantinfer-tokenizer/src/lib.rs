@@ -478,6 +478,31 @@ pub enum ThinkingMode {
     Disabled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatTemplateOptions {
+    pub thinking: ThinkingMode,
+    pub add_generation_prompt: bool,
+    pub add_bos_token: bool,
+}
+
+impl Default for ChatTemplateOptions {
+    fn default() -> Self {
+        Self {
+            thinking: ThinkingMode::Disabled,
+            add_generation_prompt: true,
+            add_bos_token: false,
+        }
+    }
+}
+
+pub trait ChatTemplate {
+    fn render_messages(
+        &self,
+        messages: &[ChatMessage],
+        options: ChatTemplateOptions,
+    ) -> Result<String>;
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Qwen3ChatTemplate;
 
@@ -488,16 +513,36 @@ impl Qwen3ChatTemplate {
         thinking: ThinkingMode,
         add_generation_prompt: bool,
     ) -> Result<String> {
+        self.render_messages(
+            messages,
+            ChatTemplateOptions {
+                thinking,
+                add_generation_prompt,
+                add_bos_token: false,
+            },
+        )
+    }
+}
+
+impl ChatTemplate for Qwen3ChatTemplate {
+    fn render_messages(
+        &self,
+        messages: &[ChatMessage],
+        options: ChatTemplateOptions,
+    ) -> Result<String> {
         if messages.is_empty() {
             return Err(TokenizerError::InvalidInput(
                 "chat template requires at least one message".to_owned(),
             ));
         }
         let mut output = String::new();
+        if options.add_bos_token {
+            output.push_str("<|im_start|>");
+        }
         for message in messages {
-            if message.role.is_empty() || message.content.is_empty() {
+            if message.role.is_empty() {
                 return Err(TokenizerError::InvalidInput(
-                    "chat message role and content cannot be empty".to_owned(),
+                    "chat message role cannot be empty".to_owned(),
                 ));
             }
             output.push_str("<|im_start|>");
@@ -506,9 +551,9 @@ impl Qwen3ChatTemplate {
             output.push_str(&message.content);
             output.push_str("<|im_end|>\n");
         }
-        if add_generation_prompt {
+        if options.add_generation_prompt {
             output.push_str("<|im_start|>assistant\n");
-            if thinking == ThinkingMode::Disabled {
+            if options.thinking == ThinkingMode::Disabled {
                 output.push_str("<think>\n\n</think>\n\n");
             }
         }
@@ -519,7 +564,8 @@ impl Qwen3ChatTemplate {
 #[cfg(test)]
 mod tests {
     use super::{
-        ByteTokenizer, ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
+        ByteTokenizer, ChatMessage, ChatTemplate, ChatTemplateOptions, GgufBpeTokenizer,
+        Qwen3ChatTemplate, ThinkingMode, Tokenizer,
     };
 
     #[test]
@@ -541,6 +587,28 @@ mod tests {
             .unwrap();
         assert!(prompt.contains("<|im_start|>user"));
         assert!(prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"));
+    }
+
+    #[test]
+    fn renders_multi_turn_history_and_tool_messages() {
+        let prompt = Qwen3ChatTemplate
+            .render_messages(
+                &[
+                    ChatMessage::new("system", "You are concise."),
+                    ChatMessage::new("user", "Call the tool."),
+                    ChatMessage::new("assistant", "<tool_call>{}</tool_call>"),
+                    ChatMessage::new("tool", "{}").clone(),
+                ],
+                ChatTemplateOptions {
+                    thinking: ThinkingMode::Enabled,
+                    add_generation_prompt: true,
+                    add_bos_token: true,
+                },
+            )
+            .unwrap();
+        assert!(prompt.starts_with("<|im_start|><|im_start|>system\n"));
+        assert!(prompt.contains("<|im_start|>tool\n{}<|im_end|>\n"));
+        assert!(prompt.ends_with("<|im_start|>assistant\n"));
     }
 
     #[test]
