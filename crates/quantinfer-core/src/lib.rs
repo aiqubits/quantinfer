@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 pub type Result<T> = std::result::Result<T, CoreError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,12 +34,13 @@ impl fmt::Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DType {
     F32,
     F16,
     BF16,
     Q8_0,
+    Q4_0,
 }
 
 impl DType {
@@ -45,12 +48,21 @@ impl DType {
         match self {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
-            Self::Q8_0 => 1,
+            Self::Q8_0 | Self::Q4_0 => 1,
+        }
+    }
+
+    pub const fn bit_width(self) -> usize {
+        match self {
+            Self::F32 => 32,
+            Self::F16 | Self::BF16 => 16,
+            Self::Q8_0 => 8,
+            Self::Q4_0 => 4,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Shape(Vec<usize>);
 
 impl Shape {
@@ -355,6 +367,199 @@ impl QuantizedTensor {
     }
 }
 
+/// The logical quantization scheme independent of a file format or backend
+/// packing. It is used by model manifests and execution capability matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QuantizationScheme {
+    None,
+    Q8_0,
+    Q4_0,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StorageType {
+    F32,
+    F16,
+    BF16,
+    Quantized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScaleType {
+    F32,
+    F16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ZeroPointType {
+    None,
+    U8,
+    I8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QuantizationAxis {
+    None,
+    Tensor,
+    Axis(usize),
+}
+
+/// Describes how a logical tensor is stored without prescribing a backend's
+/// physical implementation details.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorStorageDescriptor {
+    pub storage_type: StorageType,
+    pub dtype: DType,
+    pub quantization: QuantizationScheme,
+    pub block_size: Option<usize>,
+    pub group_size: Option<usize>,
+    pub scale_type: Option<ScaleType>,
+    pub zero_point_type: ZeroPointType,
+    pub quantization_axis: QuantizationAxis,
+    pub logical_shape: Shape,
+    pub physical_layout: String,
+    pub packing: String,
+    pub backend_requirements: Vec<String>,
+}
+
+impl TensorStorageDescriptor {
+    pub fn floating(dtype: DType, logical_shape: Shape) -> Result<Self> {
+        let storage_type = match dtype {
+            DType::F32 => StorageType::F32,
+            DType::F16 => StorageType::F16,
+            DType::BF16 => StorageType::BF16,
+            DType::Q8_0 | DType::Q4_0 => {
+                return Err(CoreError::InvalidData(
+                    "floating descriptor requires F32, F16, or BF16".to_owned(),
+                ))
+            }
+        };
+        Ok(Self {
+            storage_type,
+            dtype,
+            quantization: QuantizationScheme::None,
+            block_size: None,
+            group_size: None,
+            scale_type: None,
+            zero_point_type: ZeroPointType::None,
+            quantization_axis: QuantizationAxis::None,
+            logical_shape,
+            physical_layout: "row_major".to_owned(),
+            packing: "none".to_owned(),
+            backend_requirements: Vec::new(),
+        })
+    }
+
+    pub fn quantized(
+        dtype: DType,
+        quantization: QuantizationScheme,
+        logical_shape: Shape,
+        block_size: usize,
+    ) -> Result<Self> {
+        if !matches!(dtype, DType::Q8_0 | DType::Q4_0)
+            || matches!(quantization, QuantizationScheme::None)
+        {
+            return Err(CoreError::InvalidData(
+                "quantized descriptor requires a supported quantized dtype and scheme".to_owned(),
+            ));
+        }
+        if block_size == 0 || !logical_shape.num_elements().is_multiple_of(block_size) {
+            return Err(CoreError::InvalidData(
+                "quantized descriptor block size must divide the logical tensor".to_owned(),
+            ));
+        }
+        Ok(Self {
+            storage_type: StorageType::Quantized,
+            dtype,
+            quantization,
+            block_size: Some(block_size),
+            group_size: None,
+            scale_type: Some(ScaleType::F16),
+            zero_point_type: ZeroPointType::None,
+            quantization_axis: QuantizationAxis::Tensor,
+            logical_shape,
+            physical_layout: "row_major".to_owned(),
+            packing: match quantization {
+                QuantizationScheme::Q8_0 => "scalar".to_owned(),
+                QuantizationScheme::Q4_0 => "nibble_interleaved".to_owned(),
+                QuantizationScheme::None => "none".to_owned(),
+            },
+            backend_requirements: Vec::new(),
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match (self.storage_type, self.quantization) {
+            (StorageType::Quantized, QuantizationScheme::None)
+            | (
+                StorageType::F32 | StorageType::F16 | StorageType::BF16,
+                QuantizationScheme::Q8_0 | QuantizationScheme::Q4_0,
+            ) => Err(CoreError::InvalidData(
+                "storage type and quantization scheme are inconsistent".to_owned(),
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
+pub const Q4_0_BLOCK_SIZE: usize = 32;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q4_0Block {
+    pub scale: f32,
+    /// Unpacked values in the GGML range 0..=15. The format writer packs two
+    /// values per byte, while kernels consume this logical representation.
+    pub values: [u8; Q4_0_BLOCK_SIZE],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizedTensor4 {
+    shape: Shape,
+    blocks: Vec<Q4_0Block>,
+}
+
+impl QuantizedTensor4 {
+    pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4_0Block>) -> Result<Self> {
+        let shape = shape.into();
+        if !shape.num_elements().is_multiple_of(Q4_0_BLOCK_SIZE) {
+            return Err(CoreError::InvalidData(
+                "Q4_0 tensor element count must be a multiple of 32".to_owned(),
+            ));
+        }
+        if blocks.len() * Q4_0_BLOCK_SIZE != shape.num_elements() {
+            return Err(CoreError::InvalidData(
+                "Q4_0 block count does not match tensor shape".to_owned(),
+            ));
+        }
+        if blocks
+            .iter()
+            .flat_map(|block| block.values)
+            .any(|value| value > 15)
+        {
+            return Err(CoreError::InvalidData(
+                "Q4_0 values must fit in four bits".to_owned(),
+            ));
+        }
+        Ok(Self { shape, blocks })
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    pub fn blocks(&self) -> &[Q4_0Block] {
+        &self.blocks
+    }
+
+    pub fn blocks_mut(&mut self) -> &mut [Q4_0Block] {
+        &mut self.blocks
+    }
+
+    pub fn num_elements(&self) -> usize {
+        self.shape.num_elements()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{DType, Shape, Tensor};
@@ -371,5 +576,25 @@ mod tests {
         let tensor = Tensor::from_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         let reshaped = tensor.reshape(Shape::new(vec![4]).unwrap()).unwrap();
         assert_eq!(reshaped.as_f32().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn validates_quantized_storage_descriptor() {
+        let descriptor = super::TensorStorageDescriptor::quantized(
+            DType::Q8_0,
+            super::QuantizationScheme::Q8_0,
+            Shape::from(vec![64]),
+            32,
+        )
+        .unwrap();
+        descriptor.validate().unwrap();
+        assert_eq!(descriptor.dtype.bit_width(), 8);
+        assert!(super::TensorStorageDescriptor::quantized(
+            DType::Q4_0,
+            super::QuantizationScheme::Q4_0,
+            Shape::from(vec![31]),
+            32,
+        )
+        .is_err());
     }
 }
