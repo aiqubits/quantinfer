@@ -307,6 +307,16 @@ impl SafeTensorShards {
             })?;
             shards.insert(shard.clone(), file);
         }
+        for (tensor, shard) in &tensor_to_shard {
+            let file = shards.get(shard).ok_or_else(|| {
+                FormatError::Invalid(format!("missing loaded SafeTensors shard {shard}"))
+            })?;
+            if !file.tensors().contains_key(tensor) {
+                return Err(FormatError::Invalid(format!(
+                    "tensor {tensor} is not present in indexed shard {shard}"
+                )));
+            }
+        }
         Ok(Self {
             index_path,
             tensor_to_shard,
