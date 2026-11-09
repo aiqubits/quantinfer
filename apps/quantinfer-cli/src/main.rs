@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use quantinfer_backend_cpu::CpuScalar;
-use quantinfer_format::{GgufReader, GgufValue};
+use quantinfer_format::{GgufReader, GgufValue, ModelPackage};
 use quantinfer_runtime::{select_token, GenerationConfig, KvCache, LlamaModel, Qwen3Model};
 use quantinfer_tokenizer::{
     ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
@@ -43,11 +43,7 @@ fn run() -> Result<(), String> {
             let path = option_value(&arguments[1..], "--input")?
                 .map(PathBuf::from)
                 .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
-            let reader = GgufReader::open(
-                fs::read(&path)
-                    .map_err(|error| format!("cannot read {}: {error}", path.display()))?,
-            )
-            .map_err(|error| format!("cannot parse GGUF: {error}"))?;
+            let reader = open_model_reader(&path)?;
             println!("metadata: {}", reader.metadata().len());
             for key in reader.metadata().keys() {
                 println!("metadata_key={key}");
@@ -112,10 +108,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("invalid --max-sequence-length: {error}"))
         })
         .transpose()?;
-    let reader = GgufReader::open(
-        fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
-    )
-    .map_err(|error| format!("cannot parse GGUF: {error}"))?;
+    let reader = open_model_reader(&path)?;
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
     } else {
@@ -307,6 +300,34 @@ fn load_model(reader: &GgufReader) -> Result<LoadedModel, String> {
             .map(LoadedModel::Llama)
             .map_err(|error| format!("cannot load Llama model: {error}")),
         other => Err(format!("unsupported GGUF architecture {other}")),
+    }
+}
+
+fn open_model_reader(path: &PathBuf) -> Result<GgufReader, String> {
+    if path.is_dir() {
+        let package = ModelPackage::open(path)
+            .map_err(|error| format!("cannot open model package {}: {error}", path.display()))?;
+        let model_name = package
+            .manifest
+            .checksums
+            .keys()
+            .find(|name| name.ends_with(".gguf"))
+            .cloned()
+            .or_else(|| {
+                path.join("model.gguf")
+                    .exists()
+                    .then(|| "model.gguf".to_owned())
+            })
+            .ok_or_else(|| "model package manifest does not identify a GGUF file".to_owned())?;
+        let bytes = package
+            .read_verified(&model_name)
+            .map_err(|error| format!("cannot verify model package tensor file: {error}"))?;
+        GgufReader::open(bytes).map_err(|error| format!("cannot parse packaged GGUF: {error}"))
+    } else {
+        GgufReader::open(
+            fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
+        )
+        .map_err(|error| format!("cannot parse GGUF: {error}"))
     }
 }
 
