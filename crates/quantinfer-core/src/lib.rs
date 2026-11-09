@@ -502,8 +502,9 @@ impl TensorStorageDescriptor {
             }
             (StorageType::Quantized, DType::Q8_0, QuantizationScheme::Q8_0)
             | (StorageType::Quantized, DType::Q4_0, QuantizationScheme::Q4_0) => {
-                self.block_size.is_some_and(|size| size > 0)
-                    && self.scale_type.is_some()
+                self.block_size.is_some_and(|size| {
+                    size > 0 && self.logical_shape.num_elements().is_multiple_of(size)
+                }) && self.scale_type.is_some()
                     && !matches!(self.quantization_axis, QuantizationAxis::None)
             }
             _ => false,
