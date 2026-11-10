@@ -15,6 +15,7 @@ pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
 use std::fmt;
 
 use quantinfer_core::{Shape, Tensor};
+use quantinfer_model::{ModelAdapter, ModelSpec, TensorRole};
 
 pub type Result<T> = std::result::Result<T, RuntimeError>;
 
@@ -73,6 +74,34 @@ impl From<quantinfer_format::FormatError> for RuntimeError {
 impl From<quantinfer_kernel::KernelError> for RuntimeError {
     fn from(error: quantinfer_kernel::KernelError) -> Self {
         Self::Kernel(error)
+    }
+}
+
+fn tensor_source(spec: &ModelSpec, role: TensorRole, layer: Option<usize>) -> Result<&str> {
+    spec.tensor(role, layer)
+        .map(|tensor| tensor.source_name.as_str())
+        .ok_or_else(|| {
+            RuntimeError::InvalidInput(format!(
+                "{} model spec is missing tensor role {role:?} for layer {layer:?}",
+                spec.architecture,
+            ))
+        })
+}
+
+fn lm_head_source(adapter: &impl ModelAdapter) -> Result<String> {
+    let spec = adapter.model_spec();
+    if spec.embedding.tied_lm_head {
+        // A tied checkpoint may still store an explicit output weight.
+        adapter
+            .canonical_tensor_name("lm_head.weight")
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput(format!(
+                    "{} adapter is missing the LM head mapping",
+                    spec.architecture
+                ))
+            })
+    } else {
+        tensor_source(spec, TensorRole::LmHead, None).map(str::to_owned)
     }
 }
 

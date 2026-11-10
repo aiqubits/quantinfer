@@ -1,9 +1,9 @@
 use quantinfer_core::{DType, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::LlamaConfig;
+use quantinfer_model::{LlamaAdapter, LlamaConfig, TensorRole};
 
-use crate::qwen3::{add, gqa_attention, rope_tables, transpose_matrix, LinearWeight};
+use crate::qwen3::{add, gqa_attention, load_linear, rope_tables, transpose_matrix, LinearWeight};
 use crate::{KvCache, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
@@ -247,49 +247,50 @@ impl<B: KernelBackend> LlamaModel<B> {
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         let config = config_from_gguf(reader)?;
-        let embedding = reader.tensor_f32("token_embd.weight")?;
-        let final_norm = reader.tensor_f32("output_norm.weight")?;
-        let lm_head = match reader.tensor_info("output.weight") {
+        let adapter =
+            LlamaAdapter::from_config(config.clone()).map_err(RuntimeError::InvalidInput)?;
+        let spec = adapter.spec();
+        let embedding = reader.tensor_f32(crate::tensor_source(
+            spec,
+            TensorRole::TokenEmbedding,
+            None,
+        )?)?;
+        let final_norm = reader.tensor_f32(crate::tensor_source(
+            spec,
+            TensorRole::FinalNormalization,
+            None,
+        )?)?;
+        let head_name = crate::lm_head_source(&adapter)?;
+        let lm_head = match reader.tensor_info(&head_name) {
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
-                reader.tensor_f32("output.weight")?
+                reader.tensor_f32(&head_name)?
             }
             Ok(_) => {
-                return Err(RuntimeError::InvalidInput(
-                    "Llama output.weight must be floating point".to_owned(),
-                ))
+                return Err(RuntimeError::InvalidInput(format!(
+                    "Llama LM head {head_name} must be floating point"
+                )))
             }
-            Err(_) if config.tie_word_embeddings => transpose_matrix(&embedding)?,
+            Err(_) if spec.embedding.tied_lm_head => transpose_matrix(&embedding)?,
             Err(error) => return Err(error.into()),
         };
-        let mut layers = Vec::with_capacity(config.num_hidden_layers);
-        for layer_index in 0..config.num_hidden_layers {
-            let tensor = |suffix: &str| format!("blk.{layer_index}.{suffix}.weight");
+        let mut layers = Vec::with_capacity(spec.layers.len());
+        for layer in &spec.layers {
+            let name = |role| crate::tensor_source(spec, role, Some(layer.index));
+            let float = |role| Ok::<_, RuntimeError>(reader.tensor_f32(name(role)?)?);
+            let linear = |role| load_linear(reader, name(role)?);
             layers.push(LlamaLayerWeights {
-                input_layernorm: reader.tensor_f32(tensor("attn_norm").as_str())?,
-                q_proj: load_linear(reader, tensor("attn_q").as_str())?,
-                k_proj: load_linear(reader, tensor("attn_k").as_str())?,
-                v_proj: load_linear(reader, tensor("attn_v").as_str())?,
-                o_proj: load_linear(reader, tensor("attn_output").as_str())?,
-                post_attention_layernorm: reader.tensor_f32(tensor("ffn_norm").as_str())?,
-                gate_proj: load_linear(reader, tensor("ffn_gate").as_str())?,
-                up_proj: load_linear(reader, tensor("ffn_up").as_str())?,
-                down_proj: load_linear(reader, tensor("ffn_down").as_str())?,
+                input_layernorm: float(TensorRole::InputNormalization)?,
+                q_proj: linear(TensorRole::QueryProjection)?,
+                k_proj: linear(TensorRole::KeyProjection)?,
+                v_proj: linear(TensorRole::ValueProjection)?,
+                o_proj: linear(TensorRole::OutputProjection)?,
+                post_attention_layernorm: float(TensorRole::PostAttentionNormalization)?,
+                gate_proj: linear(TensorRole::GateProjection)?,
+                up_proj: linear(TensorRole::UpProjection)?,
+                down_proj: linear(TensorRole::DownProjection)?,
             });
         }
         Self::new(config, backend, embedding, layers, final_norm, lm_head)
-    }
-}
-
-fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
-    match reader.tensor_info(name)?.dtype {
-        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
-            Ok(LinearWeight::F32(reader.tensor_f32(name)?))
-        }
-        GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
-        GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
-        GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
-        GgmlType::Q5_K => Ok(LinearWeight::Q5_K(reader.tensor_q5_k(name)?)),
-        GgmlType::Q6_K => Ok(LinearWeight::Q6_K(reader.tensor_q6_k(name)?)),
     }
 }
 
