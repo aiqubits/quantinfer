@@ -7,6 +7,17 @@ User-facing executables such as the CLI and the optional HTTP server.
 Start the server with one or more `--model NAME=PATH` options. Each path can
 point to a GGUF file or a verified model package.
 
+`--model-registry registry.json` also loads models from a JSON object keyed by
+model name. Each entry contains `path` and an optional `revision`. Paths in the
+file resolve relative to the registry. On Unix, send `SIGHUP` after adding or
+removing entries or changing a path or revision. The server switches to the
+new registry after all changed models load successfully. Active requests keep
+using the model they acquired at admission.
+
+```json
+{"smol": {"path": "models/smol.gguf", "revision": "1"}}
+```
+
 ```sh
 cargo run --release --locked -p quantinfer-server -- \
   --bind 127.0.0.1:8080 --model smol=/path/to/model.gguf --context-length 64

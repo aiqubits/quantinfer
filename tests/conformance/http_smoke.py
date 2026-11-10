@@ -4,6 +4,7 @@ import concurrent.futures
 import contextlib
 import json
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -14,23 +15,24 @@ import urllib.request
 
 @contextlib.contextmanager
 def server(binary, *args):
-    with tempfile.TemporaryFile(mode="w+") as log:
-        process = subprocess.Popen(
-            [binary, "--bind", "127.0.0.1:0", "--context-length", "64", *args],
-            stdout=log, stderr=log,
-        )
+    with tempfile.TemporaryDirectory() as logs:
+        log_path = Path(logs) / "server.log"
+        with log_path.open("w") as log:
+            process = subprocess.Popen(
+                [binary, "--bind", "127.0.0.1:0", "--context-length", "64", *args],
+                stdout=log, stderr=log,
+            )
         try:
             deadline = time.monotonic() + 60
             while time.monotonic() < deadline and process.poll() is None:
-                log.seek(0)
-                addresses = [line.split()[-1] for line in log if "listening on" in line]
+                addresses = [line.split()[-1] for line in log_path.read_text().splitlines()
+                             if "listening on" in line]
                 if addresses:
                     break
                 time.sleep(0.05)
             else:
-                log.seek(0)
-                raise RuntimeError(f"server did not start\n{log.read()}")
-            yield f"http://{addresses[0]}"
+                raise RuntimeError(f"server did not start\n{log_path.read_text()}")
+            yield f"http://{addresses[0]}", process, log_path
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -41,8 +43,7 @@ def server(binary, *args):
                 process.wait()
                 raise
             if exit_code != 0:
-                log.seek(0)
-                raise RuntimeError(f"server exited with {exit_code}\n{log.read()}")
+                raise RuntimeError(f"server exited with {exit_code}\n{log_path.read_text()}")
 
 
 def request(base, path, payload=None):
@@ -57,7 +58,7 @@ def request(base, path, payload=None):
 def check(binary, model, golden):
     prompt = golden["prompt"]
     expected = golden["generated_tokens"]
-    with server(binary, "--model", f"primary={model}", "--model", f"secondary={model}") as base:
+    with server(binary, "--model", f"primary={model}", "--model", f"secondary={model}") as (base, _, _):
         assert json.loads(request(base, "/healthz")) == {"status": "ok"}
         models = json.loads(request(base, "/v1/models"))["data"]
         assert [entry["id"] for entry in models] == ["primary", "secondary"]
@@ -85,7 +86,7 @@ def check(binary, model, golden):
         assert counters["quantinfer_generated_tokens_total"] == 4 * len(expected)
         assert counters["quantinfer_batched_forward_steps_total"] > 0
 
-    with server(binary, "--model", f"primary={model}", "--kv-budget-bytes", "1") as base:
+    with server(binary, "--model", f"primary={model}", "--kv-budget-bytes", "1") as (base, _, _):
         try:
             request(base, "/v1/generate", {"model": "primary", "prompt": prompt})
         except urllib.error.HTTPError as error:
@@ -94,7 +95,7 @@ def check(binary, model, golden):
         else:
             raise AssertionError("server admitted a request over the KV quota")
 
-    with server(binary, "--model", f"primary={model}", "--request-timeout-ms", "1") as base:
+    with server(binary, "--model", f"primary={model}", "--request-timeout-ms", "1") as (base, _, _):
         try:
             request(base, "/v1/generate", {"model": "primary", "prompt": prompt})
         except urllib.error.HTTPError as error:
@@ -102,7 +103,7 @@ def check(binary, model, golden):
         else:
             raise AssertionError("server completed a request beyond its deadline")
 
-    with server(binary, "--requests-per-second", "1") as base:
+    with server(binary, "--requests-per-second", "1") as (base, _, _):
         for expected_status in (404, 429):
             try:
                 request(base, "/v1/generate", {"model": "unknown", "tokens": [1]})
@@ -112,6 +113,37 @@ def check(binary, model, golden):
                     assert error.headers["Retry-After"] == "1"
             else:
                 raise AssertionError("unexpected successful response")
+
+    if hasattr(signal, "SIGHUP"):
+        check_registry(binary, model, golden)
+
+
+def check_registry(binary, model, golden):
+    with tempfile.TemporaryDirectory() as directory:
+        config = Path(directory) / "registry.json"
+        (config.parent / "model.gguf").symlink_to(Path(model).resolve())
+        config.write_text(json.dumps({"primary": {"path": "model.gguf"}}))
+        with server(binary, "--model-registry", str(config)) as (base, process, log):
+            def ids():
+                return [entry["id"] for entry in json.loads(request(base, "/v1/models"))["data"]]
+
+            def reload(entries, message):
+                config.write_text(json.dumps(entries))
+                process.send_signal(signal.SIGHUP)
+                deadline = time.monotonic() + 30
+                while message not in log.read_text() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                assert message in log.read_text(), log.read_text()
+
+            assert ids() == ["primary"]
+            reload({"secondary": {"path": "missing.gguf"}}, "model registry reload failed")
+            assert ids() == ["primary"]
+            reload({"secondary": {"path": "model.gguf", "revision": "2"}}, "model registry reloaded")
+            assert ids() == ["secondary"]
+            result = json.loads(request(base, "/v1/generate", {
+                "model": "secondary", "prompt": golden["prompt"], "max_new_tokens": 2,
+            }))
+            assert result["tokens"] == golden["generated_tokens"][:2]
 
 
 if __name__ == "__main__":

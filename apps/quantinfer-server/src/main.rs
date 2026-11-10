@@ -2,11 +2,13 @@
 
 mod engine;
 mod rate;
+mod registry;
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::num::NonZeroUsize;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,9 +19,8 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
 use quantinfer::runtime::{DecodeEvent, DecodeSession, DecodeStopReason, GenerationConfig};
-use quantinfer::tokenizer::{GgufBpeTokenizer, Tokenizer};
+use quantinfer::tokenizer::Tokenizer;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -29,14 +30,10 @@ use tokio_stream::StreamExt;
 
 use engine::{Metrics, Submission};
 use rate::RateLimit;
-
-struct ServedModel {
-    decoder: Arc<CpuModel>,
-    tokenizer: Option<GgufBpeTokenizer>,
-}
+use registry::ModelRegistry;
 
 struct AppState {
-    models: BTreeMap<String, ServedModel>,
+    models: Arc<ModelRegistry>,
     queue: mpsc::Sender<Submission>,
     metrics: Arc<Metrics>,
     context_length: usize,
@@ -46,7 +43,8 @@ struct AppState {
 
 struct Settings {
     bind: String,
-    models: BTreeMap<String, String>,
+    models: BTreeMap<String, PathBuf>,
+    model_registry: Option<PathBuf>,
     context_length: usize,
     maximum_requests: usize,
     batch: engine::BatchLimits,
@@ -60,6 +58,7 @@ impl Settings {
         let mut settings = Self {
             bind: "127.0.0.1:8080".to_owned(),
             models: BTreeMap::new(),
+            model_registry: None,
             context_length: 512,
             maximum_requests: 8,
             batch: engine::BatchLimits {
@@ -103,6 +102,7 @@ impl Settings {
                 "--request-timeout-ms" => {
                     settings.request_timeout = Duration::from_millis(number()? as u64)
                 }
+                "--model-registry" => settings.model_registry = Some(PathBuf::from(value)),
                 "--model" => {
                     let (name, path) = value
                         .split_once('=')
@@ -110,7 +110,7 @@ impl Settings {
                         .ok_or_else(|| "--model requires NAME=PATH".to_owned())?;
                     if settings
                         .models
-                        .insert(name.to_owned(), path.to_owned())
+                        .insert(name.to_owned(), PathBuf::from(path))
                         .is_some()
                     {
                         return Err(format!("duplicate model name {name}"));
@@ -134,7 +134,7 @@ impl Settings {
 async fn main() {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N] [--requests-per-second N]");
+        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--model-registry FILE] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N] [--requests-per-second N]");
         return;
     }
     if let Err(error) = run(args).await {
@@ -145,25 +145,12 @@ async fn main() {
 
 async fn run(args: Vec<String>) -> Result<(), String> {
     let settings = Settings::parse(args)?;
-    let mut models = BTreeMap::new();
-    for (name, path) in settings.models {
-        let source =
-            ModelSource::open(path).map_err(|error| format!("cannot open {name}: {error}"))?;
-        let reader = source
-            .open_reader(None)
-            .map_err(|error| format!("cannot read {name}: {error}"))?;
-        let tokenizer = reader
-            .metadata()
-            .contains_key("tokenizer.ggml.tokens")
-            .then(|| load_gguf_tokenizer(&reader))
-            .transpose()
-            .map_err(|error| format!("cannot load {name} tokenizer: {error}"))?;
-        let manifest = source.package().map(|package| &package.manifest);
-        let decoder = CpuModel::from_gguf(&reader, manifest, None)
-            .map(Arc::new)
-            .map_err(|error| format!("cannot load {name}: {error}"))?;
-        models.insert(name, ServedModel { decoder, tokenizer });
-    }
+    let models = Arc::new(ModelRegistry::new(
+        settings.models,
+        settings.model_registry,
+    )?);
+    #[cfg(unix)]
+    let reload = models.watch()?;
     let listener = TcpListener::bind(&settings.bind)
         .await
         .map_err(|error| format!("cannot bind {}: {error}", settings.bind))?;
@@ -194,10 +181,15 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state);
     println!("quantinfer-server listening on {address}");
-    axum::serve(listener, router)
+    let served = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string());
+    #[cfg(unix)]
+    if let Some(reload) = reload {
+        reload.abort();
+    }
+    served?;
     worker
         .join()
         .map_err(|_| "decode worker panicked".to_owned())
@@ -220,7 +212,8 @@ async fn shutdown_signal() {
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let data: Vec<_> = state
         .models
-        .keys()
+        .names()
+        .into_iter()
         .map(|id| json!({"id": id, "object": "model"}))
         .collect();
     Json(json!({"data": data}))
