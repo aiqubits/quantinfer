@@ -482,7 +482,7 @@ impl TensorStorageDescriptor {
             physical_layout: "row_major".to_owned(),
             packing: match quantization {
                 QuantizationScheme::Q8_0 => "scalar".to_owned(),
-                QuantizationScheme::Q4_0 => "nibble_interleaved".to_owned(),
+                QuantizationScheme::Q4_0 => "nibble_split_half".to_owned(),
                 QuantizationScheme::Q4_K => "k_quant".to_owned(),
                 QuantizationScheme::Q5_K => "k_quant".to_owned(),
                 QuantizationScheme::Q6_K => "k_quant".to_owned(),

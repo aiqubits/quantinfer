@@ -23,6 +23,7 @@ pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo, SafeTenso
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
 const DEFAULT_ALIGNMENT: u64 = 32;
+const QUANT_BLOCK_LAYOUT: &str = "quantinfer.ggml.block_layout";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatError {
@@ -239,12 +240,12 @@ impl GgufWriter {
     }
 
     pub fn add_q4_0_tensor(&mut self, name: impl Into<String>, tensor: &QuantizedTensor4) {
+        self.insert_metadata(QUANT_BLOCK_LAYOUT, GgufValue::String("ggml".to_owned()));
         let mut data = Vec::with_capacity(tensor.blocks().len() * 18);
         for block in tensor.blocks() {
             data.extend_from_slice(&f16::from_f32(block.scale).to_le_bytes());
-            for pair in block.values.as_chunks::<2>().0 {
-                data.push(pair[0] | (pair[1] << 4));
-            }
+            let (lower, upper) = block.values.split_at(Q4_0_BLOCK_SIZE / 2);
+            data.extend(lower.iter().zip(upper).map(|(low, high)| low | (high << 4)));
         }
         self.tensors.push(PendingTensor {
             name: name.into(),
@@ -288,12 +289,13 @@ impl GgufWriter {
     }
 
     pub fn add_q6_k_tensor(&mut self, name: impl Into<String>, tensor: &QuantizedTensorQ6K) {
+        self.insert_metadata(QUANT_BLOCK_LAYOUT, GgufValue::String("ggml".to_owned()));
         let mut data = Vec::with_capacity(tensor.blocks().len() * 210);
         for block in tensor.blocks() {
-            data.extend_from_slice(&half::f16::from_f32(block.scale).to_le_bytes());
-            data.extend(block.scales.iter().map(|value| *value as u8));
             data.extend_from_slice(&block.low_bits);
             data.extend_from_slice(&block.high_bits);
+            data.extend(block.scales.iter().map(|value| *value as u8));
+            data.extend_from_slice(&f16::from_f32(block.scale).to_le_bytes());
         }
         self.tensors.push(PendingTensor {
             name: name.into(),
@@ -383,6 +385,23 @@ pub struct GgufReader {
 }
 
 impl GgufReader {
+    fn uses_legacy_quant_block_layout(&self) -> Result<bool> {
+        match self.metadata.get(QUANT_BLOCK_LAYOUT) {
+            Some(GgufValue::String(layout)) if layout == "ggml" => Ok(false),
+            Some(_) => Err(FormatError::Invalid(
+                "unsupported GGUF quantization block layout".to_owned(),
+            )),
+            // Older QuantInfer converter outputs declare the architecture-specific
+            // tie flag. The old standalone writer could omit the architecture.
+            None => Ok(match self.metadata.get("general.architecture") {
+                Some(GgufValue::String(architecture)) => self
+                    .metadata
+                    .contains_key(&format!("{architecture}.tie_word_embeddings")),
+                _ => true,
+            }),
+        }
+    }
+
     pub fn open(bytes: Vec<u8>) -> Result<Self> {
         let mut cursor = Cursor::new(&bytes);
         if cursor.read_exact(4)? != &GGUF_MAGIC[..] {
@@ -591,6 +610,7 @@ impl GgufReader {
             )));
         }
         let bytes = self.tensor_bytes(name)?;
+        let legacy = self.uses_legacy_quant_block_layout()?;
         let block_size = std::mem::size_of::<f16>() + Q4_0_BLOCK_SIZE / 2;
         if !bytes.len().is_multiple_of(block_size) {
             return Err(FormatError::Invalid(format!(
@@ -611,8 +631,13 @@ impl GgufReader {
                 .copied()
                 .enumerate()
             {
-                values[index * 2] = packed & 0x0f;
-                values[index * 2 + 1] = packed >> 4;
+                let (low, high) = if legacy {
+                    (index * 2, index * 2 + 1)
+                } else {
+                    (index, index + Q4_0_BLOCK_SIZE / 2)
+                };
+                values[low] = packed & 0x0f;
+                values[high] = packed >> 4;
             }
             blocks.push(Q4_0Block { scale, values });
         }
@@ -705,6 +730,7 @@ impl GgufReader {
             )));
         }
         let bytes = self.tensor_bytes(name)?;
+        let legacy = self.uses_legacy_quant_block_layout()?;
         if !bytes.len().is_multiple_of(210) {
             return Err(FormatError::Invalid(format!(
                 "GGUF Q6_K tensor {name} has an invalid byte length"
@@ -712,20 +738,22 @@ impl GgufReader {
         }
         let mut blocks = Vec::with_capacity(bytes.len() / 210);
         for chunk in bytes.as_chunks::<210>().0 {
-            let scale = f16::from_le_bytes(chunk[..2].try_into().unwrap()).to_f32();
-            let mut scales = [0_i8; 16];
-            for (index, value) in scales.iter_mut().enumerate() {
-                *value = chunk[2 + index] as i8;
-            }
-            let mut low_bits = [0_u8; 128];
-            low_bits.copy_from_slice(&chunk[18..146]);
-            let mut high_bits = [0_u8; 64];
-            high_bits.copy_from_slice(&chunk[146..]);
+            let (scale, scales, low_bits, high_bits) = if legacy {
+                (&chunk[..2], &chunk[2..18], &chunk[18..146], &chunk[146..])
+            } else {
+                (
+                    &chunk[208..],
+                    &chunk[192..208],
+                    &chunk[..128],
+                    &chunk[128..192],
+                )
+            };
+            let scale = f16::from_le_bytes(scale.try_into().unwrap()).to_f32();
             blocks.push(Q6KBlock {
                 scale,
-                scales,
-                low_bits,
-                high_bits,
+                scales: std::array::from_fn(|index| scales[index] as i8),
+                low_bits: low_bits.try_into().unwrap(),
+                high_bits: high_bits.try_into().unwrap(),
             });
         }
         Ok(QuantizedTensorQ6K::from_blocks(info.shape.clone(), blocks)?)
@@ -1009,9 +1037,10 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FormatError, GgmlType, GgufReader, GgufValue, GgufWriter};
+    use super::{FormatError, GgmlType, GgufReader, GgufValue, GgufWriter, QUANT_BLOCK_LAYOUT};
     use quantinfer_core::{
-        Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Tensor,
+        Q4_0Block, Q6KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K,
+        QuantizedTensorQ6K, Tensor,
     };
 
     #[test]
@@ -1094,7 +1123,7 @@ mod tests {
     fn round_trips_q4_0_tensor_with_ggml_packing() {
         let mut values = [0_u8; 32];
         for (index, value) in values.iter_mut().enumerate() {
-            *value = (index % 16) as u8;
+            *value = index.min(31 - index) as u8;
         }
         let quantized =
             QuantizedTensor4::from_blocks(vec![32], vec![Q4_0Block { scale: 0.5, values }])
@@ -1107,9 +1136,67 @@ mod tests {
             GgmlType::Q4_0
         );
         assert_eq!(
+            reader.tensor_bytes("blk.0.attn_q.weight").unwrap(),
+            [
+                0x00, 0x38, 0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5, 0x96, 0x87, 0x78, 0x69, 0x5a, 0x4b,
+                0x3c, 0x2d, 0x1e, 0x0f
+            ],
+        );
+        assert_eq!(
             reader.tensor_q4_0("blk.0.attn_q.weight").unwrap(),
             quantized
         );
+    }
+
+    #[test]
+    fn reads_standard_and_legacy_quant_block_bytes() {
+        let q4_values = std::array::from_fn(|index| (index % 16) as u8);
+        let q4 = QuantizedTensor4::from_blocks(
+            vec![32],
+            vec![Q4_0Block {
+                scale: 0.5,
+                values: q4_values,
+            }],
+        )
+        .unwrap();
+        let q6 = QuantizedTensorQ6K::from_blocks(
+            vec![256],
+            vec![Q6KBlock {
+                scale: 0.5,
+                scales: [-2; 16],
+                low_bits: [0x12; 128],
+                high_bits: [0x34; 64],
+            }],
+        )
+        .unwrap();
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata(
+            "general.architecture",
+            GgufValue::String("llama".to_owned()),
+        );
+        writer.add_q4_0_tensor("q4", &q4);
+        writer.add_q6_k_tensor("q6", &q6);
+        let standard_q6 = [&[0x12; 128][..], &[0x34; 64], &[0xfe; 16], &[0x00, 0x38]].concat();
+        writer.metadata.remove(QUANT_BLOCK_LAYOUT);
+        let reader = GgufReader::open(writer.clone().finish().unwrap()).unwrap();
+        assert_eq!(reader.tensor_bytes("q6").unwrap(), standard_q6);
+        assert_eq!(reader.tensor_q4_0("q4").unwrap(), q4);
+        assert_eq!(reader.tensor_q6_k("q6").unwrap(), q6);
+
+        writer.insert_metadata("llama.tie_word_embeddings", GgufValue::Bool(true));
+        writer.tensors[0].data = vec![
+            0x00, 0x38, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe, 0x10, 0x32, 0x54, 0x76,
+            0x98, 0xba, 0xdc, 0xfe,
+        ];
+        writer.tensors[1].data = [
+            &standard_q6[208..],
+            &standard_q6[192..208],
+            &standard_q6[..192],
+        ]
+        .concat();
+        let legacy = GgufReader::open(writer.finish().unwrap()).unwrap();
+        assert_eq!(legacy.tensor_q4_0("q4").unwrap(), q4);
+        assert_eq!(legacy.tensor_q6_k("q6").unwrap(), q6);
     }
 
     #[test]
