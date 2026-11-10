@@ -6,11 +6,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use quantinfer_backend_cpu::CpuScalar;
-use quantinfer_core::{DType, QuantizationScheme};
-use quantinfer_format::{GgufReader, GgufValue, ModelPackage};
+use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_runtime::{
-    select_token, ExecutionRequest, ExecutionResolver, GenerationConfig, KvCache, LlamaModel,
-    MemoryPlan, Qwen3Model,
+    select_token, GenerationConfig, KvCache, LlamaModel, MemoryPlan, Qwen3Model,
 };
 use quantinfer_tokenizer::{
     ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
@@ -47,7 +45,7 @@ fn run() -> Result<(), String> {
             let path = option_value(&arguments[1..], "--input")?
                 .map(PathBuf::from)
                 .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
-            let reader = open_model_reader(&path)?;
+            let (reader, _) = open_model_reader(&path)?;
             println!("metadata: {}", reader.metadata().len());
             for key in reader.metadata().keys() {
                 println!("metadata_key={key}");
@@ -121,7 +119,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .transpose()?;
     let profile = has_flag(arguments, "--profile");
     let model_read_started = Instant::now();
-    let reader = open_model_reader(&path)?;
+    let (reader, manifest) = open_model_reader(&path)?;
     let model_read_elapsed = model_read_started.elapsed();
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
@@ -159,7 +157,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         return Err("prompt must encode to at least one token".to_owned());
     }
     let model_load_started = Instant::now();
-    let model = load_model(&reader)?;
+    let model = load_model(&reader, manifest.as_ref())?;
     let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
     drop(reader);
     if prompt_tokens
@@ -371,26 +369,41 @@ impl LoadedModel {
     }
 }
 
-fn load_model(reader: &GgufReader) -> Result<LoadedModel, String> {
-    ExecutionResolver::with_default_cpu()
-        .resolve(&ExecutionRequest::cpu(DType::F32, QuantizationScheme::None))
-        .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
-    let architecture = match reader.metadata().get("general.architecture") {
-        Some(GgufValue::String(value)) => value.as_str(),
-        _ => "qwen3",
+fn load_model(
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+) -> Result<LoadedModel, String> {
+    let gguf_architecture = match reader.metadata().get("general.architecture") {
+        Some(GgufValue::String(value)) => Some(value.as_str()),
+        Some(_) => return Err("GGUF general.architecture must be a string".to_owned()),
+        None => None,
     };
+    let architecture = match manifest {
+        Some(manifest) => {
+            if gguf_architecture.is_some_and(|architecture| architecture != manifest.architecture) {
+                return Err(format!(
+                    "model package architecture {} disagrees with the GGUF",
+                    manifest.architecture
+                ));
+            }
+            &manifest.architecture
+        }
+        None => gguf_architecture.unwrap_or("qwen3"),
+    };
+    let backend = quantinfer::cpu::resolve_backend(reader, manifest)
+        .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
     match architecture {
-        "qwen3" => Qwen3Model::from_gguf(CpuScalar::new(), reader)
+        "qwen3" => Qwen3Model::from_gguf(backend, reader)
             .map(LoadedModel::Qwen3)
             .map_err(|error| format!("cannot load Qwen3 model: {error}")),
-        "llama" => LlamaModel::from_gguf(CpuScalar::new(), reader)
+        "llama" => LlamaModel::from_gguf(backend, reader)
             .map(LoadedModel::Llama)
             .map_err(|error| format!("cannot load Llama model: {error}")),
         other => Err(format!("unsupported GGUF architecture {other}")),
     }
 }
 
-fn open_model_reader(path: &PathBuf) -> Result<GgufReader, String> {
+fn open_model_reader(path: &PathBuf) -> Result<(GgufReader, Option<ModelManifest>), String> {
     if path.is_dir() {
         let package = ModelPackage::open(path)
             .map_err(|error| format!("cannot open model package {}: {error}", path.display()))?;
@@ -409,11 +422,14 @@ fn open_model_reader(path: &PathBuf) -> Result<GgufReader, String> {
         let bytes = package
             .read_verified(&model_name)
             .map_err(|error| format!("cannot verify model package tensor file: {error}"))?;
-        GgufReader::open(bytes).map_err(|error| format!("cannot parse packaged GGUF: {error}"))
+        let reader = GgufReader::open(bytes)
+            .map_err(|error| format!("cannot parse packaged GGUF: {error}"))?;
+        Ok((reader, Some(package.manifest)))
     } else {
         GgufReader::open(
             fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
         )
+        .map(|reader| (reader, None))
         .map_err(|error| format!("cannot parse GGUF: {error}"))
     }
 }

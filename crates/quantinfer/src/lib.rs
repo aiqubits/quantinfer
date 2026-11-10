@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "cpu")]
+pub mod cpu;
+
 pub use quantinfer_core as core;
 pub use quantinfer_format as format;
 pub use quantinfer_kernel as kernel;
