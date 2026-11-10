@@ -465,33 +465,47 @@ impl PackedTensorReader {
 
     /// Llama GGML files store output rows and use fastest-axis-first dimensions.
     pub fn llama_uses_ggml_layout(&self) -> Result<bool> {
+        self.uses_ggml_output_rows("llama")
+    }
+
+    /// Detect GGML dimension order and packed projection rows for a Dense model.
+    pub fn uses_ggml_output_rows(&self, architecture: &str) -> Result<bool> {
+        if !matches!(architecture, "llama" | "qwen3") {
+            return Ok(false);
+        }
         if self.embedded_manifest.is_some() {
             return qif::uses_ggml_dimension_order(&self.metadata);
         }
-        if self.metadata.contains_key("llama.tie_word_embeddings") {
+        if self
+            .metadata
+            .contains_key(&format!("{architecture}.tie_word_embeddings"))
+        {
+            return Ok(false);
+        }
+        let length_key = format!("{architecture}.embedding_length");
+        if architecture == "qwen3"
+            && !self.metadata.contains_key(&length_key)
+            && !self.metadata.contains_key("general.file_type")
+        {
             return Ok(false);
         }
         let embedding = self.tensor_info("token_embd.weight")?;
-        if let (Some(value), [first, second]) = (
-            self.metadata.get("llama.embedding_length"),
-            embedding.shape.as_slice(),
-        ) {
+        if let (Some(value), [first, second]) =
+            (self.metadata.get(&length_key), embedding.shape.as_slice())
+        {
             let hidden = match value {
                 GgufValue::U32(value) => u64::from(*value),
                 GgufValue::U64(value) => *value,
                 GgufValue::I32(value) if *value >= 0 => *value as u64,
                 GgufValue::I64(value) if *value >= 0 => *value as u64,
                 _ => {
-                    return Err(FormatError::Invalid(
-                        "GGUF metadata llama.embedding_length must be an unsigned integer"
-                            .to_owned(),
-                    ))
+                    return Err(FormatError::Invalid(format!(
+                        "GGUF metadata {length_key} must be an unsigned integer"
+                    )))
                 }
             };
             let hidden = usize::try_from(hidden).map_err(|_| {
-                FormatError::Invalid(
-                    "GGUF metadata llama.embedding_length overflows usize".to_owned(),
-                )
+                FormatError::Invalid(format!("GGUF metadata {length_key} overflows usize"))
             })?;
             match (*first == hidden, *second == hidden) {
                 (true, false) => return Ok(true),

@@ -55,10 +55,11 @@ contain a 64-bit byte length followed by UTF-8 bytes.
 Arrays have one scalar element type and contain at most 1,048,576 entries.
 Metadata keys are sorted by the writer.
 
-The boolean key `quantinfer.qif.ggml_dimension_order` records that a Llama
-source used GGML output rows and its RoPE channel ordering. QIF still stores
-row-major descriptor dimensions. The packed runtime adapter restores the
-dimension convention expected by the GGML weight loader.
+The boolean key `quantinfer.qif.ggml_dimension_order` records that a Llama or
+Qwen3 source used GGML output rows. QIF still stores row-major descriptor
+dimensions. The packed runtime adapter restores the dimension convention
+expected by the GGML weight loader, which also handles Llama's RoPE channel
+ordering.
 
 ## Tensor storage
 

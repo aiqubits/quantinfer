@@ -50,8 +50,10 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         return Err(invalid("metadata architecture disagrees with the manifest"));
     }
     let ggml = uses_ggml_dimension_order(&metadata)?;
-    if ggml && manifest.architecture != "llama" {
-        return Err(invalid("GGML dimension order requires a Llama model"));
+    if ggml && !matches!(manifest.architecture.as_str(), "llama" | "qwen3") {
+        return Err(invalid(
+            "GGML dimension order requires a Llama or Qwen3 model",
+        ));
     }
     let tensors = manifest
         .tensors
@@ -93,7 +95,7 @@ pub fn import_gguf(
         Some(_) => return Err(invalid("source architecture must be a string")),
     };
     let mut manifest = ModelManifest::new(model_id, architecture);
-    let ggml = architecture == "llama" && reader.llama_uses_ggml_layout()?;
+    let ggml = reader.uses_ggml_output_rows(architecture)?;
     metadata.insert(GGML_DIMENSION_ORDER.to_owned(), GgufValue::Bool(ggml));
     let mut payloads = BTreeMap::new();
     let mut schemes = Vec::new();

@@ -327,9 +327,15 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     needs: conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 0ec4027a2a0183de87c007069adddc06e665f7de
+          path: vendor/llama.cpp
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -395,6 +401,32 @@ jobs:
               "$variant" "qwen3-$variant.gguf" > "qwen3-$variant-benchmark.txt"
           done
           python3 benches/check-regressions.py qwen3-*-benchmark.txt
+      - name: Compare external Qwen3 GGUF generation with llama.cpp
+        shell: bash
+        run: |
+          llama="$RUNNER_TEMP/llama"
+          cmake -S vendor/llama.cpp -B "$llama" \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+            -DLLAMA_OPENSSL=OFF
+          cmake --build "$llama" --target llama-server llama-quantize --parallel 3
+          python -m pip install ./vendor/llama.cpp/gguf-py 'sentencepiece==0.2.2'
+          python vendor/llama.cpp/convert_hf_to_gguf.py qwen3 --outtype bf16 \
+            --outfile qwen3-upstream-BF16.gguf
+          for dtype in Q4_0 Q8_0; do
+            "$llama/bin/llama-quantize" --pure qwen3-upstream-BF16.gguf \
+              "qwen3-upstream-$dtype.gguf" "$dtype" 4
+          done
+          target/release/quantinfer-convert from-gguf --input qwen3-upstream-Q4_0.gguf \
+            --output qwen3-upstream-Q4_0.qif
+          for dtype in BF16 Q4_0 Q8_0; do
+            options=()
+            if [[ "$dtype" == Q4_0 ]]; then options=(--package qwen3-upstream-Q4_0.qif); fi
+            python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
+              --server "$llama/bin/llama-server" --model "qwen3-upstream-$dtype.gguf" \
+              --architecture qwen3 --dtype "$dtype" "${options[@]}"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:

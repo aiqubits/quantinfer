@@ -66,7 +66,7 @@ def llama_tokens(server, model, prompt, count):
                 process.wait()
 
 
-def compare_inventory(cli, model, dtype, reference):
+def compare_inventory(cli, model, dtype, reference, architecture):
     actual = json.loads(subprocess.check_output(
         [cli, "inspect-gguf", "--input", model, "--json"], text=True,
     ))
@@ -91,7 +91,7 @@ def compare_inventory(cli, model, dtype, reference):
         for tensor in actual["tensors"]
     }
     assert actual_tensors == expected_tensors, "tensor shapes, types or sizes differ"
-    assert actual["metadata"]["general.architecture"] == "llama"
+    assert actual["metadata"]["general.architecture"] == architecture
     assert actual_tensors["blk.0.attn_q.weight"][1] == dtype, "projection has unexpected dtype"
     if reference:
         source = GGUFReader(reference)
@@ -133,16 +133,19 @@ def main():
     parser.add_argument("--cli", required=True)
     parser.add_argument("--server", required=True)
     parser.add_argument("--model", required=True)
-    parser.add_argument("--dtype", required=True, choices=["F32", "Q8_0", "Q4_0"])
+    parser.add_argument("--dtype", required=True, choices=["F32", "BF16", "Q8_0", "Q4_0"])
+    parser.add_argument("--architecture", choices=["llama", "qwen3"], default="llama")
     parser.add_argument("--metadata-reference")
-    parser.add_argument("--package")
+    parser.add_argument("--package", help="also generate from a model package or QIF artifact")
     parser.add_argument("--inference-profile")
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--count", default=6, type=int)
     args = parser.parse_args()
     if args.inference_profile and not args.package:
         parser.error("--inference-profile requires --package")
-    compare_inventory(args.cli, args.model, args.dtype, args.metadata_reference)
+    if args.metadata_reference and args.architecture != "llama":
+        parser.error("--metadata-reference is available for Llama exports")
+    compare_inventory(args.cli, args.model, args.dtype, args.metadata_reference, args.architecture)
     encoded, generated = llama_tokens(args.server, args.model, args.prompt, args.count)
     assert len(generated) == args.count, f"reference generated only {len(generated)} tokens"
     inputs = [(args.model, None)]

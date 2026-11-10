@@ -62,10 +62,9 @@ fn load_wgpu(
 
     let manifest = manifest.or(reader.embedded_manifest());
     let architecture = model_architecture(reader, manifest).map_err(|error| error.to_string())?;
-    let ggml = architecture == "llama"
-        && reader
-            .llama_uses_ggml_layout()
-            .map_err(|error| error.to_string())?;
+    let ggml = reader
+        .uses_ggml_output_rows(architecture)
+        .map_err(|error| error.to_string())?;
     let backend = WgpuBackend::open(false).map_err(|error| error.to_string())?;
     let request = ExecutionRequest {
         device: Device::Gpu,

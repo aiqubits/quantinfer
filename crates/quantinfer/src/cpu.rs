@@ -5,9 +5,8 @@ use quantinfer_core::{
     DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme,
     GGML_OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
-use quantinfer_format::{GgmlType, GgufReader, GgufValue, ModelManifest};
+use quantinfer_format::{GgmlType, GgufReader, ModelManifest};
 use quantinfer_model::{ModelSpec, TensorRole};
-use quantinfer_runtime::llama::uses_ggml_layout;
 use quantinfer_runtime::{
     ExecutionRequest, ExecutionResolver, InferenceProfile, Operation, Result, RuntimeError,
 };
@@ -36,9 +35,8 @@ fn resolve_backend_impl(
 ) -> Result<CpuScalar> {
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
-    let is_llama = manifest.is_some_and(|manifest| manifest.architecture == "llama")
-        || matches!(reader.metadata().get("general.architecture"), Some(GgufValue::String(value)) if value == "llama");
-    let ggml_layout = is_llama && uses_ggml_layout(reader)?;
+    let architecture = model_architecture(reader, manifest)?;
+    let ggml_layout = reader.uses_ggml_output_rows(architecture)?;
     request.tensor_layout = "row_major".to_owned();
     request.operation = Some(Operation::Matmul);
     if let Some(manifest) = manifest {
@@ -156,7 +154,7 @@ fn ggml_float_weight(name: &str) -> bool {
 pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<usize> {
     let invalid = || RuntimeError::InvalidInput("CPU weight size overflows usize".to_owned());
     let mut bytes = 0usize;
-    let ggml_layout = spec.architecture == "llama" && uses_ggml_layout(reader)?;
+    let ggml_layout = reader.uses_ggml_output_rows(&spec.architecture)?;
     for tensor in reader.tensors() {
         let elements: usize = tensor.shape.iter().product();
         let (block_size, native_bytes) = match tensor.dtype {

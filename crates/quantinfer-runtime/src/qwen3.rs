@@ -8,6 +8,7 @@ use quantinfer_model::{ModelSpec, Qwen3Adapter, Qwen3Config, TensorRole};
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
+use crate::llama::{load_ggml_as_float, load_ggml_linear, load_ggml_matrix};
 use crate::{DecodeBatchItem, KvCache, LoraAdapter, LoraProjection, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
@@ -262,7 +263,7 @@ pub struct Qwen3Model<B> {
 
 impl<B: KernelBackend> Qwen3Model<B> {
     pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
-        config_from_gguf(reader)?
+        config_from_gguf(reader, reader.uses_ggml_output_rows("qwen3")?)?
             .to_model_spec("qwen3")
             .map_err(RuntimeError::InvalidInput)
     }
@@ -422,15 +423,23 @@ impl<B: KernelBackend> Qwen3Model<B> {
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
-        let config = config_from_gguf(reader)?;
+        let ggml_layout = reader.uses_ggml_output_rows("qwen3")?;
+        let config = config_from_gguf(reader, ggml_layout)?;
         let adapter =
             Qwen3Adapter::from_config(config.clone()).map_err(RuntimeError::InvalidInput)?;
         let spec = adapter.spec();
-        let embedding = reader.tensor_f32(crate::tensor_source(
-            spec,
-            TensorRole::TokenEmbedding,
-            None,
-        )?)?;
+        let embedding_name = crate::tensor_source(spec, TensorRole::TokenEmbedding, None)?;
+        let embedding = if ggml_layout {
+            let embedding = load_ggml_as_float(reader, embedding_name)?;
+            expect_shape(
+                &embedding,
+                &[config.hidden_size, config.vocab_size],
+                "GGML embedding",
+            )?;
+            embedding.reshape(spec.embedding.shape.clone())?
+        } else {
+            reader.tensor_f32(embedding_name)?
+        };
         let final_norm = reader.tensor_f32(crate::tensor_source(
             spec,
             TensorRole::FinalNormalization,
@@ -438,6 +447,7 @@ impl<B: KernelBackend> Qwen3Model<B> {
         )?)?;
         let head_name = crate::lm_head_source(&adapter)?;
         let lm_head = match reader.tensor_info(&head_name) {
+            Ok(_) if ggml_layout => load_ggml_matrix(reader, &head_name, None)?,
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
                 reader.tensor_f32(&head_name)?
             }
@@ -454,7 +464,14 @@ impl<B: KernelBackend> Qwen3Model<B> {
         for layer in &spec.layers {
             let name = |role| crate::tensor_source(spec, role, Some(layer.index));
             let float = |role| Ok::<_, RuntimeError>(reader.tensor_f32(name(role)?)?);
-            let linear = |role| load_linear(reader, name(role)?);
+            let linear = |role| {
+                let name = name(role)?;
+                if ggml_layout {
+                    load_ggml_linear(reader, name, None)
+                } else {
+                    load_linear(reader, name)
+                }
+            };
             layers.push(Qwen3LayerWeights {
                 input_layernorm: float(TensorRole::InputNormalization)?,
                 q_proj: linear(TensorRole::QueryProjection)?,
@@ -505,12 +522,18 @@ pub(crate) fn transpose_matrix(tensor: &Tensor) -> Result<Tensor> {
     Ok(Tensor::from_f32(vec![columns, rows], values)?)
 }
 
-fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
+fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<Qwen3Config> {
     let embedding = reader.tensor_info("token_embd.weight")?;
+    let (hidden_axis, vocab_axis) = if ggml_layout { (0, 1) } else { (1, 0) };
     let vocab_size = metadata_usize(reader, "qwen3.vocab_size")?
-        .unwrap_or_else(|| embedding.shape.first().copied().unwrap_or_default());
-    let hidden_size = metadata_usize(reader, "qwen3.embedding_length")?
-        .unwrap_or_else(|| embedding.shape.get(1).copied().unwrap_or_default());
+        .unwrap_or_else(|| embedding.shape.get(vocab_axis).copied().unwrap_or_default());
+    let hidden_size = metadata_usize(reader, "qwen3.embedding_length")?.unwrap_or_else(|| {
+        embedding
+            .shape
+            .get(hidden_axis)
+            .copied()
+            .unwrap_or_default()
+    });
     let num_hidden_layers = required_metadata_usize(reader, "qwen3.block_count")?;
     let num_attention_heads = required_metadata_usize(reader, "qwen3.attention.head_count")?;
     let num_key_value_heads =
@@ -527,11 +550,16 @@ fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
         )
     })?;
     let max_position_embeddings = required_metadata_usize(reader, "qwen3.context_length")?;
-    let head_dim = metadata_usize(reader, "qwen3.attention.head_dim")?;
+    let head_dim = if ggml_layout {
+        metadata_usize(reader, "qwen3.attention.key_length")?
+    } else {
+        metadata_usize(reader, "qwen3.attention.head_dim")?
+    };
     let rms_norm_eps =
         metadata_f32(reader, "qwen3.attention.layer_norm_rms_epsilon")?.unwrap_or(1e-6);
     let rope_theta = metadata_f32(reader, "qwen3.rope.freq_base")?.unwrap_or(1_000_000.0);
-    let tie_word_embeddings = metadata_bool(reader, "qwen3.tie_word_embeddings")?.unwrap_or(false);
+    let tie_word_embeddings = metadata_bool(reader, "qwen3.tie_word_embeddings")?
+        .unwrap_or_else(|| ggml_layout && reader.tensor_info("output.weight").is_err());
     let architectures = metadata_architectures(reader)
         .or_else(|| metadata_architectures_from_key(reader, "qwen3.architectures"))
         .unwrap_or_else(|| vec!["Qwen3ForCausalLM".to_owned()]);
@@ -554,6 +582,26 @@ fn config_from_gguf(reader: &GgufReader) -> Result<Qwen3Config> {
         architectures,
     };
     config.validate().map_err(RuntimeError::InvalidInput)?;
+    if ggml_layout {
+        for key in ["qwen3.rope.dimension_count", "qwen3.attention.value_length"] {
+            if metadata_usize(reader, key)?
+                .is_some_and(|value| value != config.effective_head_dim())
+            {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "unsupported GGML metadata {key}"
+                )));
+            }
+        }
+        if reader
+            .metadata()
+            .get("qwen3.rope.scaling.type")
+            .is_some_and(|value| !matches!(value, GgufValue::String(kind) if kind == "none"))
+        {
+            return Err(RuntimeError::InvalidInput(
+                "custom GGML RoPE scaling is unsupported".to_owned(),
+            ));
+        }
+    }
     Ok(config)
 }
 

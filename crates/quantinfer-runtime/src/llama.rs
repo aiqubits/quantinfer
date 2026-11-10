@@ -425,7 +425,7 @@ pub fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
     Ok(reader.llama_uses_ggml_layout()?)
 }
 
-fn load_ggml_as_float(reader: &GgufReader, name: &str) -> Result<Tensor> {
+pub(crate) fn load_ggml_as_float(reader: &GgufReader, name: &str) -> Result<Tensor> {
     match reader.tensor_info(name)?.dtype {
         GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => return Ok(reader.tensor_f32(name)?),
         GgmlType::Q8_0 => dequantize_q8_0(&reader.tensor_q8_0(name)?),
@@ -439,7 +439,7 @@ fn load_ggml_as_float(reader: &GgufReader, name: &str) -> Result<Tensor> {
     })
 }
 
-fn load_ggml_linear(
+pub(crate) fn load_ggml_linear(
     reader: &GgufReader,
     name: &str,
     rope_heads: Option<usize>,
@@ -510,7 +510,11 @@ fn reorder_ggml_rows<T: Clone>(blocks: &[T], row_blocks: usize, dim: usize) -> V
     ordered
 }
 
-fn load_ggml_matrix(reader: &GgufReader, name: &str, rope_heads: Option<usize>) -> Result<Tensor> {
+pub(crate) fn load_ggml_matrix(
+    reader: &GgufReader,
+    name: &str,
+    rope_heads: Option<usize>,
+) -> Result<Tensor> {
     let tensor = load_ggml_as_float(reader, name)?;
     let &[input, output] = tensor.shape().dims() else {
         return Err(RuntimeError::InvalidInput(format!(
