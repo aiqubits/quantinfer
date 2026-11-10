@@ -55,7 +55,7 @@ def request(base, path, payload=None):
         return response.read().decode()
 
 
-def check(binary, model, golden):
+def check(binary, model, golden, adapter=None):
     prompt = golden["prompt"]
     expected = golden["generated_tokens"]
     with server(binary, "--model", f"primary={model}", "--model", f"secondary={model}") as (base, _, _):
@@ -115,10 +115,10 @@ def check(binary, model, golden):
                 raise AssertionError("unexpected successful response")
 
     if hasattr(signal, "SIGHUP"):
-        check_registry(binary, model, golden)
+        check_registry(binary, model, golden, adapter)
 
 
-def check_registry(binary, model, golden):
+def check_registry(binary, model, golden, adapter):
     with tempfile.TemporaryDirectory() as directory:
         config = Path(directory) / "registry.json"
         (config.parent / "model.gguf").symlink_to(Path(model).resolve())
@@ -128,12 +128,13 @@ def check_registry(binary, model, golden):
                 return [entry["id"] for entry in json.loads(request(base, "/v1/models"))["data"]]
 
             def reload(entries, message):
+                log_start = len(log.read_text())
                 config.write_text(json.dumps(entries))
                 process.send_signal(signal.SIGHUP)
                 deadline = time.monotonic() + 30
-                while message not in log.read_text() and time.monotonic() < deadline:
+                while message not in log.read_text()[log_start:] and time.monotonic() < deadline:
                     time.sleep(0.05)
-                assert message in log.read_text(), log.read_text()
+                assert message in log.read_text()[log_start:], log.read_text()
 
             assert ids() == ["primary"]
             reload({"secondary": {"path": "missing.gguf"}}, "model registry reload failed")
@@ -144,7 +145,22 @@ def check_registry(binary, model, golden):
                 "model": "secondary", "prompt": golden["prompt"], "max_new_tokens": 2,
             }))
             assert result["tokens"] == golden["generated_tokens"][:2]
+            if adapter:
+                (config.parent / "adapter").symlink_to(Path(adapter).resolve(), target_is_directory=True)
+                entry = {"path": "model.gguf", "lora": "adapter"}
+                base_entry = {"path": "model.gguf", "revision": "2"}
+                reload({"adapted": entry, "secondary": base_entry}, "model registry reloaded")
+                assert ids() == ["adapted", "secondary"]
+                payload = {"model": "adapted", "prompt": golden["prompt"], "max_new_tokens": 1}
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    adapted = executor.submit(request, base, "/v1/generate", payload)
+                    original = executor.submit(request, base, "/v1/generate", {**payload, "model": "secondary"})
+                    assert json.loads(adapted.result())["tokens"] == [43]
+                    assert json.loads(original.result())["tokens"] == golden["generated_tokens"][:1]
+                reload({"adapted": {**entry, "lora": "missing-adapter"}}, "model registry reload failed")
+                result = json.loads(request(base, "/v1/generate", payload))
+                assert result["tokens"] == [43]
 
 
 if __name__ == "__main__":
-    check(sys.argv[1], sys.argv[2], json.loads(Path(sys.argv[3]).read_text()))
+    check(sys.argv[1], sys.argv[2], json.loads(Path(sys.argv[3]).read_text()), *sys.argv[4:])

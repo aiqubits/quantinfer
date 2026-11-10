@@ -235,8 +235,9 @@ jobs:
       - name: Exercise HTTP generation and streaming with SmolLM2
         run: |
           cargo build --release --locked -p quantinfer-server
+          python3 tests/conformance/make_lora_fixture.py config.json "$RUNNER_TEMP/http-lora"
           python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
-            smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
+            smollm2-f32.gguf tests/golden/smollm2-135m-f32.json "$RUNNER_TEMP/http-lora"
       - name: Compile and run the C ABI with SmolLM2
         run: |
           cargo build --release --locked -p quantinfer-c

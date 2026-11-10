@@ -8,14 +8,15 @@ Start the server with one or more `--model NAME=PATH` options. Each path can
 point to a GGUF file or a verified model package.
 
 `--model-registry registry.json` also loads models from a JSON object keyed by
-model name. Each entry contains `path` and an optional `revision`. Paths in the
-file resolve relative to the registry. On Unix, send `SIGHUP` after adding or
-removing entries or changing a path or revision. The server switches to the
-new registry after all changed models load successfully. Active requests keep
-using the model they acquired at admission.
+model name. Each entry contains `path`, an optional `revision`, and an optional
+`lora` directory for a PEFT adapter trained with that base model. Paths in the
+file resolve relative to the registry. On Unix, send `SIGHUP` after editing
+entries. Change `revision` when replacing files at existing paths. The server
+switches to the new registry after all changed models and adapters load
+successfully. Active requests keep using the model they acquired at admission.
 
 ```json
-{"smol": {"path": "models/smol.gguf", "revision": "1"}}
+{"smol": {"path": "models/smol.gguf", "revision": "1", "lora": "adapters/smol"}}
 ```
 
 ```sh

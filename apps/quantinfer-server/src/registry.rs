@@ -11,6 +11,7 @@ use serde::Deserialize;
 struct ModelEntry {
     path: PathBuf,
     revision: Option<String>,
+    lora: Option<PathBuf>,
 }
 
 pub struct ServedModel {
@@ -32,8 +33,24 @@ impl ServedModel {
             .transpose()
             .map_err(|error| error.to_string())?;
         let manifest = source.package().map(|package| &package.manifest);
-        let decoder =
+        let adapter = entry
+            .lora
+            .as_ref()
+            .map(|path| {
+                let spec = CpuModel::spec_from_gguf(&reader, manifest)
+                    .map_err(|error| error.to_string())?;
+                quantinfer_adapter_lora::load_peft(path, &spec).map_err(|error| {
+                    format!("cannot load LoRA adapter {}: {error}", path.display())
+                })
+            })
+            .transpose()?;
+        let mut decoder =
             CpuModel::from_gguf(&reader, manifest, None).map_err(|error| error.to_string())?;
+        if let Some(adapter) = adapter {
+            decoder
+                .attach_lora(adapter)
+                .map_err(|error| error.to_string())?;
+        }
         Ok(Self {
             entry,
             decoder: Arc::new(decoder),
@@ -86,6 +103,7 @@ impl ModelRegistry {
                     ModelEntry {
                         path: path.clone(),
                         revision: None,
+                        lora: None,
                     },
                 )
             })
@@ -160,6 +178,14 @@ fn read_entries(path: &Path) -> Result<BTreeMap<String, ModelEntry>, String> {
             return Err("model registry entries require a name and path".to_owned());
         }
         entry.path = base.join(&entry.path);
+        if let Some(adapter) = &mut entry.lora {
+            if adapter.as_os_str().is_empty() {
+                return Err(format!(
+                    "model registry entry {name} has an empty LoRA path"
+                ));
+            }
+            *adapter = base.join(adapter.as_path());
+        }
     }
     Ok(entries)
 }
