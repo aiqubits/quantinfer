@@ -469,19 +469,7 @@ impl TensorStorageDescriptor {
         logical_shape: Shape,
         block_size: usize,
     ) -> Result<Self> {
-        if !matches!(dtype, DType::Q8_0 | DType::Q4_0 | DType::Q4_K)
-            || matches!(quantization, QuantizationScheme::None)
-        {
-            return Err(CoreError::InvalidData(
-                "quantized descriptor requires a supported quantized dtype and scheme".to_owned(),
-            ));
-        }
-        if block_size == 0 || !logical_shape.num_elements().is_multiple_of(block_size) {
-            return Err(CoreError::InvalidData(
-                "quantized descriptor block size must divide the logical tensor".to_owned(),
-            ));
-        }
-        Ok(Self {
+        let descriptor = Self {
             storage_type: StorageType::Quantized,
             dtype,
             quantization,
@@ -501,7 +489,9 @@ impl TensorStorageDescriptor {
                 QuantizationScheme::None => "none".to_owned(),
             },
             backend_requirements: Vec::new(),
-        })
+        };
+        descriptor.validate()?;
+        Ok(descriptor)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -771,5 +761,18 @@ mod tests {
         let mut invalid = descriptor;
         invalid.quantization = super::QuantizationScheme::Q4_0;
         assert!(invalid.validate().is_err());
+        for (dtype, scheme) in [
+            (DType::Q5_K, super::QuantizationScheme::Q5_K),
+            (DType::Q6_K, super::QuantizationScheme::Q6_K),
+        ] {
+            let descriptor = super::TensorStorageDescriptor::quantized(
+                dtype,
+                scheme,
+                Shape::from(vec![2, 256]),
+                super::Q4_K_BLOCK_SIZE,
+            )
+            .unwrap();
+            assert_eq!(descriptor.quantization, scheme);
+        }
     }
 }
