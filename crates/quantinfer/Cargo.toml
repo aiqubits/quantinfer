@@ -12,7 +12,7 @@ wgpu = ["dep:quantinfer-backend-wgpu"]
 cuda = ["dep:quantinfer-backend-cuda"]
 metal = ["dep:quantinfer-backend-metal"]
 ascend = ["dep:quantinfer-backend-ascend"]
-candle = ["dep:quantinfer-adapter-candle"]
+candle = ["dep:quantinfer-adapter-candle", "quantinfer-adapter-candle/candle"]
 wasm = []
 wasi-nn = []
 

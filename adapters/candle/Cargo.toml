@@ -5,5 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-quantinfer-core = { workspace = true }
-quantinfer-model = { workspace = true }
+bytemuck = { version = "1", optional = true }
+candle-core = { version = "0.11.1", default-features = false, optional = true }
+quantinfer-core.workspace = true
+quantinfer-format = { workspace = true, optional = true }
+
+[features]
+candle = ["dep:bytemuck", "dep:candle-core", "dep:quantinfer-format"]

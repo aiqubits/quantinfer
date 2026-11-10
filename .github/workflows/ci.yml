@@ -17,6 +17,7 @@ jobs:
       - run: cargo test --workspace
       - run: cargo run -p quantinfer-xtask -- bench
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --locked -p quantinfer-adapter-candle --features candle
 
   cpu-simd:
     strategy:

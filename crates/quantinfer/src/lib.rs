@@ -5,6 +5,8 @@
 #[cfg(feature = "cpu")]
 pub mod cpu;
 
+#[cfg(feature = "candle")]
+pub use quantinfer_adapter_candle as candle;
 pub use quantinfer_core as core;
 pub use quantinfer_format as format;
 pub use quantinfer_kernel as kernel;
