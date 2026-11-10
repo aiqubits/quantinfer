@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use half::{bf16, f16};
+use sha2::{Digest, Sha256};
 
 use super::{FormatError, Result};
 
@@ -77,116 +79,7 @@ impl SafeTensorFile {
         let header = data
             .get(header_start..header_end)
             .ok_or_else(|| FormatError::Invalid("SafeTensors header is truncated".to_owned()))?;
-        let value: serde_json::Value = serde_json::from_slice(header)
-            .map_err(|error| FormatError::Invalid(format!("invalid SafeTensors JSON: {error}")))?;
-        let object = value.as_object().ok_or_else(|| {
-            FormatError::Invalid("SafeTensors header must be an object".to_owned())
-        })?;
-        let mut tensors = BTreeMap::new();
-        let mut metadata = BTreeMap::new();
-        for (name, entry) in object {
-            if name == "__metadata__" {
-                if let Some(entries) = entry.as_object() {
-                    for (key, value) in entries {
-                        if let Some(value) = value.as_str() {
-                            metadata.insert(key.clone(), value.to_owned());
-                        }
-                    }
-                }
-                continue;
-            }
-            let entry = entry
-                .as_object()
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} is not an object")))?;
-            let dtype = SafeTensorDType::parse(
-                entry
-                    .get("dtype")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no dtype")))?,
-            )?;
-            let shape = entry
-                .get("shape")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no shape")))?
-                .iter()
-                .map(|value| {
-                    value
-                        .as_u64()
-                        .ok_or_else(|| {
-                            FormatError::Invalid(format!("tensor {name} has an invalid shape"))
-                        })
-                        .and_then(|value| {
-                            usize::try_from(value).map_err(|_| {
-                                FormatError::Invalid(format!("tensor {name} shape overflows usize"))
-                            })
-                        })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            let offsets = entry
-                .get("data_offsets")
-                .and_then(serde_json::Value::as_array)
-                .ok_or_else(|| {
-                    FormatError::Invalid(format!("tensor {name} has no data offsets"))
-                })?;
-            if offsets.len() != 2 {
-                return Err(FormatError::Invalid(format!(
-                    "tensor {name} must have two data offsets"
-                )));
-            }
-            let start = offsets[0]
-                .as_u64()
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
-                .and_then(|value| {
-                    usize::try_from(value).map_err(|_| {
-                        FormatError::Invalid(format!("tensor {name} start offset overflows usize"))
-                    })
-                })?;
-            let end = offsets[1]
-                .as_u64()
-                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
-                .and_then(|value| {
-                    usize::try_from(value).map_err(|_| {
-                        FormatError::Invalid(format!("tensor {name} end offset overflows usize"))
-                    })
-                })?;
-            if start > end {
-                return Err(FormatError::Invalid(format!(
-                    "tensor {name} offsets exceed file bounds"
-                )));
-            }
-            let byte_start = data_start.checked_add(start).ok_or_else(|| {
-                FormatError::Invalid(format!("tensor {name} start exceeds file bounds"))
-            })?;
-            let byte_end = data_start.checked_add(end).ok_or_else(|| {
-                FormatError::Invalid(format!("tensor {name} end exceeds file bounds"))
-            })?;
-            if byte_end > data.len() {
-                return Err(FormatError::Invalid(format!(
-                    "tensor {name} offsets exceed file bounds"
-                )));
-            }
-            let elements = shape.iter().try_fold(1usize, |product, dimension| {
-                product.checked_mul(*dimension).ok_or_else(|| {
-                    FormatError::Invalid(format!("tensor {name} shape overflows usize"))
-                })
-            })?;
-            let expected_size = elements.checked_mul(dtype.element_size()).ok_or_else(|| {
-                FormatError::Invalid(format!("tensor {name} size overflows usize"))
-            })?;
-            if byte_end - byte_start != expected_size {
-                return Err(FormatError::Invalid(format!(
-                    "tensor {name} byte length does not match its shape"
-                )));
-            }
-            tensors.insert(
-                name.clone(),
-                SafeTensorInfo {
-                    dtype,
-                    shape,
-                    data_offsets: (start, end),
-                },
-            );
-        }
+        let (tensors, metadata) = parse_header(header, data_start, data.len())?;
         Ok(Self {
             data,
             data_start,
@@ -230,41 +123,98 @@ impl SafeTensorFile {
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
-        let bytes = self.tensor_bytes(name)?;
-        let element_size = info.dtype.element_size();
-        if !bytes.len().is_multiple_of(element_size) {
-            return Err(FormatError::Invalid(format!(
-                "tensor {name} has a non-aligned byte length"
-            )));
-        }
-        Ok(match info.dtype {
-            SafeTensorDType::F32 => bytes
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|chunk| f32::from_le_bytes(*chunk))
-                .collect(),
-            SafeTensorDType::F16 => bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|chunk| f16::from_le_bytes(*chunk).to_f32())
-                .collect(),
-            SafeTensorDType::BF16 => bytes
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|chunk| bf16::from_le_bytes(*chunk).to_f32())
-                .collect(),
-        })
+        decode_tensor_f32(info, self.tensor_bytes(name)?, name)
     }
 }
 
 #[derive(Debug, Clone)]
+struct SafeTensorShard {
+    path: PathBuf,
+    data_start: usize,
+    tensors: BTreeMap<String, SafeTensorInfo>,
+}
+
+impl SafeTensorShard {
+    fn open(path: PathBuf) -> Result<Self> {
+        let mut file = File::open(&path)
+            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
+        let file_len = usize::try_from(
+            file.metadata()
+                .map_err(|error| {
+                    FormatError::Io(format!("cannot stat {}: {error}", path.display()))
+                })?
+                .len(),
+        )
+        .map_err(|_| FormatError::Invalid("SafeTensors file size overflows usize".to_owned()))?;
+        let mut size_bytes = [0_u8; 8];
+        file.read_exact(&mut size_bytes).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot read SafeTensors header {}: {error}",
+                path.display()
+            ))
+        })?;
+        let header_size = usize::try_from(u64::from_le_bytes(size_bytes))
+            .map_err(|_| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
+        let data_start = 8usize
+            .checked_add(header_size)
+            .ok_or_else(|| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
+        if data_start > file_len {
+            return Err(FormatError::Invalid(
+                "SafeTensors header is truncated".to_owned(),
+            ));
+        }
+        let mut header = vec![0_u8; header_size];
+        file.read_exact(&mut header).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot read SafeTensors header {}: {error}",
+                path.display()
+            ))
+        })?;
+        let (tensors, _) = parse_header(&header, data_start, file_len)?;
+        Ok(Self {
+            path,
+            data_start,
+            tensors,
+        })
+    }
+
+    fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
+        let path = &self.path;
+        let info = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
+        let byte_start = self
+            .data_start
+            .checked_add(info.data_offsets.0)
+            .ok_or_else(|| {
+                FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
+            })?;
+        let byte_length = info.data_offsets.1 - info.data_offsets.0;
+        let mut file = File::open(path)
+            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
+        file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
+            |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
+        )?))
+        .map_err(|error| FormatError::Io(format!("cannot seek {}: {error}", path.display())))?;
+        let mut bytes = vec![0_u8; byte_length];
+        file.read_exact(&mut bytes).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot read tensor {name} from {}: {error}",
+                path.display()
+            ))
+        })?;
+        decode_tensor_f32(info, &bytes, name)
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Index of file-backed SafeTensors shards. Keep the source files available and
+/// unchanged while reading tensors from the index.
 pub struct SafeTensorShards {
     index_path: PathBuf,
     tensor_to_shard: BTreeMap<String, String>,
-    shards: BTreeMap<String, SafeTensorFile>,
+    shards: BTreeMap<String, SafeTensorShard>,
 }
 
 impl SafeTensorShards {
@@ -299,7 +249,7 @@ impl SafeTensorShards {
                 continue;
             }
             let path = parent.join(shard);
-            let file = SafeTensorFile::open_path(&path).map_err(|error| {
+            let file = SafeTensorShard::open(path.clone()).map_err(|error| {
                 FormatError::Io(format!(
                     "cannot open SafeTensors shard {}: {error}",
                     path.display()
@@ -311,7 +261,7 @@ impl SafeTensorShards {
             let file = shards.get(shard).ok_or_else(|| {
                 FormatError::Invalid(format!("missing loaded SafeTensors shard {shard}"))
             })?;
-            if !file.tensors().contains_key(tensor) {
+            if !file.tensors.contains_key(tensor) {
                 return Err(FormatError::Invalid(format!(
                     "tensor {tensor} is not present in indexed shard {shard}"
                 )));
@@ -332,7 +282,7 @@ impl SafeTensorShards {
         self.tensor_to_shard.iter().filter_map(|(name, shard)| {
             self.shards
                 .get(shard)
-                .and_then(|file| file.tensors().get(name))
+                .and_then(|file| file.tensors.get(name))
                 .map(|info| (name.as_str(), info))
         })
     }
@@ -346,17 +296,17 @@ impl SafeTensorShards {
 
     pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
         let shard = self.tensor_shard(name)?;
-        self.shards
-            .get(shard)
-            .ok_or_else(|| FormatError::Invalid(format!("missing loaded shard {shard}")))?
-            .tensor_f32(name)
+        self.shards[shard].tensor_f32(name)
     }
 
     pub fn verify_shard_checksum(&self, shard: &str, expected_sha256: &str) -> Result<()> {
         let parent = self.index_path.parent().unwrap_or_else(|| Path::new("."));
-        let bytes = fs::read(parent.join(shard))
+        let mut file = File::open(parent.join(shard))
             .map_err(|error| FormatError::Io(format!("cannot read shard {shard}: {error}")))?;
-        let actual = super::manifest::sha256_hex(&bytes);
+        let mut digest = Sha256::new();
+        std::io::copy(&mut file, &mut digest)
+            .map_err(|error| FormatError::Io(format!("cannot hash shard {shard}: {error}")))?;
+        let actual = format!("{:x}", digest.finalize());
         if actual != expected_sha256 {
             return Err(FormatError::Invalid(format!(
                 "checksum mismatch for shard {shard}: expected {expected_sha256}, got {actual}"
@@ -364,6 +314,150 @@ impl SafeTensorShards {
         }
         Ok(())
     }
+}
+
+fn decode_tensor_f32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<Vec<f32>> {
+    if !bytes.len().is_multiple_of(info.dtype.element_size()) {
+        return Err(FormatError::Invalid(format!(
+            "tensor {name} has a non-aligned byte length"
+        )));
+    }
+    Ok(match info.dtype {
+        SafeTensorDType::F32 => bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect(),
+        SafeTensorDType::F16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| f16::from_le_bytes(*chunk).to_f32())
+            .collect(),
+        SafeTensorDType::BF16 => bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|chunk| bf16::from_le_bytes(*chunk).to_f32())
+            .collect(),
+    })
+}
+
+fn parse_header(
+    header: &[u8],
+    data_start: usize,
+    file_len: usize,
+) -> Result<(BTreeMap<String, SafeTensorInfo>, BTreeMap<String, String>)> {
+    let value: serde_json::Value = serde_json::from_slice(header)
+        .map_err(|error| FormatError::Invalid(format!("invalid SafeTensors JSON: {error}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| FormatError::Invalid("SafeTensors header must be an object".to_owned()))?;
+    let mut tensors = BTreeMap::new();
+    let mut metadata = BTreeMap::new();
+    for (name, entry) in object {
+        if name == "__metadata__" {
+            if let Some(entries) = entry.as_object() {
+                for (key, value) in entries {
+                    if let Some(value) = value.as_str() {
+                        metadata.insert(key.clone(), value.to_owned());
+                    }
+                }
+            }
+            continue;
+        }
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} is not an object")))?;
+        let dtype = SafeTensorDType::parse(
+            entry
+                .get("dtype")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no dtype")))?,
+        )?;
+        let shape = entry
+            .get("shape")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no shape")))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_u64()
+                    .ok_or_else(|| {
+                        FormatError::Invalid(format!("tensor {name} has an invalid shape"))
+                    })
+                    .and_then(|value| {
+                        usize::try_from(value).map_err(|_| {
+                            FormatError::Invalid(format!("tensor {name} shape overflows usize"))
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let offsets = entry
+            .get("data_offsets")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has no data offsets")))?;
+        if offsets.len() != 2 {
+            return Err(FormatError::Invalid(format!(
+                "tensor {name} must have two data offsets"
+            )));
+        }
+        let start = offsets[0]
+            .as_u64()
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
+            .and_then(|value| {
+                usize::try_from(value).map_err(|_| {
+                    FormatError::Invalid(format!("tensor {name} start offset overflows usize"))
+                })
+            })?;
+        let end = offsets[1]
+            .as_u64()
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} has invalid offsets")))
+            .and_then(|value| {
+                usize::try_from(value).map_err(|_| {
+                    FormatError::Invalid(format!("tensor {name} end offset overflows usize"))
+                })
+            })?;
+        if start > end {
+            return Err(FormatError::Invalid(format!(
+                "tensor {name} offsets exceed file bounds"
+            )));
+        }
+        let byte_start = data_start.checked_add(start).ok_or_else(|| {
+            FormatError::Invalid(format!("tensor {name} start exceeds file bounds"))
+        })?;
+        let byte_end = data_start.checked_add(end).ok_or_else(|| {
+            FormatError::Invalid(format!("tensor {name} end exceeds file bounds"))
+        })?;
+        if byte_end > file_len {
+            return Err(FormatError::Invalid(format!(
+                "tensor {name} offsets exceed file bounds"
+            )));
+        }
+        let elements = shape.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| FormatError::Invalid(format!("tensor {name} shape overflows usize")))
+        })?;
+        let expected_size = elements
+            .checked_mul(dtype.element_size())
+            .ok_or_else(|| FormatError::Invalid(format!("tensor {name} size overflows usize")))?;
+        if byte_end - byte_start != expected_size {
+            return Err(FormatError::Invalid(format!(
+                "tensor {name} byte length does not match its shape"
+            )));
+        }
+        tensors.insert(
+            name.clone(),
+            SafeTensorInfo {
+                dtype,
+                shape,
+                data_offsets: (start, end),
+            },
+        );
+    }
+    Ok((tensors, metadata))
 }
 
 #[cfg(test)]
@@ -422,6 +516,20 @@ mod tests {
         );
         assert_eq!(shards.tensor_f32("b").unwrap(), vec![2.0]);
         assert_eq!(shards.tensors().count(), 2);
+        let second = directory.join("model-00002-of-00002.safetensors");
+        let checksum = crate::sha256_hex(&std::fs::read(&second).unwrap());
+        shards
+            .verify_shard_checksum("model-00002-of-00002.safetensors", &checksum)
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&second)
+            .unwrap()
+            .set_len(std::fs::metadata(&second).unwrap().len() - 1)
+            .unwrap();
+        let error = shards.tensor_f32("b").unwrap_err().to_string();
+        assert!(error.contains("model-00002-of-00002.safetensors"));
+        assert_eq!(shards.tensor_f32("a").unwrap(), vec![1.0]);
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
