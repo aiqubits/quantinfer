@@ -142,6 +142,15 @@ impl ModelManifest {
         }
         Ok(())
     }
+
+    pub fn checksums_sha256(&self) -> String {
+        self.checksums
+            .iter()
+            .map(|(path, checksum)| format!("{checksum}  {path}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + if self.checksums.is_empty() { "" } else { "\n" }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +209,7 @@ mod tests {
         decoded.verify_checksum("model.gguf", b"fixture").unwrap();
         assert_eq!(decoded.quantization, QuantizationScheme::None);
         assert_eq!(sha256_hex(b"fixture").len(), 64);
+        assert!(decoded.checksums_sha256().ends_with("  model.gguf\n"));
     }
 
     #[test]

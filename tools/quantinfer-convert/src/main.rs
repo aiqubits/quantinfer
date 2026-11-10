@@ -260,6 +260,10 @@ fn run() -> Result<(), String> {
             .map_err(|error| format!("cannot serialize model manifest: {error}"))?;
         fs::write(&manifest_path, json)
             .map_err(|error| format!("cannot write {}: {error}", manifest_path.display()))?;
+        if let Some(parent) = manifest_path.parent() {
+            fs::write(parent.join("checksums.sha256"), manifest.checksums_sha256())
+                .map_err(|error| format!("cannot write checksums.sha256: {error}"))?;
+        }
     }
     println!(
         "converted {} tensors to {}",
