@@ -105,6 +105,61 @@ impl CpuScalar {
         })
     }
 
+    fn matmul_rows(
+        &self,
+        lhs_values: &[f32],
+        rhs_values: &[f32],
+        rows: usize,
+        inner: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>> {
+        let worker_count = self.config.threads.max(1).min(rows.max(1));
+        let mut output = vec![0.0; rows * columns];
+        if worker_count == 1 || rows < 2 {
+            for row in 0..rows {
+                for column in 0..columns {
+                    let mut sum = 0.0;
+                    for index in 0..inner {
+                        sum +=
+                            lhs_values[row * inner + index] * rhs_values[index * columns + column];
+                    }
+                    output[row * columns + column] = sum;
+                }
+            }
+            return Ok(output);
+        }
+
+        let chunk_size = rows.div_ceil(worker_count);
+        std::thread::scope(|scope| -> Result<()> {
+            let mut handles = Vec::new();
+            for start in (0..rows).step_by(chunk_size) {
+                let end = (start + chunk_size).min(rows);
+                handles.push(scope.spawn(move || {
+                    let mut values = vec![0.0; (end - start) * columns];
+                    for row in start..end {
+                        for column in 0..columns {
+                            let mut sum = 0.0;
+                            for index in 0..inner {
+                                sum += lhs_values[row * inner + index]
+                                    * rhs_values[index * columns + column];
+                            }
+                            values[(row - start) * columns + column] = sum;
+                        }
+                    }
+                    (start, values)
+                }));
+            }
+            for handle in handles {
+                let (start, values) = handle
+                    .join()
+                    .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))?;
+                output[start * columns..(start * columns) + values.len()].copy_from_slice(&values);
+            }
+            Ok(())
+        })?;
+        Ok(output)
+    }
+
     fn quantized_value(&self, tensor: &QuantizedTensor, index: usize) -> Result<f32> {
         let block = tensor
             .blocks()
@@ -221,16 +276,7 @@ impl KernelBackend for CpuScalar {
         }
         let lhs_values = self.f32_values(lhs, "lhs")?;
         let rhs_values = self.f32_values(rhs, "rhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    sum += lhs_values[row * k + inner] * rhs_values[inner * n + column];
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows(lhs_values, rhs_values, m, k, n)?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -585,5 +631,28 @@ mod tests {
         });
         assert_eq!(backend.config().threads, 4);
         assert!(backend.config().workspace_reuse);
+    }
+
+    #[test]
+    fn threaded_f32_matmul_matches_scalar_reference() {
+        let lhs = Tensor::from_f32(
+            vec![8, 4],
+            (0..32).map(|index| index as f32 / 10.0).collect(),
+        )
+        .unwrap();
+        let rhs = Tensor::from_f32(
+            vec![4, 3],
+            (0..12).map(|index| index as f32 / 7.0).collect(),
+        )
+        .unwrap();
+        let scalar = CpuScalar::new().matmul(&lhs, &rhs).unwrap();
+        let threaded = CpuScalar::with_config(CpuRuntimeConfig {
+            isa: CpuIsa::Scalar,
+            threads: 4,
+            workspace_reuse: true,
+        })
+        .matmul(&lhs, &rhs)
+        .unwrap();
+        assert_eq!(threaded.as_f32().unwrap(), scalar.as_f32().unwrap());
     }
 }
