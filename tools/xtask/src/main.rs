@@ -56,6 +56,7 @@ fn run_bench() {
         backend.config().threads,
         backend.config().workspace_reuse
     );
+    println!("rss_kb_before={}", current_rss_kb().unwrap_or(0));
 
     let started = Instant::now();
     let mut checksum = 0.0;
@@ -110,6 +111,15 @@ fn run_bench() {
     run_quant_bench!("q4_k", quantized_q4_k, matmul_q4_k);
     run_quant_bench!("q5_k", quantized_q5_k, matmul_q5_k);
     run_quant_bench!("q6_k", quantized_q6_k, matmul_q6_k);
+    println!("rss_kb_after={}", current_rss_kb().unwrap_or(0));
+}
+
+fn current_rss_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status.lines().find_map(|line| {
+        let value = line.strip_prefix("VmRSS:")?.split_whitespace().next()?;
+        value.parse().ok()
+    })
 }
 
 fn run_conformance() {
