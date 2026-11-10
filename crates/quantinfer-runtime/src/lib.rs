@@ -197,6 +197,15 @@ impl KvCache {
             .map(|layer| (layer.keys.len() + layer.values.len()) * std::mem::size_of::<f32>())
             .sum()
     }
+
+    pub fn capacity_bytes(&self) -> usize {
+        self.layers.len()
+            * self.max_sequence_length
+            * self.num_key_value_heads
+            * self.head_dim
+            * 2
+            * std::mem::size_of::<f32>()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -361,6 +370,8 @@ mod tests {
         let value = Tensor::from_f32(vec![1, 2, 4], vec![2.0; 8]).unwrap();
         cache.append(0, &key, &value).unwrap();
         assert_eq!(cache.sequence_length(0).unwrap(), 1);
+        assert_eq!(cache.capacity_bytes(), 2 * 8 * 2 * 4 * 2 * 4);
+        assert!(cache.memory_bytes() < cache.capacity_bytes());
         assert_eq!(cache.key_values(0).unwrap(), &[1.0; 8]);
         assert_eq!(cache.value_values(0).unwrap(), &[2.0; 8]);
         assert_eq!(cache.keys(0).unwrap().as_f32().unwrap(), &[1.0; 8]);
