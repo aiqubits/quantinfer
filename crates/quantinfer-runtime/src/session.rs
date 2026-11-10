@@ -23,6 +23,7 @@ pub enum DecodeStopReason {
     Eos,
     MaxTokens,
     Cancelled,
+    TimedOut,
     Failed,
 }
 
