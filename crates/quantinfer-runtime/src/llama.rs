@@ -287,6 +287,7 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
         }
         GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
         GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
+        GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
     }
 }
 

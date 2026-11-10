@@ -316,6 +316,7 @@ dependencies = [
  "quantinfer-core",
  "quantinfer-kernel",
  "quantinfer-quant",
+ "quantinfer-tokenizer",
 ]
 
 [[package]]

@@ -35,12 +35,14 @@ impl fmt::Display for CoreError {
 impl std::error::Error for CoreError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
 pub enum DType {
     F32,
     F16,
     BF16,
     Q8_0,
     Q4_0,
+    Q4_K,
 }
 
 impl DType {
@@ -48,7 +50,7 @@ impl DType {
         match self {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
-            Self::Q8_0 | Self::Q4_0 => 1,
+            Self::Q8_0 | Self::Q4_0 | Self::Q4_K => 1,
         }
     }
 
@@ -58,6 +60,7 @@ impl DType {
             Self::F16 | Self::BF16 => 16,
             Self::Q8_0 => 8,
             Self::Q4_0 => 4,
+            Self::Q4_K => 4,
         }
     }
 }
@@ -370,10 +373,12 @@ impl QuantizedTensor {
 /// The logical quantization scheme independent of a file format or backend
 /// packing. It is used by model manifests and execution capability matching.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(non_camel_case_types)]
 pub enum QuantizationScheme {
     None,
     Q8_0,
     Q4_0,
+    Q4_K,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,7 +435,7 @@ impl TensorStorageDescriptor {
             DType::F32 => StorageType::F32,
             DType::F16 => StorageType::F16,
             DType::BF16 => StorageType::BF16,
-            DType::Q8_0 | DType::Q4_0 => {
+            DType::Q8_0 | DType::Q4_0 | DType::Q4_K => {
                 return Err(CoreError::InvalidData(
                     "floating descriptor requires F32, F16, or BF16".to_owned(),
                 ))
@@ -458,7 +463,7 @@ impl TensorStorageDescriptor {
         logical_shape: Shape,
         block_size: usize,
     ) -> Result<Self> {
-        if !matches!(dtype, DType::Q8_0 | DType::Q4_0)
+        if !matches!(dtype, DType::Q8_0 | DType::Q4_0 | DType::Q4_K)
             || matches!(quantization, QuantizationScheme::None)
         {
             return Err(CoreError::InvalidData(
@@ -484,6 +489,7 @@ impl TensorStorageDescriptor {
             packing: match quantization {
                 QuantizationScheme::Q8_0 => "scalar".to_owned(),
                 QuantizationScheme::Q4_0 => "nibble_interleaved".to_owned(),
+                QuantizationScheme::Q4_K => "k_quant".to_owned(),
                 QuantizationScheme::None => "none".to_owned(),
             },
             backend_requirements: Vec::new(),
@@ -506,7 +512,8 @@ impl TensorStorageDescriptor {
                     && matches!(self.quantization_axis, QuantizationAxis::None)
             }
             (StorageType::Quantized, DType::Q8_0, QuantizationScheme::Q8_0)
-            | (StorageType::Quantized, DType::Q4_0, QuantizationScheme::Q4_0) => {
+            | (StorageType::Quantized, DType::Q4_0, QuantizationScheme::Q4_0)
+            | (StorageType::Quantized, DType::Q4_K, QuantizationScheme::Q4_K) => {
                 self.block_size.is_some_and(|size| {
                     size > 0 && self.logical_shape.num_elements().is_multiple_of(size)
                 }) && self.scale_type.is_some()
@@ -525,6 +532,7 @@ impl TensorStorageDescriptor {
 }
 
 pub const Q4_0_BLOCK_SIZE: usize = 32;
+pub const Q4_K_BLOCK_SIZE: usize = 256;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q4_0Block {
@@ -574,6 +582,63 @@ impl QuantizedTensor4 {
     }
 
     pub fn blocks_mut(&mut self) -> &mut [Q4_0Block] {
+        &mut self.blocks
+    }
+
+    pub fn num_elements(&self) -> usize {
+        self.shape.num_elements()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q4KBlock {
+    pub scale: f32,
+    pub min_scale: f32,
+    pub scales: [u8; 12],
+    pub values: [u8; Q4_K_BLOCK_SIZE / 2],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizedTensorQ4K {
+    shape: Shape,
+    blocks: Vec<Q4KBlock>,
+}
+
+impl QuantizedTensorQ4K {
+    pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4KBlock>) -> Result<Self> {
+        let shape = shape.into();
+        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE) {
+            return Err(CoreError::InvalidData(
+                "Q4_K tensor element count must be a multiple of 256".to_owned(),
+            ));
+        }
+        if blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements() {
+            return Err(CoreError::InvalidData(
+                "Q4_K block count does not match tensor shape".to_owned(),
+            ));
+        }
+        if blocks
+            .iter()
+            .flat_map(|block| block.values)
+            .flat_map(|value| [value & 0x0f, value >> 4])
+            .any(|value| value > 15)
+        {
+            return Err(CoreError::InvalidData(
+                "Q4_K values must fit in four bits".to_owned(),
+            ));
+        }
+        Ok(Self { shape, blocks })
+    }
+
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+
+    pub fn blocks(&self) -> &[Q4KBlock] {
+        &self.blocks
+    }
+
+    pub fn blocks_mut(&mut self) -> &mut [Q4KBlock] {
         &mut self.blocks
     }
 

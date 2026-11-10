@@ -9,7 +9,7 @@ use quantinfer_format::{
     TensorManifest,
 };
 use quantinfer_model::{ModelAdapter, Qwen3Adapter, Qwen3Config};
-use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
+use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q8_0};
 use serde_json::Value;
 
 fn main() {
@@ -35,9 +35,9 @@ fn run() -> Result<(), String> {
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let quantization = optional_value(&arguments, "--quantize");
     if let Some(value) = &quantization {
-        if value != "q8_0" && value != "q4_0" {
+        if value != "q8_0" && value != "q4_0" && value != "q4_k" {
             return Err(format!(
-                "unsupported quantization {value}; use q8_0 or q4_0"
+                "unsupported quantization {value}; use q8_0, q4_0, or q4_k"
             ));
         }
     }
@@ -187,6 +187,11 @@ fn run() -> Result<(), String> {
             && values
                 .len()
                 .is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE);
+        let use_q4_k = quantization.as_deref() == Some("q4_k")
+            && is_quantizable_linear(output_name)
+            && values
+                .len()
+                .is_multiple_of(quantinfer_core::Q4_K_BLOCK_SIZE);
         let descriptor = if use_q8 {
             TensorStorageDescriptor::quantized(
                 DType::Q8_0,
@@ -200,6 +205,13 @@ fn run() -> Result<(), String> {
                 QuantizationScheme::Q4_0,
                 Shape::from(shape.clone()),
                 quantinfer_core::Q4_0_BLOCK_SIZE,
+            )
+        } else if use_q4_k {
+            TensorStorageDescriptor::quantized(
+                DType::Q4_K,
+                QuantizationScheme::Q4_K,
+                Shape::from(shape.clone()),
+                quantinfer_core::Q4_K_BLOCK_SIZE,
             )
         } else {
             TensorStorageDescriptor::floating(DType::F32, Shape::from(shape.clone()))
@@ -222,6 +234,12 @@ fn run() -> Result<(), String> {
             let quantized = quantize_q4_0(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
             writer.add_q4_0_tensor(output_name, &quantized);
+        } else if use_q4_k {
+            let tensor = Tensor::from_f32(shape.clone(), values)
+                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
+            let quantized = quantize_q4_k(&tensor)
+                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
+            writer.add_q4_k_tensor(output_name, &quantized);
         } else {
             writer
                 .add_f32_tensor(output_name, shape, &values)
@@ -240,6 +258,7 @@ fn run() -> Result<(), String> {
         manifest.quantization = match quantization.as_deref() {
             Some("q8_0") => QuantizationScheme::Q8_0,
             Some("q4_0") => QuantizationScheme::Q4_0,
+            Some("q4_k") => QuantizationScheme::Q4_K,
             _ => QuantizationScheme::None,
         };
         manifest.tensors = manifest_tensors;
@@ -510,7 +529,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k]"
     );
 }
 

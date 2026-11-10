@@ -3,7 +3,8 @@
 #![forbid(unsafe_code)]
 
 use quantinfer_core::{
-    QuantizedTensor, QuantizedTensor4, Shape, Tensor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Shape, Tensor, Q4_0_BLOCK_SIZE,
+    Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
@@ -52,6 +53,37 @@ impl CpuScalar {
             .get(index / Q4_0_BLOCK_SIZE)
             .ok_or_else(|| KernelError::InvalidInput("Q4_0 index is out of bounds".to_owned()))?;
         Ok(block.scale * (f32::from(block.values[index % Q4_0_BLOCK_SIZE]) - 8.0))
+    }
+
+    fn quantized_value_q4_k(&self, tensor: &QuantizedTensorQ4K, index: usize) -> Result<f32> {
+        let block = tensor
+            .blocks()
+            .get(index / Q4_K_BLOCK_SIZE)
+            .ok_or_else(|| KernelError::InvalidInput("Q4_K index is out of bounds".to_owned()))?;
+        let local = index % Q4_K_BLOCK_SIZE;
+        let mut scales = [0_u8; 8];
+        let mut mins = [0_u8; 8];
+        for subblock in 0..4 {
+            scales[subblock] = block.scales[subblock] & 0x3f;
+            mins[subblock] = block.scales[4 + subblock] & 0x3f;
+            scales[4 + subblock] =
+                (block.scales[8 + subblock] & 0x0f) | ((block.scales[subblock] >> 6) << 4);
+            mins[4 + subblock] =
+                (block.scales[8 + subblock] >> 4) | ((block.scales[4 + subblock] >> 6) << 4);
+        }
+        let group = local / 64;
+        let within_group = local % 64;
+        let packed = block.values[group * 32 + within_group % 32];
+        let quantized = if within_group < 32 {
+            packed & 0x0f
+        } else {
+            packed >> 4
+        };
+        let subblock = local / 32;
+        Ok(
+            block.scale * f32::from(scales[subblock]) * f32::from(quantized)
+                - block.min_scale * f32::from(mins[subblock]),
+        )
     }
 }
 
@@ -121,6 +153,30 @@ impl KernelBackend for CpuScalar {
                     let rhs_index = inner * n + column;
                     sum +=
                         lhs_values[row * k + inner] * self.quantized_value_q4_0(rhs, rhs_index)?;
+                }
+                output[row * n + column] = sum;
+            }
+        }
+        Ok(Tensor::from_f32(vec![m, n], output)?)
+    }
+
+    fn matmul_q4_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor> {
+        let (m, k) = self.expect_matrix(lhs, "lhs")?;
+        let rhs_shape = rhs.shape().dims();
+        if rhs_shape.len() != 2 || rhs_shape[0] != k {
+            return Err(KernelError::InvalidInput(
+                "Q4_K rhs must be a rank-2 matrix with a matching inner dimension".to_owned(),
+            ));
+        }
+        let n = rhs_shape[1];
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let mut output = vec![0.0; m * n];
+        for row in 0..m {
+            for column in 0..n {
+                let mut sum = 0.0;
+                for inner in 0..k {
+                    sum += lhs_values[row * k + inner]
+                        * self.quantized_value_q4_k(rhs, inner * n + column)?;
                 }
                 output[row * n + column] = sum;
             }
@@ -260,7 +316,10 @@ impl KernelBackend for CpuScalar {
 #[cfg(test)]
 mod tests {
     use super::{CpuScalar, KernelBackend};
-    use quantinfer_core::{Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, Tensor};
+    use quantinfer_core::{
+        Q4KBlock, Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K,
+        Tensor,
+    };
 
     #[test]
     fn computes_matrix_product() {
@@ -297,6 +356,24 @@ mod tests {
         .unwrap();
         let result = backend.matmul_q4_0(&lhs, &rhs).unwrap();
         assert_eq!(result.as_f32().unwrap(), &[0.0]);
+    }
+
+    #[test]
+    fn computes_q4_k_matrix_product() {
+        let backend = CpuScalar::new();
+        let lhs = Tensor::from_f32(vec![1, 256], vec![1.0; 256]).unwrap();
+        let rhs = QuantizedTensorQ4K::from_blocks(
+            vec![256, 1],
+            vec![Q4KBlock {
+                scale: 0.1,
+                min_scale: 0.0,
+                scales: [63; 12],
+                values: [0x99; 128],
+            }],
+        )
+        .unwrap();
+        let result = backend.matmul_q4_k(&lhs, &rhs).unwrap();
+        assert!(result.as_f32().unwrap()[0] > 200.0);
     }
 
     #[test]
