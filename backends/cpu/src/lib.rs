@@ -8,12 +8,78 @@ use quantinfer_core::{
 };
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
-#[derive(Debug, Default, Clone, Copy)]
-pub struct CpuScalar;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuIsa {
+    Scalar,
+    Avx2,
+    Avx512,
+    Neon,
+}
+
+impl CpuIsa {
+    pub fn detect() -> Self {
+        #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+        {
+            return CpuIsa::Neon;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx512f") {
+                return CpuIsa::Avx512;
+            }
+            if is_x86_feature_detected!("avx2") {
+                return CpuIsa::Avx2;
+            }
+        }
+        CpuIsa::Scalar
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuRuntimeConfig {
+    pub isa: CpuIsa,
+    pub threads: usize,
+    pub workspace_reuse: bool,
+}
+
+impl Default for CpuRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            isa: CpuIsa::detect(),
+            threads: 1,
+            workspace_reuse: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct CpuScalar {
+    config: CpuRuntimeConfig,
+}
+
+impl Default for CpuScalar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl CpuScalar {
     pub const fn new() -> Self {
-        Self
+        Self {
+            config: CpuRuntimeConfig {
+                isa: CpuIsa::Scalar,
+                threads: 1,
+                workspace_reuse: true,
+            },
+        }
+    }
+
+    pub const fn with_config(config: CpuRuntimeConfig) -> Self {
+        Self { config }
+    }
+
+    pub const fn config(&self) -> CpuRuntimeConfig {
+        self.config
     }
 
     fn f32_values<'a>(&self, tensor: &'a Tensor, name: &str) -> Result<&'a [f32]> {
@@ -420,7 +486,7 @@ impl KernelBackend for CpuScalar {
 
 #[cfg(test)]
 mod tests {
-    use super::{CpuScalar, KernelBackend};
+    use super::{CpuIsa, CpuRuntimeConfig, CpuScalar, KernelBackend};
     use quantinfer_core::{
         Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
         QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor,
@@ -508,5 +574,16 @@ mod tests {
             .apply_rope(&input, &[0.0, 1.0], &[1.0, 0.0])
             .unwrap();
         assert_eq!(output.as_f32().unwrap(), &[-3.0, 2.0, 1.0, 4.0]);
+    }
+
+    #[test]
+    fn exposes_safe_cpu_isa_and_thread_configuration() {
+        let backend = CpuScalar::with_config(CpuRuntimeConfig {
+            isa: CpuIsa::Scalar,
+            threads: 4,
+            workspace_reuse: true,
+        });
+        assert_eq!(backend.config().threads, 4);
+        assert!(backend.config().workspace_reuse);
     }
 }

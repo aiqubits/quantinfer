@@ -4,7 +4,7 @@ use std::env;
 use std::hint::black_box;
 use std::time::Instant;
 
-use quantinfer_backend_cpu::CpuScalar;
+use quantinfer_backend_cpu::{CpuRuntimeConfig, CpuScalar};
 use quantinfer_core::Tensor;
 use quantinfer_kernel::KernelBackend;
 use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, quantize_q8_0};
@@ -46,7 +46,13 @@ fn run_bench() {
     let quantized_q4_k = quantize_q4_k(&rhs).expect("benchmark rhs is Q4_K block aligned");
     let quantized_q5_k = quantize_q5_k(&rhs).expect("benchmark rhs is Q5_K block aligned");
     let quantized_q6_k = quantize_q6_k(&rhs).expect("benchmark rhs is Q6_K block aligned");
-    let backend = CpuScalar::new();
+    let backend = CpuScalar::with_config(CpuRuntimeConfig::default());
+    println!(
+        "cpu_isa={:?} threads={} workspace_reuse={}",
+        backend.config().isa,
+        backend.config().threads,
+        backend.config().workspace_reuse
+    );
 
     let started = Instant::now();
     let mut checksum = 0.0;
