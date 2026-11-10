@@ -437,16 +437,75 @@ impl<F: Read + Seek + Write> GgufSpool<F> {
     }
 }
 
+/// Owned tensor payloads with a shared view of supported model encodings.
 #[derive(Debug, Clone)]
-pub struct GgufReader {
+pub struct PackedTensorReader {
     bytes: Vec<u8>,
     metadata: BTreeMap<String, GgufValue>,
     tensors: Vec<GgufTensorInfo>,
     data_start: usize,
+    embedded_manifest: Option<ModelManifest>,
 }
 
-impl GgufReader {
+pub type GgufReader = PackedTensorReader;
+
+impl PackedTensorReader {
+    /// Open GGUF or QIF based on its file magic.
+    pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
+        if qif::has_magic(&bytes) {
+            qif::open_packed(bytes)
+        } else {
+            Self::open(bytes)
+        }
+    }
+
+    pub fn embedded_manifest(&self) -> Option<&ModelManifest> {
+        self.embedded_manifest.as_ref()
+    }
+
+    /// Llama GGML files store output rows and use fastest-axis-first dimensions.
+    pub fn llama_uses_ggml_layout(&self) -> Result<bool> {
+        if self.embedded_manifest.is_some() {
+            return qif::uses_ggml_dimension_order(&self.metadata);
+        }
+        if self.metadata.contains_key("llama.tie_word_embeddings") {
+            return Ok(false);
+        }
+        let embedding = self.tensor_info("token_embd.weight")?;
+        if let (Some(value), [first, second]) = (
+            self.metadata.get("llama.embedding_length"),
+            embedding.shape.as_slice(),
+        ) {
+            let hidden = match value {
+                GgufValue::U32(value) => u64::from(*value),
+                GgufValue::U64(value) => *value,
+                GgufValue::I32(value) if *value >= 0 => *value as u64,
+                GgufValue::I64(value) if *value >= 0 => *value as u64,
+                _ => {
+                    return Err(FormatError::Invalid(
+                        "GGUF metadata llama.embedding_length must be an unsigned integer"
+                            .to_owned(),
+                    ))
+                }
+            };
+            let hidden = usize::try_from(hidden).map_err(|_| {
+                FormatError::Invalid(
+                    "GGUF metadata llama.embedding_length overflows usize".to_owned(),
+                )
+            })?;
+            match (*first == hidden, *second == hidden) {
+                (true, false) => return Ok(true),
+                (false, true) => return Ok(false),
+                _ => {}
+            }
+        }
+        Ok(self.metadata.contains_key("general.file_type"))
+    }
+
     fn uses_legacy_quant_block_layout(&self) -> Result<bool> {
+        if self.embedded_manifest.is_some() {
+            return Ok(false);
+        }
         match self.metadata.get(QUANT_BLOCK_LAYOUT) {
             Some(GgufValue::String(layout)) if layout == "ggml" => Ok(false),
             Some(_) => Err(FormatError::Invalid(
@@ -523,6 +582,7 @@ impl GgufReader {
             metadata,
             tensors,
             data_start,
+            embedded_manifest: None,
         })
     }
 

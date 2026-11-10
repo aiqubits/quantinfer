@@ -6,7 +6,7 @@ C, Python, and other language-facing APIs.
 
 Build the shared library with `cargo build --release --locked -p quantinfer-c`.
 Include `c/include/quantinfer.h` and link against `quantinfer_c`. A model handle
-loads a GGUF file or a verified package and can generate tokens, tokenize text,
+loads a GGUF file, QIF file, or verified package and can generate tokens, tokenize text,
 and decode token IDs. The caller owns the output buffers. The header defines
 the buffer size protocol and the lifetime of diagnostic strings.
 

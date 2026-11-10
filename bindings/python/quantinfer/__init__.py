@@ -34,7 +34,7 @@ def _tokens(values):
 
 
 class Model:
-    """A loaded GGUF file or verified QuantInfer model package."""
+    """A loaded GGUF file, QIF file, or verified QuantInfer model package."""
 
     def __init__(self, path, *, library=None):
         self._lock = RLock()

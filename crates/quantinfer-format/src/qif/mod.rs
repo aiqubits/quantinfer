@@ -1,18 +1,20 @@
 //! Versioned QuantInfer model containers.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::ops::Range;
 
 use quantinfer_core::{
-    DType, QuantizationScheme, TensorStorageDescriptor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE,
+    DType, QuantizationScheme, Shape, TensorStorageDescriptor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE,
     Q8_0_BLOCK_SIZE,
 };
 use sha2::{Digest, Sha256};
 
 use crate::{
     encode_value, sha256_hex, tensor_byte_size, write_string, Cursor, FormatError, GgmlType,
-    GgufValue, ModelManifest, Result,
+    GgufReader, GgufTensorInfo, GgufValue, ModelManifest, PackedTensorReader, Result,
+    TensorManifest,
 };
 
 const MAGIC: &[u8; 4] = b"QIF\0";
@@ -21,6 +23,157 @@ const PREFIX: usize = 56;
 const ALIGNMENT: usize = 64;
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ARRAY_ITEMS: usize = 1_048_576;
+const GGML_DIMENSION_ORDER: &str = "quantinfer.qif.ggml_dimension_order";
+
+pub(crate) fn has_magic(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC)
+}
+
+pub(crate) fn uses_ggml_dimension_order(metadata: &BTreeMap<String, GgufValue>) -> Result<bool> {
+    match metadata.get(GGML_DIMENSION_ORDER) {
+        None => Ok(false),
+        Some(GgufValue::Bool(value)) => Ok(*value),
+        Some(_) => Err(invalid("GGML dimension order metadata must be a boolean")),
+    }
+}
+
+pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
+    let QifReader {
+        manifest,
+        metadata,
+        tensors,
+        ..
+    } = QifReader::open(&bytes)?;
+    if metadata.get("general.architecture").is_some_and(|value| {
+        !matches!(value, GgufValue::String(architecture) if architecture == &manifest.architecture)
+    }) {
+        return Err(invalid("metadata architecture disagrees with the manifest"));
+    }
+    let ggml = uses_ggml_dimension_order(&metadata)?;
+    if ggml && manifest.architecture != "llama" {
+        return Err(invalid("GGML dimension order requires a Llama model"));
+    }
+    let tensors = manifest
+        .tensors
+        .iter()
+        .map(|tensor| {
+            let range = &tensors[&tensor.name];
+            let mut shape = tensor.descriptor.logical_shape.dims().to_vec();
+            if ggml {
+                shape.reverse();
+            }
+            GgufTensorInfo {
+                name: tensor.name.clone(),
+                shape,
+                dtype: storage_encoding(tensor.descriptor.dtype).0,
+                offset: range.start as u64,
+                size: range.len(),
+            }
+        })
+        .collect();
+    Ok(PackedTensorReader {
+        bytes,
+        metadata,
+        tensors,
+        data_start: 0,
+        embedded_manifest: Some(manifest),
+    })
+}
+
+/// Transcode a supported GGUF model without dequantizing or requantizing.
+pub fn import_gguf(
+    reader: &GgufReader,
+    model_id: impl Into<String>,
+    output: &mut impl Write,
+) -> Result<()> {
+    let mut metadata = reader.metadata().clone();
+    let architecture = match metadata.get("general.architecture") {
+        Some(GgufValue::String(architecture)) => architecture.as_str(),
+        None => "qwen3",
+        Some(_) => return Err(invalid("source architecture must be a string")),
+    };
+    let mut manifest = ModelManifest::new(model_id, architecture);
+    let ggml = architecture == "llama" && reader.llama_uses_ggml_layout()?;
+    metadata.insert(GGML_DIMENSION_ORDER.to_owned(), GgufValue::Bool(ggml));
+    let mut payloads = BTreeMap::new();
+    let mut schemes = Vec::new();
+    for tensor in reader.tensors() {
+        let bytes = reader.tensor_bytes(&tensor.name)?;
+        let (dtype, scheme, block_size) = match tensor.dtype {
+            GgmlType::F32 => (DType::F32, QuantizationScheme::None, 0),
+            GgmlType::F16 => (DType::F16, QuantizationScheme::None, 0),
+            GgmlType::BF16 => (DType::BF16, QuantizationScheme::None, 0),
+            GgmlType::Q8_0 => (DType::Q8_0, QuantizationScheme::Q8_0, Q8_0_BLOCK_SIZE),
+            GgmlType::Q4_0 => (DType::Q4_0, QuantizationScheme::Q4_0, Q4_0_BLOCK_SIZE),
+            GgmlType::Q4_K => (DType::Q4_K, QuantizationScheme::Q4_K, Q4_K_BLOCK_SIZE),
+            GgmlType::Q5_K => (DType::Q5_K, QuantizationScheme::Q5_K, Q4_K_BLOCK_SIZE),
+            GgmlType::Q6_K => (DType::Q6_K, QuantizationScheme::Q6_K, Q4_K_BLOCK_SIZE),
+        };
+        let mut shape = tensor.shape.clone();
+        if ggml {
+            shape.reverse();
+        }
+        let shape = Shape::new(shape)?;
+        let descriptor = if scheme == QuantizationScheme::None {
+            TensorStorageDescriptor::floating(dtype, shape)?
+        } else {
+            if !schemes.contains(&scheme) {
+                schemes.push(scheme);
+            }
+            TensorStorageDescriptor::quantized(dtype, scheme, shape, block_size)?
+        };
+        let payload = if dtype == DType::Q4_0 && reader.uses_legacy_quant_block_layout()? {
+            Cow::Owned(repack_q4_0(bytes))
+        } else {
+            Cow::Borrowed(bytes)
+        };
+        payloads.insert(tensor.name.as_str(), payload);
+        manifest.tensors.push(TensorManifest {
+            name: tensor.name.clone(),
+            descriptor,
+            checksum_sha256: None,
+        });
+    }
+    manifest.quantization = if matches!(
+        metadata.get("quantinfer.quantization.variant"),
+        Some(GgufValue::String(variant)) if variant == "mixed"
+    ) {
+        QuantizationScheme::Mixed
+    } else {
+        match schemes.as_slice() {
+            [] => QuantizationScheme::None,
+            [scheme] => *scheme,
+            _ => QuantizationScheme::Mixed,
+        }
+    };
+    write_qif(
+        manifest,
+        &metadata,
+        |name| Ok(payloads[name].as_ref()),
+        output,
+    )
+}
+
+fn repack_q4_0(bytes: &[u8]) -> Vec<u8> {
+    const PACKED_BYTES: usize = Q4_0_BLOCK_SIZE / 2;
+    const BLOCK_BYTES: usize = 2 + PACKED_BYTES;
+    let mut result = bytes.to_vec();
+    for (source, target) in bytes
+        .as_chunks::<BLOCK_BYTES>()
+        .0
+        .iter()
+        .zip(result.as_chunks_mut::<BLOCK_BYTES>().0)
+    {
+        let pairs = &source[2..];
+        for (index, byte) in target[2..].iter_mut().enumerate() {
+            let shift = (index % 2) * 4;
+            let low = (pairs[index / 2] >> shift) & 0x0f;
+            let high = (pairs[index / 2 + PACKED_BYTES / 2] >> shift) & 0x0f;
+            *byte = low | (high << 4);
+        }
+    }
+    result
+}
 
 /// A validated QIF artifact. Tensor payloads borrow the original bytes.
 pub struct QifReader<'a> {
@@ -162,16 +315,7 @@ pub fn write_qif<'a>(
 }
 
 fn payload_size(descriptor: &TensorStorageDescriptor) -> Result<usize> {
-    let (encoding, scheme, block_size) = match descriptor.dtype {
-        DType::F32 => (GgmlType::F32, QuantizationScheme::None, 0),
-        DType::F16 => (GgmlType::F16, QuantizationScheme::None, 0),
-        DType::BF16 => (GgmlType::BF16, QuantizationScheme::None, 0),
-        DType::Q8_0 => (GgmlType::Q8_0, QuantizationScheme::Q8_0, Q8_0_BLOCK_SIZE),
-        DType::Q4_0 => (GgmlType::Q4_0, QuantizationScheme::Q4_0, Q4_0_BLOCK_SIZE),
-        DType::Q4_K => (GgmlType::Q4_K, QuantizationScheme::Q4_K, Q4_K_BLOCK_SIZE),
-        DType::Q5_K => (GgmlType::Q5_K, QuantizationScheme::Q5_K, Q4_K_BLOCK_SIZE),
-        DType::Q6_K => (GgmlType::Q6_K, QuantizationScheme::Q6_K, Q4_K_BLOCK_SIZE),
-    };
+    let (encoding, scheme, block_size) = storage_encoding(descriptor.dtype);
     let shape = descriptor.logical_shape.clone();
     let expected = if scheme == QuantizationScheme::None {
         TensorStorageDescriptor::floating(descriptor.dtype, shape)?
@@ -182,6 +326,19 @@ fn payload_size(descriptor: &TensorStorageDescriptor) -> Result<usize> {
         return Err(invalid("unsupported tensor storage descriptor"));
     }
     tensor_byte_size(encoding, descriptor.logical_shape.dims())
+}
+
+fn storage_encoding(dtype: DType) -> (GgmlType, QuantizationScheme, usize) {
+    match dtype {
+        DType::F32 => (GgmlType::F32, QuantizationScheme::None, 0),
+        DType::F16 => (GgmlType::F16, QuantizationScheme::None, 0),
+        DType::BF16 => (GgmlType::BF16, QuantizationScheme::None, 0),
+        DType::Q8_0 => (GgmlType::Q8_0, QuantizationScheme::Q8_0, Q8_0_BLOCK_SIZE),
+        DType::Q4_0 => (GgmlType::Q4_0, QuantizationScheme::Q4_0, Q4_0_BLOCK_SIZE),
+        DType::Q4_K => (GgmlType::Q4_K, QuantizationScheme::Q4_K, Q4_K_BLOCK_SIZE),
+        DType::Q5_K => (GgmlType::Q5_K, QuantizationScheme::Q5_K, Q4_K_BLOCK_SIZE),
+        DType::Q6_K => (GgmlType::Q6_K, QuantizationScheme::Q6_K, Q4_K_BLOCK_SIZE),
+    }
 }
 
 fn read_metadata(bytes: &[u8]) -> Result<BTreeMap<String, GgufValue>> {
@@ -259,10 +416,10 @@ fn write_error(error: std::io::Error) -> FormatError {
 
 #[cfg(test)]
 mod tests {
-    use quantinfer_core::Shape;
+    use quantinfer_core::{Q4_0Block, QuantizedTensor4};
 
     use super::*;
-    use crate::TensorManifest;
+    use crate::{GgufWriter, QUANT_BLOCK_LAYOUT};
 
     const WEIGHT: [u8; 18] = [
         0, 60, 0x91, 0x82, 0x73, 0x64, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0,
@@ -371,5 +528,30 @@ mod tests {
         manifest.tensors[1].descriptor.logical_shape = Shape::from(vec![usize::MAX, 32]);
         assert!(write_qif(manifest, &metadata, |_| Ok(&NORM), &mut bytes).is_err());
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn imports_legacy_q4_0_without_changing_decoded_values() {
+        let block = Q4_0Block {
+            scale: 0.5,
+            values: std::array::from_fn(|index| ((index * 7 + index / 4) % 16) as u8),
+        };
+        let tensor = QuantizedTensor4::from_blocks(vec![1, 32], vec![block.clone()]).unwrap();
+        let mut writer = GgufWriter::new();
+        writer.add_q4_0_tensor("weight", &tensor);
+        writer.metadata.remove(QUANT_BLOCK_LAYOUT);
+        for (index, pair) in block.values.as_chunks::<2>().0.iter().enumerate() {
+            writer.tensors[0].data[index + 2] = pair[0] | (pair[1] << 4);
+        }
+        let gguf = GgufReader::open(writer.finish().unwrap()).unwrap();
+        assert_eq!(gguf.tensor_q4_0("weight").unwrap(), tensor);
+        let mut bytes = Vec::new();
+        import_gguf(&gguf, "legacy", &mut bytes).unwrap();
+        let qif = PackedTensorReader::open_artifact(bytes).unwrap();
+        assert_ne!(
+            gguf.tensor_bytes("weight").unwrap(),
+            qif.tensor_bytes("weight").unwrap()
+        );
+        assert_eq!(qif.tensor_q4_0("weight").unwrap(), tensor);
     }
 }

@@ -357,21 +357,7 @@ impl<B: KernelBackend> LlamaModel<B> {
 }
 
 pub fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
-    if reader.metadata().contains_key("llama.tie_word_embeddings") {
-        return Ok(false);
-    }
-    let embedding = reader.tensor_info("token_embd.weight")?;
-    if let (Some(hidden), [first, second]) = (
-        metadata_usize(reader, "llama.embedding_length")?,
-        embedding.shape.as_slice(),
-    ) {
-        match (*first == hidden, *second == hidden) {
-            (true, false) => return Ok(true),
-            (false, true) => return Ok(false),
-            _ => {}
-        }
-    }
-    Ok(reader.metadata().contains_key("general.file_type"))
+    Ok(reader.llama_uses_ggml_layout()?)
 }
 
 fn load_ggml_as_float(reader: &GgufReader, name: &str) -> Result<Tensor> {

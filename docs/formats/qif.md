@@ -4,6 +4,14 @@ QIF is an optional QuantInfer container for a model manifest, typed metadata,
 and tensor payloads. The format crate exposes a streaming writer and a reader
 that verifies the full artifact before returning borrowed tensor bytes.
 
+The converter imports a supported GGUF artifact and preserves its typed
+metadata and quantized weights. CPU generation accepts QIF files directly.
+
+```sh
+quantinfer-convert from-gguf --input model.gguf --output model.qif
+quantinfer generate --input model.qif --prompt "The capital of France is" --max-new-tokens 8
+```
+
 ## Container
 
 All integers use little-endian encoding. Offsets are measured from the start
@@ -46,6 +54,11 @@ contain a 64-bit byte length followed by UTF-8 bytes.
 
 Arrays have one scalar element type and contain at most 1,048,576 entries.
 Metadata keys are sorted by the writer.
+
+The boolean key `quantinfer.qif.ggml_dimension_order` records that a Llama
+source used GGML output rows and its RoPE channel ordering. QIF still stores
+row-major descriptor dimensions. The packed runtime adapter restores the
+dimension convention expected by the GGML weight loader.
 
 ## Tensor storage
 

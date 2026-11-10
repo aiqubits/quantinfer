@@ -1,7 +1,7 @@
 use std::{env, fs};
 
 use quantinfer_backend_cpu::CpuScalar;
-use quantinfer_format::{GgmlType, GgufReader, GgufValue};
+use quantinfer_format::{GgmlType, GgufReader, GgufValue, PackedTensorReader};
 use quantinfer_runtime::{KvCache, LlamaModel};
 use quantinfer_tokenizer::{GgufBpeTokenizer, Tokenizer};
 use serde::Deserialize;
@@ -40,6 +40,23 @@ fn matches_smollm2_transformers_reference() {
             _ => panic!("unsupported SmolLM2 conformance variant {variant}"),
         };
     let reader = GgufReader::open(fs::read(path).unwrap()).unwrap();
+    let reader = if let Some(path) = env::var_os("QUANTINFER_SMOLLM2_QIF") {
+        let qif = PackedTensorReader::open_artifact(fs::read(path).unwrap()).unwrap();
+        assert!(qif.embedded_manifest().is_some());
+        assert_eq!(qif.tensors().len(), reader.tensors().len());
+        for original in reader.tensors() {
+            let imported = qif.tensor_info(&original.name).unwrap();
+            assert_eq!(imported.shape, original.shape);
+            assert_eq!(imported.dtype, original.dtype);
+            assert_eq!(
+                qif.tensor_bytes(&original.name).unwrap(),
+                reader.tensor_bytes(&original.name).unwrap()
+            );
+        }
+        qif
+    } else {
+        reader
+    };
     let dtype = reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype;
     if let Some(expected_dtype) = quant_dtype {
         assert_eq!(dtype, expected_dtype);

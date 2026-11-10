@@ -177,6 +177,18 @@ jobs:
               "ggml-$variant" "$model" > "smollm2-$variant-benchmark.txt"
           done
           python3 benches/check-regressions.py smollm2-q8_0-benchmark.txt smollm2-q4_0-benchmark.txt
+      - name: Transcode SmolLM2 Q4_0 to QIF and verify inference
+        shell: bash
+        run: |
+          target/release/quantinfer-convert from-gguf --input smollm2-q4_0.gguf --output smollm2-q4_0.qif
+          QUANTINFER_SMOLLM2_GGUF="$PWD/smollm2-q4_0.gguf" QUANTINFER_SMOLLM2_QIF="$PWD/smollm2-q4_0.qif" \
+            QUANTINFER_SMOLLM2_VARIANT=q4_0 cargo test --release --locked -p quantinfer-runtime \
+            --test smollm2_conformance -- --ignored --nocapture
+          generate=(target/release/quantinfer-cli generate --max-new-tokens 8 --max-sequence-length 64
+            --prompt "$(jq -r '.prompt' tests/golden/smollm2-135m-f32.json)")
+          gguf=$("${generate[@]}" --input smollm2-q4_0.gguf | grep '^generated_tokens=')
+          qif=$("${generate[@]}" --input smollm2-q4_0.qif | grep '^generated_tokens=')
+          test "$gguf" = "$qif"
       - name: Exercise HTTP generation and streaming with SmolLM2
         run: |
           cargo build --release --locked -p quantinfer-server

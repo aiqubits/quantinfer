@@ -10,8 +10,8 @@ use quantinfer_core::{
     QuantizationAxis, QuantizationScheme, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::{
-    sha256_reader, ExecutionVariant, GgufSpool, GgufValue, GgufWriter, ModelManifest,
-    SafeTensorFileReader, SafeTensorShards, TensorManifest,
+    qif::import_gguf, sha256_reader, ExecutionVariant, GgufReader, GgufSpool, GgufValue,
+    GgufWriter, ModelManifest, SafeTensorFileReader, SafeTensorShards, TensorManifest,
 };
 use quantinfer_model::llama::ggml_qk_channel;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
@@ -36,6 +36,12 @@ fn run() -> Result<(), String> {
     {
         print_help();
         return Ok(());
+    }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "from-gguf")
+    {
+        return convert_qif(&arguments[1..]);
     }
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
@@ -1028,9 +1034,35 @@ fn is_quantizable_linear(name: &str) -> bool {
     .any(|suffix| name.ends_with(suffix))
 }
 
+fn convert_qif(arguments: &[String]) -> Result<(), String> {
+    let input = required_path(arguments, "--input")?;
+    let output = required_path(arguments, "--output")?;
+    let model_id = optional_value(arguments, "--model-id").unwrap_or_else(|| {
+        input
+            .file_stem()
+            .unwrap_or(input.as_os_str())
+            .to_string_lossy()
+            .into_owned()
+    });
+    let bytes =
+        fs::read(&input).map_err(|error| format!("cannot read {}: {error}", input.display()))?;
+    let reader = GgufReader::open(bytes).map_err(|error| error.to_string())?;
+    let directory = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)
+        .map_err(|error| format!("cannot prepare {}: {error}", output.display()))?;
+    import_gguf(&reader, model_id, temporary.as_file_mut()).map_err(|error| error.to_string())?;
+    temporary
+        .persist_noclobber(&output)
+        .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
+    Ok(())
+}
+
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
     );
 }
 

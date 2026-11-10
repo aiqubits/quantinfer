@@ -25,6 +25,7 @@ impl CpuModel {
         profile: Option<&InferenceProfile>,
     ) -> Result<Self> {
         let architecture = model_architecture(reader, manifest)?;
+        let manifest = manifest.or(reader.embedded_manifest());
         let backend = if let Some(profile) = profile {
             let manifest = manifest.ok_or_else(|| {
                 RuntimeError::InvalidInput("inference profiles require a model manifest".to_owned())
@@ -109,26 +110,30 @@ pub fn model_architecture<'a>(
     reader: &'a GgufReader,
     manifest: Option<&'a ModelManifest>,
 ) -> Result<&'a str> {
-    let gguf_architecture = match reader.metadata().get("general.architecture") {
+    let archive_architecture = match reader.metadata().get("general.architecture") {
         Some(GgufValue::String(value)) => Some(value.as_str()),
         Some(_) => {
             return Err(RuntimeError::InvalidInput(
                 "GGUF general.architecture must be a string".to_owned(),
             ))
         }
-        None => None,
+        None => reader
+            .embedded_manifest()
+            .map(|manifest| manifest.architecture.as_str()),
     };
     match manifest {
         Some(manifest) => {
-            if gguf_architecture.is_some_and(|architecture| architecture != manifest.architecture) {
+            if archive_architecture
+                .is_some_and(|architecture| architecture != manifest.architecture)
+            {
                 return Err(RuntimeError::InvalidInput(format!(
-                    "model package architecture {} disagrees with the GGUF",
+                    "model package architecture {} disagrees with the tensor file",
                     manifest.architecture
                 )));
             }
             Ok(&manifest.architecture)
         }
-        None => Ok(gguf_architecture.unwrap_or("qwen3")),
+        None => Ok(archive_architecture.unwrap_or("qwen3")),
     }
 }
 
@@ -169,6 +174,13 @@ impl ModelSource {
                     .checksums
                     .keys()
                     .find(|name| name.ends_with(".gguf"))
+                    .or_else(|| {
+                        package
+                            .manifest
+                            .checksums
+                            .keys()
+                            .find(|name| name.ends_with(".qif"))
+                    })
                     .map(String::as_str)
                     .or_else(|| {
                         package
@@ -179,7 +191,8 @@ impl ModelSource {
                     })
                     .ok_or_else(|| {
                         RuntimeError::InvalidInput(
-                            "model package manifest does not identify a GGUF file".to_owned(),
+                            "model package manifest does not identify a GGUF or QIF file"
+                                .to_owned(),
                         )
                     })?;
                 check_file_budget(&package.root().join(model_name), budget)?;
@@ -188,8 +201,8 @@ impl ModelSource {
                         "cannot verify model package tensor file: {error}"
                     ))
                 })?;
-                GgufReader::open(bytes).map_err(|error| {
-                    RuntimeError::InvalidInput(format!("cannot parse packaged GGUF: {error}"))
+                GgufReader::open_artifact(bytes).map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot parse packaged model: {error}"))
                 })
             }
             Self::Gguf(path) => {
@@ -197,8 +210,8 @@ impl ModelSource {
                 let bytes = fs::read(path).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
                 })?;
-                GgufReader::open(bytes).map_err(|error| {
-                    RuntimeError::InvalidInput(format!("cannot parse GGUF: {error}"))
+                GgufReader::open_artifact(bytes).map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot parse model: {error}"))
                 })
             }
         }
@@ -214,7 +227,7 @@ fn check_file_budget(path: &Path, budget: Option<usize>) -> Result<()> {
             .len();
         if file_size > budget as u64 {
             return Err(RuntimeError::InvalidInput(format!(
-                "memory budget check failed: GGUF file is {file_size} bytes, budget is {budget}"
+                "memory budget check failed: model file is {file_size} bytes, budget is {budget}"
             )));
         }
     }
