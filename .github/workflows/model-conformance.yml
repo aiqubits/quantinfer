@@ -33,6 +33,7 @@ on:
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
       - "apps/quantinfer-cli/**"
+      - "apps/quantinfer-server/**"
       - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
@@ -174,6 +175,11 @@ jobs:
               "ggml-$variant" "$model" > "smollm2-$variant-benchmark.txt"
           done
           python3 benches/check-regressions.py smollm2-q8_0-benchmark.txt smollm2-q4_0-benchmark.txt
+      - name: Exercise HTTP generation and streaming with SmolLM2
+        run: |
+          cargo build --release --locked -p quantinfer-server
+          python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
+            smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

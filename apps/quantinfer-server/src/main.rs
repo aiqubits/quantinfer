@@ -1,68 +1,457 @@
-//! Minimal HTTP control plane for the optional online runtime.
+//! Optional HTTP inference service.
 
+mod engine;
+
+use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::env;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-fn main() {
-    let bind = env::args()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .windows(2)
-        .find(|pair| pair[0] == "--bind")
-        .map(|pair| pair[1].clone())
-        .unwrap_or_else(|| "127.0.0.1:8080".to_owned());
-    let listener = TcpListener::bind(&bind).unwrap_or_else(|error| {
-        eprintln!("quantinfer-server: cannot bind {bind}: {error}");
-        std::process::exit(1);
-    });
-    println!("quantinfer-server listening on {bind}");
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let _ = handle_connection(stream);
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{header, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
+use quantinfer::runtime::{DecodeEvent, DecodeSession, DecodeStopReason, GenerationConfig};
+use quantinfer::tokenizer::{GgufBpeTokenizer, Tokenizer};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::net::TcpListener;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::StreamExt;
+
+use engine::{Metrics, Submission};
+
+struct ServedModel {
+    decoder: Arc<CpuModel>,
+    tokenizer: Option<GgufBpeTokenizer>,
+}
+
+struct AppState {
+    models: BTreeMap<String, ServedModel>,
+    queue: mpsc::Sender<Submission>,
+    metrics: Arc<Metrics>,
+    context_length: usize,
+    request_timeout: Duration,
+}
+
+struct Settings {
+    bind: String,
+    models: BTreeMap<String, String>,
+    context_length: usize,
+    maximum_requests: usize,
+    kv_budget_bytes: usize,
+    request_timeout: Duration,
+}
+
+impl Settings {
+    fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut settings = Self {
+            bind: "127.0.0.1:8080".to_owned(),
+            models: BTreeMap::new(),
+            context_length: 512,
+            maximum_requests: 8,
+            kv_budget_bytes: 512 * 1024 * 1024,
+            request_timeout: Duration::from_secs(60),
+        };
+        let mut args = args.into_iter();
+        while let Some(flag) = args.next() {
+            let value = args
+                .next()
+                .ok_or_else(|| format!("{flag} requires a value"))?;
+            let number = || {
+                value
+                    .parse::<usize>()
+                    .map_err(|error| format!("invalid {flag}: {error}"))
+            };
+            match flag.as_str() {
+                "--bind" => settings.bind = value,
+                "--context-length" => settings.context_length = number()?,
+                "--max-requests" => settings.maximum_requests = number()?,
+                "--kv-budget-bytes" => settings.kv_budget_bytes = number()?,
+                "--request-timeout-ms" => {
+                    settings.request_timeout = Duration::from_millis(number()? as u64)
+                }
+                "--model" => {
+                    let (name, path) = value
+                        .split_once('=')
+                        .filter(|(name, path)| !name.is_empty() && !path.is_empty())
+                        .ok_or_else(|| "--model requires NAME=PATH".to_owned())?;
+                    if settings
+                        .models
+                        .insert(name.to_owned(), path.to_owned())
+                        .is_some()
+                    {
+                        return Err(format!("duplicate model name {name}"));
+                    }
+                }
+                _ => return Err(format!("unknown server option {flag}")),
             }
-            Err(error) => eprintln!("quantinfer-server: connection error: {error}"),
+        }
+        if settings.context_length == 0
+            || !(1..=1024).contains(&settings.maximum_requests)
+            || settings.kv_budget_bytes == 0
+            || settings.request_timeout.is_zero()
+        {
+            return Err("context, request timeout and KV budget must be positive and --max-requests must be 1..=1024".to_owned());
+        }
+        Ok(settings)
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let args: Vec<_> = env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--kv-budget-bytes N] [--request-timeout-ms N]");
+        return;
+    }
+    if let Err(error) = run(args).await {
+        eprintln!("quantinfer-server: {error}");
+        std::process::exit(1);
+    }
+}
+
+async fn run(args: Vec<String>) -> Result<(), String> {
+    let settings = Settings::parse(args)?;
+    let mut models = BTreeMap::new();
+    for (name, path) in settings.models {
+        let source =
+            ModelSource::open(path).map_err(|error| format!("cannot open {name}: {error}"))?;
+        let reader = source
+            .open_reader(None)
+            .map_err(|error| format!("cannot read {name}: {error}"))?;
+        let tokenizer = reader
+            .metadata()
+            .contains_key("tokenizer.ggml.tokens")
+            .then(|| load_gguf_tokenizer(&reader))
+            .transpose()
+            .map_err(|error| format!("cannot load {name} tokenizer: {error}"))?;
+        let manifest = source.package().map(|package| &package.manifest);
+        let decoder = CpuModel::from_gguf(&reader, manifest, None)
+            .map(Arc::new)
+            .map_err(|error| format!("cannot load {name}: {error}"))?;
+        models.insert(name, ServedModel { decoder, tokenizer });
+    }
+    let listener = TcpListener::bind(&settings.bind)
+        .await
+        .map_err(|error| format!("cannot bind {}: {error}", settings.bind))?;
+    let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let metrics = Arc::new(Metrics::default());
+    let (queue, worker) = engine::start(
+        settings.maximum_requests,
+        settings.kv_budget_bytes,
+        metrics.clone(),
+    )?;
+    let state = Arc::new(AppState {
+        models,
+        queue,
+        metrics,
+        context_length: settings.context_length,
+        request_timeout: settings.request_timeout,
+    });
+    let router = Router::new()
+        .route("/healthz", get(|| async { Json(json!({"status": "ok"})) }))
+        .route("/v1/models", get(list_models))
+        .route("/v1/generate", post(generate))
+        .route("/metrics", get(metrics_response))
+        .fallback(|| async { error_response((StatusCode::NOT_FOUND, "not_found".to_owned())) })
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .with_state(state);
+    println!("quantinfer-server listening on {address}");
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| error.to_string())?;
+    worker
+        .join()
+        .map_err(|_| "decode worker panicked".to_owned())
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    if let Ok(mut terminate) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+        return;
+    }
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+async fn list_models(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let data: Vec<_> = state
+        .models
+        .keys()
+        .map(|id| json!({"id": id, "object": "model"}))
+        .collect();
+    Json(json!({"data": data}))
+}
+
+async fn metrics_response(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let metrics = &state.metrics;
+    let body = format!(
+        "quantinfer_requests_total {}\nquantinfer_requests_rejected_total {}\nquantinfer_requests_finished_total {}\nquantinfer_generated_tokens_total {}\n",
+        metrics.requests.load(Ordering::Relaxed),
+        metrics.rejected.load(Ordering::Relaxed),
+        metrics.finished.load(Ordering::Relaxed),
+        metrics.generated_tokens.load(Ordering::Relaxed),
+    );
+    ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
+}
+
+#[derive(Deserialize)]
+struct GenerateRequest {
+    model: String,
+    prompt: Option<String>,
+    tokens: Option<Vec<usize>>,
+    max_new_tokens: Option<usize>,
+    eos_token_id: Option<usize>,
+    temperature: Option<f32>,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    seed: Option<u64>,
+    #[serde(default)]
+    stream: bool,
+}
+
+type ApiError = (StatusCode, String);
+
+fn error_response((status, message): ApiError) -> Response {
+    (status, Json(json!({"error": message}))).into_response()
+}
+
+async fn generate(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<GenerateRequest>,
+) -> Response {
+    state.metrics.requests.fetch_add(1, Ordering::Relaxed);
+    match start_request(&state, request).await {
+        Ok(response) => response,
+        Err(error) => {
+            state.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+            error_response(error)
         }
     }
 }
 
-fn handle_connection(mut stream: TcpStream) -> std::io::Result<()> {
-    let mut request = [0_u8; 8192];
-    let length = stream.read(&mut request)?;
-    let response = response_for_request(std::str::from_utf8(&request[..length]).unwrap_or(""));
-    stream.write_all(response.as_bytes())
+async fn start_request(state: &AppState, request: GenerateRequest) -> Result<Response, ApiError> {
+    let bad = |message| (StatusCode::BAD_REQUEST, message);
+    let model = state.models.get(&request.model).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            format!("unknown model {}", request.model),
+        )
+    })?;
+    let context = state
+        .context_length
+        .min(model.decoder.max_position_embeddings());
+    let max_new_tokens = request.max_new_tokens.unwrap_or(32);
+    if !(1..=4096).contains(&max_new_tokens) {
+        return Err(bad("max_new_tokens must be 1..=4096".to_owned()));
+    }
+    let tokens = match (request.prompt, request.tokens) {
+        (Some(prompt), None) => model
+            .tokenizer
+            .as_ref()
+            .ok_or_else(|| bad("this model requires token IDs".to_owned()))?
+            .encode(&prompt)
+            .map_err(|error| bad(error.to_string()))?,
+        (None, Some(tokens)) => tokens,
+        _ => return Err(bad("provide exactly one of prompt or tokens".to_owned())),
+    };
+    let eos_token_id = request.eos_token_id.or_else(|| {
+        model
+            .tokenizer
+            .as_ref()
+            .and_then(|tokenizer| tokenizer.eos_token_id())
+    });
+    if tokens
+        .iter()
+        .chain(eos_token_id.iter())
+        .any(|&token| token >= model.decoder.vocab_size())
+    {
+        return Err(bad("token ID is outside the model vocabulary".to_owned()));
+    }
+    let cache = model
+        .decoder
+        .new_cache(context)
+        .map_err(|error| bad(error.to_string()))?;
+    let session = DecodeSession::new(
+        model.decoder.clone(),
+        cache,
+        tokens,
+        GenerationConfig {
+            max_new_tokens,
+            eos_token_id,
+            temperature: request.temperature.unwrap_or(0.0),
+            top_k: request.top_k,
+            top_p: request.top_p,
+            seed: request.seed.unwrap_or(0),
+        },
+    )
+    .map_err(|error| bad(error.to_string()))?;
+    let (accepted, acceptance) = oneshot::channel();
+    let (output, mut events) = mpsc::channel(max_new_tokens + 1);
+    let deadline = Instant::now()
+        .checked_add(state.request_timeout)
+        .ok_or_else(|| bad("request deadline exceeds the clock range".to_owned()))?;
+    state
+        .queue
+        .try_send(Submission {
+            session,
+            deadline,
+            accepted,
+            output,
+        })
+        .map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "request queue is full".to_owned(),
+            ),
+            mpsc::error::TrySendError::Closed(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "decode worker is unavailable".to_owned(),
+            ),
+        })?;
+    let deadline = tokio::time::Instant::from_std(deadline);
+    let request_id = tokio::time::timeout_at(deadline, acceptance)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::GATEWAY_TIMEOUT,
+                "request timed out in the queue".to_owned(),
+            )
+        })?
+        .map_err(|_| {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "decode worker is unavailable".to_owned(),
+            )
+        })?
+        .map_err(|error| (StatusCode::TOO_MANY_REQUESTS, error))?;
+    if request.stream {
+        let stream = ReceiverStream::new(events).map(|event| Ok::<_, Infallible>(sse_event(event)));
+        return Ok(Sse::new(stream)
+            .keep_alive(KeepAlive::default())
+            .into_response());
+    }
+    let mut tokens = Vec::new();
+    let mut stopped = None;
+    loop {
+        let event = match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(_) => {
+                return Ok(error_response((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "generation timed out".to_owned(),
+                )))
+            }
+        };
+        match event {
+            DecodeEvent::Token {
+                token_id,
+                stop_reason,
+                ..
+            } => {
+                tokens.push(token_id);
+                stopped = stop_reason;
+            }
+            DecodeEvent::Stopped { reason, .. } => stopped = Some(reason),
+            DecodeEvent::Failed { error, .. } => {
+                return Ok(error_response((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    error.to_string(),
+                )));
+            }
+        }
+        if stopped.is_some() {
+            break;
+        }
+    }
+    let Some(reason) = stopped else {
+        return Ok(error_response((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "decode worker stopped before completion".to_owned(),
+        )));
+    };
+    if reason == DecodeStopReason::TimedOut {
+        return Ok(error_response((
+            StatusCode::GATEWAY_TIMEOUT,
+            "generation timed out".to_owned(),
+        )));
+    }
+    let text = model
+        .tokenizer
+        .as_ref()
+        .map(|tokenizer| tokenizer.decode(&tokens))
+        .transpose()
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(json!({
+        "request_id": request_id, "model": request.model, "tokens": tokens,
+        "text": text, "finish_reason": stop_name(reason)
+    }))
+    .into_response())
 }
 
-fn response_for_request(request: &str) -> String {
-    let path = request.split_whitespace().nth(1).unwrap_or("/");
-    let (status, content_type, body) = match path {
-        "/healthz" => ("200 OK", "application/json", r#"{"status":"ok"}"#),
-        "/v1/models" => ("200 OK", "application/json", r#"{"data":[]}"#),
-        "/metrics" => (
-            "200 OK",
-            "text/plain; version=0.0.4",
-            "quantinfer_requests_total 0\n",
+fn stop_name(reason: DecodeStopReason) -> &'static str {
+    match reason {
+        DecodeStopReason::Eos => "eos",
+        DecodeStopReason::MaxTokens => "length",
+        DecodeStopReason::Cancelled => "cancelled",
+        DecodeStopReason::TimedOut => "timeout",
+        DecodeStopReason::Failed => "error",
+    }
+}
+
+fn sse_event(event: DecodeEvent) -> Event {
+    let (kind, data) = match event {
+        DecodeEvent::Token {
+            request_id,
+            token_id,
+            stop_reason,
+        } => (
+            "token",
+            json!({"request_id": request_id, "token_id": token_id, "finish_reason": stop_reason.map(stop_name)}),
         ),
-        _ => (
-            "404 Not Found",
-            "application/json",
-            r#"{"error":"not_found"}"#,
+        DecodeEvent::Stopped { request_id, reason } => (
+            "done",
+            json!({"request_id": request_id, "finish_reason": stop_name(reason)}),
+        ),
+        DecodeEvent::Failed { request_id, error } => (
+            "error",
+            json!({"request_id": request_id, "error": error.to_string()}),
         ),
     };
-    format!("HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
+    Event::default().event(kind).data(data.to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::response_for_request;
+    use super::Settings;
 
     #[test]
-    fn serves_health_models_metrics_and_not_found_routes() {
-        assert!(response_for_request("GET /healthz HTTP/1.1\r\n\r\n").contains("200 OK"));
-        assert!(response_for_request("GET /v1/models HTTP/1.1\r\n\r\n").contains("{\"data\":[]}"));
-        assert!(response_for_request("GET /metrics HTTP/1.1\r\n\r\n")
-            .contains("quantinfer_requests_total"));
-        assert!(response_for_request("GET /unknown HTTP/1.1\r\n\r\n").contains("404 Not Found"));
+    fn parses_multiple_models_and_rejects_invalid_limits() {
+        let args = [
+            "--model",
+            "smol=smol.gguf",
+            "--model",
+            "qwen=qwen",
+            "--max-requests",
+            "4",
+        ];
+        let settings = Settings::parse(args.into_iter().map(str::to_owned)).unwrap();
+        assert_eq!(settings.models.len(), 2);
+        assert_eq!(settings.maximum_requests, 4);
+        assert!(Settings::parse(["--max-requests", "0"].into_iter().map(str::to_owned)).is_err());
     }
 }

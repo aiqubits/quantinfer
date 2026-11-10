@@ -1,3 +1,25 @@
 # Applications
 
 User-facing executables such as the CLI and the optional HTTP server.
+
+## HTTP inference
+
+Start the server with one or more `--model NAME=PATH` options. Each path can
+point to a GGUF file or a verified model package.
+
+```sh
+cargo run --release --locked -p quantinfer-server -- \
+  --bind 127.0.0.1:8080 --model smol=/path/to/model.gguf --context-length 64
+```
+
+`POST /v1/generate` accepts `model` and exactly one of `prompt` or `tokens`.
+It returns token IDs, decoded text when a tokenizer is available, and the
+finish reason. Set `stream` to `true` to receive Server-Sent Events. Each
+`token` event carries a token ID. The last token carries its finish reason,
+and a timeout or decode failure emits a terminal event.
+
+`GET /v1/models` lists loaded model names. `GET /healthz` reports service
+health and `GET /metrics` exposes counters. Configure queue admission with
+`--max-requests` and `--kv-budget-bytes`, and request deadlines with
+`--request-timeout-ms`. `SIGINT` and `SIGTERM` stop accepting connections
+and allow active responses to finish.
