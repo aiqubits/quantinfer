@@ -80,3 +80,30 @@ any tensors. The SHA-256 list must include the input file basename and, for
 an index, every shard path named by that index. Model Conformance checks that
 the pinned SmolLM2 checkpoint yields the same GGUF from both input layouts
 and that conversion rejects missing or mismatched shard hashes.
+
+## Inference profiles
+
+For `generate --input MODEL_DIR --inference-profile NAME`, put the JSON file
+in `MODEL_DIR/profiles/NAME.json` and record its SHA-256 in the manifest's
+`checksums` map under `profiles/NAME.json`. `model_variant` selects an entry
+by name from the manifest's `execution_variants`. The quantization and
+providers must match that entry and the resolved kernels.
+
+```json
+{
+  "model_variant": "cpu-scalar",
+  "quantization_variant": "q8_0",
+  "runtime_provider": "cpu-scalar",
+  "kernel_provider": "cpu-scalar",
+  "context_length": 64,
+  "thread_count": 2,
+  "memory_budget_bytes": 2147483648,
+  "quality_threshold": null,
+  "performance_baseline_tokens_per_second": null
+}
+```
+
+The profile supplies the context length, CPU thread count and optional
+memory budget. Use it in place of `--max-sequence-length` and
+`--memory-budget-bytes`. The quality threshold and performance baseline are
+optional reference values. `--profile` still reports generation timings.

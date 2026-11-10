@@ -78,7 +78,16 @@ jobs:
               --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
               --output "$package/model.gguf" --manifest "$package/manifest.json" "${quantization[@]}"
             sha256sum "$package/model.gguf"
+            mkdir "$package/profiles"
+            jq -n --arg scheme "${dtype,,}" '{model_variant:"cpu-scalar", quantization_variant:$scheme,
+              runtime_provider:"cpu-scalar", kernel_provider:"cpu-scalar", context_length:64,
+              thread_count:2, memory_budget_bytes:2147483648}' > "$package/profiles/conformance.json"
+            (cd "$package" && sha256sum profiles/conformance.json >> checksums.sha256)
+            profile_sha=$(sha256sum "$package/profiles/conformance.json" | cut -d ' ' -f 1)
+            jq --arg sha "$profile_sha" '.checksums["profiles/conformance.json"] = $sha' \
+              "$package/manifest.json" > "$package/manifest.tmp"
+            mv "$package/manifest.tmp" "$package/manifest.json"
             python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
               --server "$RUNNER_TEMP/llama/bin/llama-server" --model "$package/model.gguf" --dtype "$dtype" \
-              --metadata-reference smollm2-f16.gguf --package "$package"
+              --metadata-reference smollm2-f16.gguf --package "$package" --inference-profile conformance
           done

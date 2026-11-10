@@ -114,11 +114,11 @@ def compare_inventory(cli, model, dtype, reference):
     print(f"{len(expected_metadata)} metadata entries and {len(expected_tensors)} tensors agree")
 
 
-def quantinfer_tokens(cli, model, prompt, count):
+def quantinfer_tokens(cli, model, prompt, count, profile=None):
+    context = ["--inference-profile", profile] if profile else ["--max-sequence-length", "64"]
     output = subprocess.check_output([
         cli, "generate", "--input", model, "--prompt", prompt,
-        "--max-new-tokens", str(count), "--max-sequence-length", "64",
-        "--temperature", "0",
+        "--max-new-tokens", str(count), "--temperature", "0", *context,
     ], text=True)
     tokens = {
         key: ast.literal_eval(value)
@@ -136,15 +136,20 @@ def main():
     parser.add_argument("--dtype", required=True, choices=["F32", "Q8_0", "Q4_0"])
     parser.add_argument("--metadata-reference")
     parser.add_argument("--package")
+    parser.add_argument("--inference-profile")
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--count", default=6, type=int)
     args = parser.parse_args()
+    if args.inference_profile and not args.package:
+        parser.error("--inference-profile requires --package")
     compare_inventory(args.cli, args.model, args.dtype, args.metadata_reference)
     encoded, generated = llama_tokens(args.server, args.model, args.prompt, args.count)
     assert len(generated) == args.count, f"reference generated only {len(generated)} tokens"
-    inputs = [args.model, args.package] if args.package else [args.model]
-    for model in inputs:
-        actual = quantinfer_tokens(args.cli, model, args.prompt, args.count)
+    inputs = [(args.model, None)]
+    if args.package:
+        inputs.append((args.package, args.inference_profile))
+    for model, profile in inputs:
+        actual = quantinfer_tokens(args.cli, model, args.prompt, args.count, profile)
         assert actual == (encoded, generated), (model, actual, encoded, generated)
     print(f"prompt_tokens={encoded} generated_tokens={generated}")
 

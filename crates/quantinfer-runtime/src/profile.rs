@@ -1,7 +1,9 @@
+use quantinfer_core::QuantizationScheme;
+use quantinfer_format::{ExecutionVariant, ModelManifest};
 use quantinfer_model::ModelSpec;
 use serde::{Deserialize, Serialize};
 
-use crate::{Result, RuntimeError};
+use crate::{ExecutionPlan, Result, RuntimeError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryPlan {
@@ -181,6 +183,64 @@ impl InferenceProfile {
             ));
         }
         Ok(())
+    }
+
+    /// Match a package variant to the runtime and kernel capabilities selected for it.
+    pub fn bind<'a>(
+        &self,
+        manifest: &'a ModelManifest,
+        plan: &ExecutionPlan,
+    ) -> Result<&'a ExecutionVariant> {
+        self.validate()?;
+        let quantization = plan.capability.quantization;
+        let quantization_name = match quantization {
+            QuantizationScheme::None => "f32",
+            QuantizationScheme::Q8_0 => "q8_0",
+            QuantizationScheme::Q4_0 => "q4_0",
+            QuantizationScheme::Q4_K => "q4_k",
+            QuantizationScheme::Q5_K => "q5_k",
+            QuantizationScheme::Q6_K => "q6_k",
+        };
+        if self.quantization_variant != quantization_name || quantization != manifest.quantization {
+            return Err(RuntimeError::InvalidInput(format!(
+                "inference profile quantization {} does not match the resolved {quantization_name} model",
+                self.quantization_variant
+            )));
+        }
+        if self.runtime_provider != plan.provider_name
+            || self.kernel_provider != plan.kernel_provider_name
+        {
+            return Err(RuntimeError::InvalidInput(format!(
+                "inference profile requires runtime {} and kernel {}, resolved {} and {}",
+                self.runtime_provider,
+                self.kernel_provider,
+                plan.provider_name,
+                plan.kernel_provider_name
+            )));
+        }
+        if let Some(maximum) = plan.capability.maximum_sequence_length {
+            if self.context_length > maximum {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "inference profile context {} exceeds the kernel capacity {maximum}",
+                    self.context_length
+                )));
+            }
+        }
+        manifest
+            .execution_variants
+            .iter()
+            .find(|variant| {
+                variant.name == self.model_variant
+                    && variant.quantization == quantization
+                    && variant.runtime_provider == self.runtime_provider
+                    && variant.kernel_provider == self.kernel_provider
+            })
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput(format!(
+                    "model package {} has no matching execution variant {}",
+                    manifest.model_id, self.model_variant
+                ))
+            })
     }
 }
 

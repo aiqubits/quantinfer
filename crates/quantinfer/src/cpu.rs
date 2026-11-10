@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use quantinfer_backend_cpu::CpuScalar;
+use quantinfer_backend_cpu::{CpuRuntimeConfig, CpuScalar};
 use quantinfer_core::{
     DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme,
     GGML_OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
@@ -8,10 +8,28 @@ use quantinfer_core::{
 use quantinfer_format::{GgmlType, GgufReader, GgufValue, ModelManifest};
 use quantinfer_model::{ModelSpec, TensorRole};
 use quantinfer_runtime::llama::uses_ggml_layout;
-use quantinfer_runtime::{ExecutionRequest, ExecutionResolver, Operation, Result, RuntimeError};
+use quantinfer_runtime::{
+    ExecutionRequest, ExecutionResolver, InferenceProfile, Operation, Result, RuntimeError,
+};
 
 /// Select a CPU kernel that supports the weight types recorded in a GGUF.
 pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) -> Result<CpuScalar> {
+    resolve_backend_impl(reader, manifest, None)
+}
+
+pub fn resolve_profiled_backend(
+    reader: &GgufReader,
+    manifest: &ModelManifest,
+    profile: &InferenceProfile,
+) -> Result<CpuScalar> {
+    resolve_backend_impl(reader, Some(manifest), Some(profile))
+}
+
+fn resolve_backend_impl(
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+    profile: Option<&InferenceProfile>,
+) -> Result<CpuScalar> {
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
     let is_llama = manifest.is_some_and(|manifest| manifest.architecture == "llama")
@@ -32,7 +50,7 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
             ));
         }
     }
-    let plan = resolver.resolve(&request)?;
+    let mut plan = resolver.resolve(&request)?;
 
     let mut checked = Vec::new();
     for tensor in reader.tensors() {
@@ -64,13 +82,19 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
                 "model tensors require incompatible CPU providers".to_owned(),
             ));
         }
+        if manifest.is_some_and(|manifest| {
+            manifest.quantization == scheme
+                || (profile.is_some() && manifest.quantization == QuantizationScheme::None)
+        }) {
+            plan = quantized_plan;
+        }
     }
 
     if let Some(manifest) = manifest {
         if !manifest.execution_variants.is_empty()
             && !manifest.execution_variants.iter().any(|variant| {
                 variant.runtime_provider == plan.provider_name
-                    && variant.kernel_provider == "cpu-scalar"
+                    && variant.kernel_provider == plan.kernel_provider_name
                     && variant.quantization == manifest.quantization
             })
         {
@@ -79,9 +103,15 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
                 manifest.model_id
             )));
         }
+        if let Some(profile) = profile {
+            profile.bind(manifest, &plan)?;
+        }
     }
     match plan.provider_name.as_str() {
-        "cpu-scalar" => Ok(CpuScalar::new()),
+        "cpu-scalar" => Ok(CpuScalar::with_config(CpuRuntimeConfig {
+            threads: profile.map_or(1, |profile| profile.thread_count),
+            ..CpuScalar::new().config()
+        })),
         provider => Err(RuntimeError::InvalidInput(format!(
             "CPU kernel factory is unavailable for provider {provider}"
         ))),
@@ -152,5 +182,49 @@ mod tests {
         });
         assert!(resolve_backend(&reader, Some(&manifest)).is_err());
         assert!(resolve_backend(&reader, None).is_ok());
+    }
+
+    #[test]
+    fn binds_profile_to_the_manifest_variant_and_loaded_weight_scheme() {
+        let mut writer = GgufWriter::new();
+        let weights = quantinfer_core::QuantizedTensor::from_blocks(
+            vec![32, 1],
+            vec![Q8_0Block {
+                scale: 0.5,
+                values: [1; 32],
+            }],
+        )
+        .unwrap();
+        writer.add_q8_0_tensor("blk.0.attn_q.weight", &weights);
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.quantization = QuantizationScheme::Q8_0;
+        manifest.execution_variants.push(ExecutionVariant {
+            name: "q8-cpu".to_owned(),
+            quantization: QuantizationScheme::Q8_0,
+            dtype: "f32-accumulation".to_owned(),
+            runtime_provider: "cpu-scalar".to_owned(),
+            kernel_provider: "cpu-scalar".to_owned(),
+        });
+        let mut profile = InferenceProfile {
+            model_variant: "q8-cpu".to_owned(),
+            quantization_variant: "q8_0".to_owned(),
+            runtime_provider: "cpu-scalar".to_owned(),
+            kernel_provider: "cpu-scalar".to_owned(),
+            context_length: 64,
+            thread_count: 2,
+            memory_budget_bytes: Some(1 << 20),
+            quality_threshold: None,
+            performance_baseline_tokens_per_second: None,
+        };
+        let backend = resolve_profiled_backend(&reader, &manifest, &profile).unwrap();
+        assert_eq!(backend.config().threads, 2);
+        profile.model_variant = "other".to_owned();
+        assert!(resolve_profiled_backend(&reader, &manifest, &profile).is_err());
+        profile.model_variant = "q8-cpu".to_owned();
+        profile.quantization_variant = "f32".to_owned();
+        manifest.quantization = QuantizationScheme::None;
+        manifest.execution_variants[0].quantization = QuantizationScheme::None;
+        assert!(resolve_profiled_backend(&reader, &manifest, &profile).is_err());
     }
 }

@@ -8,7 +8,7 @@ use std::time::Instant;
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_runtime::{
-    select_token, GenerationConfig, KvCache, LlamaModel, MemoryPlan, Qwen3Model,
+    select_token, GenerationConfig, InferenceProfile, KvCache, LlamaModel, MemoryPlan, Qwen3Model,
 };
 use quantinfer_tokenizer::{
     ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
@@ -45,7 +45,8 @@ fn run() -> Result<(), String> {
             let path = option_value(&arguments[1..], "--input")?
                 .map(PathBuf::from)
                 .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
-            let (reader, _) = open_model_reader(&path, None)?;
+            let package = open_model_package(&path)?;
+            let reader = open_model_reader(&path, package.as_ref(), None)?;
             if has_flag(&arguments[1..], "--json") {
                 println!(
                     "{}",
@@ -129,7 +130,23 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .transpose()?;
     let profile = has_flag(arguments, "--profile");
     let model_read_started = Instant::now();
-    let (reader, manifest) = open_model_reader(&path, memory_budget_bytes)?;
+    let package = open_model_package(&path)?;
+    let inference_profile = option_value(arguments, "--inference-profile")?
+        .map(|name| load_inference_profile(package.as_ref(), &name))
+        .transpose()?;
+    let (requested_max_sequence_length, memory_budget_bytes) =
+        if let Some(profile) = &inference_profile {
+            if requested_max_sequence_length.is_some() || memory_budget_bytes.is_some() {
+                return Err(
+                    "--inference-profile supplies the context length and memory budget".to_owned(),
+                );
+            }
+            (Some(profile.context_length), profile.memory_budget_bytes)
+        } else {
+            (requested_max_sequence_length, memory_budget_bytes)
+        };
+    let reader = open_model_reader(&path, package.as_ref(), memory_budget_bytes)?;
+    let manifest = package.as_ref().map(|package| &package.manifest);
     let model_read_elapsed = model_read_started.elapsed();
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
@@ -166,18 +183,24 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     if prompt_tokens.is_empty() {
         return Err("prompt must encode to at least one token".to_owned());
     }
-    let architecture = model_architecture(&reader, manifest.as_ref())?;
-    if let Some(budget) = memory_budget_bytes {
+    let architecture = model_architecture(&reader, manifest)?;
+    if memory_budget_bytes.is_some() || inference_profile.is_some() {
         check_memory_plan(
             architecture,
             &reader,
             requested_max_sequence_length,
             prompt_tokens.len(),
-            budget,
+            memory_budget_bytes,
         )?;
     }
     let model_load_started = Instant::now();
-    let model = load_model(architecture, &reader, manifest.as_ref())?;
+    let backend = if let Some((manifest, profile)) = manifest.zip(inference_profile.as_ref()) {
+        quantinfer::cpu::resolve_profiled_backend(&reader, manifest, profile)
+    } else {
+        quantinfer::cpu::resolve_backend(&reader, manifest)
+    }
+    .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
+    let model = load_model(architecture, &reader, backend)?;
     let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
     drop(reader);
     if prompt_tokens
@@ -393,10 +416,8 @@ fn model_architecture<'a>(
 fn load_model(
     architecture: &str,
     reader: &GgufReader,
-    manifest: Option<&ModelManifest>,
+    backend: CpuScalar,
 ) -> Result<LoadedModel, String> {
-    let backend = quantinfer::cpu::resolve_backend(reader, manifest)
-        .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
     match architecture {
         "qwen3" => Qwen3Model::from_gguf(backend, reader)
             .map(LoadedModel::Qwen3)
@@ -413,7 +434,7 @@ fn check_memory_plan(
     reader: &GgufReader,
     requested_context: Option<usize>,
     prompt_length: usize,
-    budget: usize,
+    budget: Option<usize>,
 ) -> Result<(), String> {
     let spec = match architecture {
         "qwen3" => Qwen3Model::<CpuScalar>::spec_from_gguf(reader),
@@ -428,6 +449,9 @@ fn check_memory_plan(
             spec.max_sequence_length
         ));
     }
+    let Some(budget) = budget else {
+        return Ok(());
+    };
     let weights = quantinfer::cpu::estimated_weight_bytes(reader, &spec)
         .map_err(|error| format!("cannot estimate CPU weight memory: {error}"))?;
     let loading_bytes = reader
@@ -458,13 +482,47 @@ fn check_file_budget(path: &Path, budget: Option<usize>) -> Result<(), String> {
     Ok(())
 }
 
+fn open_model_package(path: &Path) -> Result<Option<ModelPackage>, String> {
+    if path.is_dir() {
+        ModelPackage::open(path)
+            .map(Some)
+            .map_err(|error| format!("cannot open model package {}: {error}", path.display()))
+    } else {
+        Ok(None)
+    }
+}
+
+fn load_inference_profile(
+    package: Option<&ModelPackage>,
+    name: &str,
+) -> Result<InferenceProfile, String> {
+    let package =
+        package.ok_or_else(|| "--inference-profile requires a model package".to_owned())?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(
+            "inference profile names may contain letters, digits, hyphens, and underscores"
+                .to_owned(),
+        );
+    }
+    let bytes = package
+        .read_verified(&format!("profiles/{name}.json"))
+        .map_err(|error| format!("cannot verify inference profile {name}: {error}"))?;
+    let profile: InferenceProfile = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("cannot parse inference profile {name}: {error}"))?;
+    profile.validate().map_err(|error| error.to_string())?;
+    Ok(profile)
+}
+
 fn open_model_reader(
     path: &Path,
+    package: Option<&ModelPackage>,
     budget: Option<usize>,
-) -> Result<(GgufReader, Option<ModelManifest>), String> {
-    if path.is_dir() {
-        let package = ModelPackage::open(path)
-            .map_err(|error| format!("cannot open model package {}: {error}", path.display()))?;
+) -> Result<GgufReader, String> {
+    if let Some(package) = package {
         let model_name = package
             .manifest
             .checksums
@@ -481,15 +539,12 @@ fn open_model_reader(
         let bytes = package
             .read_verified(&model_name)
             .map_err(|error| format!("cannot verify model package tensor file: {error}"))?;
-        let reader = GgufReader::open(bytes)
-            .map_err(|error| format!("cannot parse packaged GGUF: {error}"))?;
-        Ok((reader, Some(package.manifest)))
+        GgufReader::open(bytes).map_err(|error| format!("cannot parse packaged GGUF: {error}"))
     } else {
         check_file_budget(path, budget)?;
         GgufReader::open(
             fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
         )
-        .map(|reader| (reader, None))
         .map_err(|error| format!("cannot parse GGUF: {error}"))
     }
 }
@@ -588,7 +643,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 

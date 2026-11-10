@@ -79,6 +79,7 @@ impl ExecutionRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionPlan {
     pub provider_name: String,
+    pub kernel_provider_name: String,
     pub kernel_name: String,
     pub capability: KernelCapability,
 }
@@ -86,6 +87,10 @@ pub struct ExecutionPlan {
 pub trait RuntimeProvider: fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     fn capabilities(&self) -> &[KernelCapability];
+
+    fn kernel_provider_name(&self) -> &str {
+        self.name()
+    }
 
     fn resolve(&self, request: &ExecutionRequest) -> Result<ExecutionPlan> {
         let capability = self
@@ -102,6 +107,7 @@ pub trait RuntimeProvider: fmt::Debug + Send + Sync {
             })?;
         Ok(ExecutionPlan {
             provider_name: self.name().to_owned(),
+            kernel_provider_name: self.kernel_provider_name().to_owned(),
             kernel_name: format!("{}::{:?}", self.name(), capability.operation_name()),
             capability,
         })
