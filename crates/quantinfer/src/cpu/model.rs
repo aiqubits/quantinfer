@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use quantinfer_core::Tensor;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
+use quantinfer_kernel::KernelBackend;
 use quantinfer_runtime::{
     DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, Qwen3Model, Result,
     RuntimeError,
@@ -13,12 +14,14 @@ use quantinfer_tokenizer::GgufBpeTokenizer;
 
 use super::{resolve_backend, resolve_profiled_backend, CpuScalar};
 
-pub enum CpuModel {
-    Qwen3(Qwen3Model<CpuScalar>),
-    Llama(LlamaModel<CpuScalar>),
+pub enum DenseModel<B> {
+    Qwen3(Qwen3Model<B>),
+    Llama(LlamaModel<B>),
 }
 
-impl CpuModel {
+pub type CpuModel = DenseModel<CpuScalar>;
+
+impl DenseModel<CpuScalar> {
     pub fn from_gguf(
         reader: &GgufReader,
         manifest: Option<&ModelManifest>,
@@ -37,6 +40,21 @@ impl CpuModel {
         .map_err(|error| {
             RuntimeError::InvalidInput(format!("cannot resolve CPU execution provider: {error}"))
         })?;
+        Self::load(backend, reader, architecture)
+    }
+}
+
+impl<B: KernelBackend> DenseModel<B> {
+    pub fn with_backend(
+        backend: B,
+        reader: &GgufReader,
+        manifest: Option<&ModelManifest>,
+    ) -> Result<Self> {
+        let architecture = model_architecture(reader, manifest)?;
+        Self::load(backend, reader, architecture)
+    }
+
+    fn load(backend: B, reader: &GgufReader, architecture: &str) -> Result<Self> {
         match architecture {
             "qwen3" => Qwen3Model::from_gguf(backend, reader)
                 .map(Self::Qwen3)
@@ -90,7 +108,7 @@ impl CpuModel {
     }
 }
 
-impl DecoderModel for CpuModel {
+impl<B: KernelBackend> DecoderModel for DenseModel<B> {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
         match self {
             Self::Qwen3(model) => model.forward(token_ids, cache),

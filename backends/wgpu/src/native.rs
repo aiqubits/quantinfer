@@ -111,19 +111,42 @@ impl WgpuBackend {
             rhs.encoding(),
             u32::from(output_rows),
         ];
-        let groups = (matrix[2].div_ceil(TILE), matrix[0].div_ceil(TILE));
         let limits = self.device.limits();
-        if groups.0.max(groups.1) > limits.max_compute_workgroups_per_dimension {
+        let groups_y = matrix[0].div_ceil(TILE);
+        if groups_y > limits.max_compute_workgroups_per_dimension {
             return Err(unavailable("matrix exceeds the adapter dispatch limit"));
         }
         shader_elements(matrix[0], matrix[1])?;
-        shader_elements(matrix[1], matrix[2])?;
-        let result_bytes = u64::from(shader_elements(matrix[0], matrix[2])?) * 4;
         let lhs = lhs.as_f32()?;
         let limit = limits
             .max_buffer_size
             .min(limits.max_storage_buffer_binding_size);
-        if (lhs.len() as u64) * 4 > limit || rhs.byte_len()? > limit || result_bytes > limit {
+        if (lhs.len() as u64) * 4 > limit {
+            return Err(unavailable("activations exceed the adapter storage limit"));
+        }
+        let column_limit = limits
+            .max_compute_workgroups_per_dimension
+            .saturating_mul(TILE);
+        if let Weights::F32(right) = &rhs {
+            let elements = u32::try_from(limit / 4).unwrap_or(u32::MAX);
+            let width = column_limit
+                .min(elements / matrix[0])
+                .min(elements / matrix[1]);
+            if width == 0 {
+                return Err(unavailable(
+                    "one output column exceeds the adapter storage limit",
+                ));
+            }
+            if matrix[2] > width {
+                return self.multiply_dense_panels(&matrix, lhs, right.as_f32()?, width);
+            }
+        }
+        if matrix[2] > column_limit {
+            return Err(unavailable("matrix exceeds the adapter dispatch limit"));
+        }
+        shader_elements(matrix[1], matrix[2])?;
+        let result_bytes = u64::from(shader_elements(matrix[0], matrix[2])?) * 4;
+        if rhs.byte_len()? > limit || result_bytes > limit {
             return Err(unavailable(format!(
                 "matrix exceeds the adapter's {limit}-byte storage limit"
             )));
@@ -131,11 +154,54 @@ impl WgpuBackend {
         let weights = rhs.bytes()?;
         self.dispatch(
             &matrix,
-            groups,
+            (matrix[2].div_ceil(TILE), groups_y),
             bytemuck::cast_slice(lhs),
             &weights,
             result_bytes,
         )
+    }
+
+    fn multiply_dense_panels(
+        &self,
+        matrix: &[u32; 5],
+        lhs: &[f32],
+        rhs: &[f32],
+        panel_width: u32,
+    ) -> Result<Tensor> {
+        let [rows, inner, columns, _, _] = *matrix;
+        let columns = columns as usize;
+        let output_len = (rows as usize)
+            .checked_mul(columns)
+            .ok_or_else(|| invalid("output size overflows usize"))?;
+        let mut output = Vec::new();
+        output.try_reserve_exact(output_len).map_err(unavailable)?;
+        output.resize(output_len, 0.0);
+        let mut panel = Vec::new();
+        panel
+            .try_reserve_exact(shader_elements(inner, panel_width)? as usize)
+            .map_err(unavailable)?;
+        for start in (0..columns).step_by(panel_width as usize) {
+            let end = start.saturating_add(panel_width as usize).min(columns);
+            let width = (end - start) as u32;
+            panel.clear();
+            for row in rhs.chunks_exact(columns) {
+                panel.extend_from_slice(&row[start..end]);
+            }
+            let partial = self.dispatch(
+                &[rows, inner, width, 0, 0],
+                (width.div_ceil(TILE), rows.div_ceil(TILE)),
+                bytemuck::cast_slice(lhs),
+                bytemuck::cast_slice(&panel),
+                u64::from(rows) * u64::from(width) * 4,
+            )?;
+            for (row, partial_row) in output
+                .chunks_exact_mut(columns)
+                .zip(partial.as_f32()?.chunks_exact(width as usize))
+            {
+                row[start..end].copy_from_slice(partial_row);
+            }
+        }
+        Ok(Tensor::from_f32(vec![rows as usize, columns], output)?)
     }
 
     fn dispatch(
@@ -417,4 +483,31 @@ fn invalid(message: &str) -> KernelError {
 
 fn unavailable(error: impl std::fmt::Display) -> KernelError {
     KernelError::Unsupported(format!("WGPU {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a software Vulkan adapter"]
+    fn assembles_dense_panels_in_row_major_order() {
+        let gpu = WgpuBackend::open(true).unwrap();
+        let lhs =
+            Tensor::from_f32(vec![3, 11], (0..33).map(|i| i as f32 * 0.125).collect()).unwrap();
+        let rhs = Tensor::from_f32(
+            vec![11, 17],
+            (0..187).map(|i| (i % 29) as f32 * 0.125).collect(),
+        )
+        .unwrap();
+        let output = gpu
+            .multiply_dense_panels(
+                &[3, 11, 17, 0, 0],
+                lhs.as_f32().unwrap(),
+                rhs.as_f32().unwrap(),
+                7,
+            )
+            .unwrap();
+        assert_eq!(output, CpuScalar::new().matmul(&lhs, &rhs).unwrap());
+    }
 }

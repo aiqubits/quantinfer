@@ -5,6 +5,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "apps/quantinfer-cli/**"
       - "backends/wgpu/**"
       - "backends/cpu/**"
       - "crates/quantinfer-core/**"
@@ -14,6 +15,7 @@ on:
       - "crates/quantinfer-quant/**"
       - "crates/quantinfer-runtime/**"
       - "crates/quantinfer-tokenizer/**"
+      - "crates/quantinfer/**"
       - "model-zoo/manifests/smollm2-135m.json"
       - "Cargo.lock"
       - ".github/workflows/wgpu.yml"
@@ -46,4 +48,10 @@ jobs:
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/wgpu-runtime"
           mkdir -m 700 "$XDG_RUNTIME_DIR"
           cargo test --release --locked -p quantinfer-backend-wgpu --features native \
+            --lib -- --ignored
+          cargo test --release --locked -p quantinfer-backend-wgpu --features native \
             --test native -- --ignored --nocapture --test-threads=1
+          cargo build --release --locked -p quantinfer-cli --features wgpu
+          target/release/quantinfer-cli generate --backend wgpu --input smollm2-f16.gguf \
+            --prompt 'The capital of France is' --max-new-tokens 3 --max-sequence-length 64 \
+            | grep -Fx 'generated_tokens=[260, 3575, 282]'

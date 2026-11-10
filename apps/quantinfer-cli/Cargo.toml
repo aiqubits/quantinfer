@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 cpu-simd = ["quantinfer/cpu-simd"]
+wgpu = ["quantinfer/wgpu"]
 
 [dependencies]
 quantinfer = { workspace = true }

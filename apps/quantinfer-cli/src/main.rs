@@ -5,14 +5,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use quantinfer::cpu::{load_gguf_tokenizer, model_architecture, CpuModel, ModelSource};
+use quantinfer::cpu::{load_gguf_tokenizer, model_architecture, ModelSource};
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_format::{GgufReader, ModelPackage};
 use quantinfer_runtime::{
-    select_token, DecoderModel, GenerationConfig, InferenceProfile, LlamaModel, MemoryPlan,
-    Qwen3Model,
+    select_token, GenerationConfig, InferenceProfile, LlamaModel, MemoryPlan, Qwen3Model,
 };
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
+
+mod backend;
+
+use backend::Backend;
 
 fn main() {
     if let Err(error) = run() {
@@ -77,6 +80,7 @@ fn run() -> Result<(), String> {
 }
 
 fn generate(arguments: &[String]) -> Result<(), String> {
+    let backend = Backend::parse(option_value(arguments, "--backend")?.as_deref())?;
     let path = option_value(arguments, "--input")?
         .map(PathBuf::from)
         .ok_or_else(|| "generate requires --input".to_owned())?;
@@ -131,10 +135,18 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         })
         .transpose()?;
     let profile = has_flag(arguments, "--profile");
+    let inference_profile_name = option_value(arguments, "--inference-profile")?;
+    if backend != Backend::Cpu
+        && (memory_budget_bytes.is_some() || inference_profile_name.is_some())
+    {
+        return Err(
+            "use --backend cpu with --inference-profile or --memory-budget-bytes".to_owned(),
+        );
+    }
     let model_read_started = Instant::now();
     let source = ModelSource::open(&path).map_err(|error| error.to_string())?;
     let package = source.package();
-    let inference_profile = option_value(arguments, "--inference-profile")?
+    let inference_profile = inference_profile_name
         .map(|name| load_inference_profile(package, &name))
         .transpose()?;
     let (requested_max_sequence_length, memory_budget_bytes) =
@@ -199,8 +211,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         )?;
     }
     let model_load_started = Instant::now();
-    let model = CpuModel::from_gguf(&reader, manifest, inference_profile.as_ref())
-        .map_err(|error| error.to_string())?;
+    let model = backend.load(&reader, manifest, inference_profile.as_ref())?;
     let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
     drop(reader);
     if prompt_tokens
@@ -440,7 +451,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 
