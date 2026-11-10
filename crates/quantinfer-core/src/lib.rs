@@ -145,6 +145,8 @@ impl Strides {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Device {
     Cpu,
+    /// An accelerator selected by a runtime provider.
+    Gpu,
 }
 
 #[derive(Debug, Clone, PartialEq)]

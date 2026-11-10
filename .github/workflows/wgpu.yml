@@ -1,0 +1,49 @@
+name: WGPU Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backends/wgpu/**"
+      - "backends/cpu/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-format/**"
+      - "crates/quantinfer-kernel/**"
+      - "crates/quantinfer-model/**"
+      - "crates/quantinfer-quant/**"
+      - "crates/quantinfer-runtime/**"
+      - "crates/quantinfer-tokenizer/**"
+      - "model-zoo/manifests/smollm2-135m.json"
+      - "Cargo.lock"
+      - ".github/workflows/wgpu.yml"
+
+jobs:
+  software-vulkan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install a Vulkan compute adapter
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libvulkan1 mesa-vulkan-drivers
+      - name: Fetch and verify SmolLM2
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          curl --fail --location --retry 3 --output smollm2-f16.gguf \
+            "$(jq -r '.external_f16_gguf.url' "$manifest")"
+          printf '%s  smollm2-f16.gguf\n' "$(jq -r '.external_f16_gguf.sha256' "$manifest")" | sha256sum --check
+      - name: Compare WGSL kernels and model generation against CPU
+        shell: bash
+        env:
+          QUANTINFER_WGPU_SOFTWARE: "1"
+          QUANTINFER_WGPU_GGUF: ${{ github.workspace }}/smollm2-f16.gguf
+        run: |
+          export VK_DRIVER_FILES=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -n "$VK_DRIVER_FILES"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wgpu-runtime"
+          mkdir -m 700 "$XDG_RUNTIME_DIR"
+          cargo test --release --locked -p quantinfer-backend-wgpu --features native \
+            --test native -- --ignored --nocapture --test-threads=1
