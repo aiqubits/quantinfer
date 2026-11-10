@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io::Seek;
@@ -40,6 +40,11 @@ fn run() -> Result<(), String> {
     }
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
+    let weights_checksums = arguments
+        .iter()
+        .any(|argument| argument == "--weights-checksums")
+        .then(|| required_path(&arguments, "--weights-checksums"))
+        .transpose()?;
     let output_path = required_path(&arguments, "--output")?;
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
@@ -108,7 +113,7 @@ fn run() -> Result<(), String> {
         }
         None
     };
-    let weights = WeightSource::open(&weights_path)?;
+    let weights = WeightSource::open(&weights_path, weights_checksums.as_deref())?;
 
     let mut writer = GgufWriter::new();
     model.write_metadata(&mut writer, ggml_file_type)?;
@@ -743,11 +748,35 @@ impl ConversionModel {
 }
 
 impl WeightSource {
-    fn open(path: &PathBuf) -> Result<Self, String> {
+    fn open(path: &Path, checksums_path: Option<&Path>) -> Result<Self, String> {
+        let checksums = checksums_path.map(load_checksums).transpose()?;
+        if let Some(checksums) = &checksums {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| format!("invalid SafeTensors path {}", path.display()))?;
+            let expected = checksums
+                .get(name)
+                .ok_or_else(|| format!("missing checksum for {name}"))?;
+            let actual = fs::File::open(path)
+                .and_then(|mut file| sha256_reader(&mut file))
+                .map_err(|error| format!("cannot hash {}: {error}", path.display()))?;
+            if &actual != expected {
+                return Err(format!(
+                    "checksum mismatch for {}: expected {expected}, got {actual}",
+                    path.display()
+                ));
+            }
+        }
         if path.to_string_lossy().ends_with(".index.json") {
-            SafeTensorShards::open(path)
-                .map(Self::Sharded)
-                .map_err(|error| format!("cannot parse SafeTensors index: {error}"))
+            let shards = SafeTensorShards::open(path)
+                .map_err(|error| format!("cannot parse SafeTensors index: {error}"))?;
+            if let Some(checksums) = &checksums {
+                shards
+                    .verify_checksums(checksums)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(Self::Sharded(shards))
         } else {
             SafeTensorFileReader::open(path)
                 .map(Self::Single)
@@ -782,6 +811,40 @@ impl WeightSource {
             Self::Sharded(files) => files.tensors().count(),
         }
     }
+}
+
+fn load_checksums(path: &Path) -> Result<BTreeMap<String, String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let mut checksums = BTreeMap::new();
+    for (index, line) in content.lines().enumerate() {
+        let invalid = || {
+            format!(
+                "invalid SHA-256 entry in {} at line {}",
+                path.display(),
+                index + 1
+            )
+        };
+        let (hash, filename) = line.split_once(' ').ok_or_else(invalid)?;
+        let filename = filename.strip_prefix([' ', '*']).ok_or_else(invalid)?;
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
+        if hash.len() != 64
+            || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || filename.is_empty()
+        {
+            return Err(invalid());
+        }
+        if checksums
+            .insert(filename.to_owned(), hash.to_ascii_lowercase())
+            .is_some()
+        {
+            return Err(format!(
+                "duplicate checksum for {filename} in {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(checksums)
 }
 
 fn required_path(arguments: &[String], flag: &str) -> Result<PathBuf, String> {
@@ -957,7 +1020,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
     );
 }
 

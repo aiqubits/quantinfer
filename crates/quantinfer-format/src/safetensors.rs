@@ -3,10 +3,8 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use super::{sha256_reader, FormatError, Result};
 use half::{bf16, f16};
-use sha2::{Digest, Sha256};
-
-use super::{FormatError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeTensorDType {
@@ -309,14 +307,22 @@ impl SafeTensorShards {
         let parent = self.index_path.parent().unwrap_or_else(|| Path::new("."));
         let mut file = File::open(parent.join(shard))
             .map_err(|error| FormatError::Io(format!("cannot read shard {shard}: {error}")))?;
-        let mut digest = Sha256::new();
-        std::io::copy(&mut file, &mut digest)
+        let actual = sha256_reader(&mut file)
             .map_err(|error| FormatError::Io(format!("cannot hash shard {shard}: {error}")))?;
-        let actual = format!("{:x}", digest.finalize());
         if actual != expected_sha256 {
             return Err(FormatError::Invalid(format!(
                 "checksum mismatch for shard {shard}: expected {expected_sha256}, got {actual}"
             )));
+        }
+        Ok(())
+    }
+
+    pub fn verify_checksums(&self, expected: &BTreeMap<String, String>) -> Result<()> {
+        for shard in self.shards.keys() {
+            let checksum = expected.get(shard).ok_or_else(|| {
+                FormatError::Invalid(format!("missing checksum for shard {shard}"))
+            })?;
+            self.verify_shard_checksum(shard, checksum)?;
         }
         Ok(())
     }

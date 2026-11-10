@@ -92,6 +92,29 @@ jobs:
             --config config.json --weights model.safetensors --tokenizer tokenizer.json \
             --output "$QUANTINFER_SMOLLM2_GGUF"
           cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
+      - name: Verify sharded SafeTensors conversion and input checksums
+        shell: bash
+        run: |
+          python3 tests/conformance/split_safetensors_fixture.py model.safetensors sharded
+          (cd sharded && sha256sum model.safetensors.index.json model-*.safetensors) > sharded.sha256
+          convert=(target/release/quantinfer-convert --config config.json \
+            --weights sharded/model.safetensors.index.json --tokenizer tokenizer.json)
+          "${convert[@]}" --weights-checksums sharded.sha256 --output smollm2-sharded.gguf
+          cmp smollm2-f32.gguf smollm2-sharded.gguf
+          grep -v 'model-00002-of-00002.safetensors' sharded.sha256 > incomplete.sha256
+          if "${convert[@]}" --weights-checksums incomplete.sha256 --output rejected.gguf 2> error.log; then
+            echo 'Conversion accepted a missing shard checksum' >&2
+            exit 1
+          fi
+          grep -F 'missing checksum for shard model-00002-of-00002.safetensors' error.log
+          sed '/model-00002-of-00002.safetensors/s/^[a-f0-9]\{64\}/0000000000000000000000000000000000000000000000000000000000000000/' \
+            sharded.sha256 > invalid.sha256
+          if "${convert[@]}" --weights-checksums invalid.sha256 --output rejected.gguf 2> error.log; then
+            echo 'Conversion accepted an invalid shard checksum' >&2
+            exit 1
+          fi
+          grep -F 'checksum mismatch for shard model-00002-of-00002.safetensors' error.log
+          test ! -e rejected.gguf
       - name: Record SmolLM2 F32 benchmark
         run: |
           cargo build --release --locked -p quantinfer-cli

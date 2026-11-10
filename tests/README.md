@@ -74,3 +74,9 @@ are spooled to a scratch file in the destination directory, then copied to a
 complete GGUF and published atomically. The destination filesystem needs room
 for both files during the copy. A requested manifest checksum is calculated
 by reading the completed GGUF incrementally.
+
+Use `--weights-checksums source.sha256` to verify the source before writing
+any tensors. The SHA-256 list must include the input file basename and, for
+an index, every shard path named by that index. Model Conformance checks that
+the pinned SmolLM2 checkpoint yields the same GGUF from both input layouts
+and that conversion rejects missing or mismatched shard hashes.
