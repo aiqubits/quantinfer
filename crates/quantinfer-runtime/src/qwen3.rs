@@ -1,5 +1,5 @@
 use quantinfer_core::{
-    DType, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Shape, Tensor,
+    DType, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, Shape, Tensor,
 };
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
@@ -14,6 +14,7 @@ pub enum LinearWeight {
     Q8_0(QuantizedTensor),
     Q4_0(QuantizedTensor4),
     Q4_K(QuantizedTensorQ4K),
+    Q5_K(QuantizedTensorQ5K),
 }
 
 impl LinearWeight {
@@ -23,6 +24,7 @@ impl LinearWeight {
             Self::Q8_0(tensor) => tensor.shape(),
             Self::Q4_0(tensor) => tensor.shape(),
             Self::Q4_K(tensor) => tensor.shape(),
+            Self::Q5_K(tensor) => tensor.shape(),
         }
     }
 
@@ -32,6 +34,7 @@ impl LinearWeight {
             Self::Q8_0(_) => DType::Q8_0,
             Self::Q4_0(_) => DType::Q4_0,
             Self::Q4_K(_) => DType::Q4_K,
+            Self::Q5_K(_) => DType::Q5_K,
         }
     }
 
@@ -41,6 +44,7 @@ impl LinearWeight {
             Self::Q8_0(weight) => Ok(backend.matmul_q8_0(input, weight)?),
             Self::Q4_0(weight) => Ok(backend.matmul_q4_0(input, weight)?),
             Self::Q4_K(weight) => Ok(backend.matmul_q4_k(input, weight)?),
+            Self::Q5_K(weight) => Ok(backend.matmul_q5_k(input, weight)?),
         }
     }
 }
@@ -349,9 +353,10 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
         GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
         GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
         GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
-        GgmlType::Q5_K | GgmlType::Q6_K => Err(RuntimeError::InvalidInput(format!(
+        GgmlType::Q6_K => Err(RuntimeError::InvalidInput(format!(
             "GGUF tensor {name} uses an unsupported K-quant runtime type"
         ))),
+        GgmlType::Q5_K => Ok(LinearWeight::Q5_K(reader.tensor_q5_k(name)?)),
     }
 }
 
@@ -630,7 +635,7 @@ mod tests {
     use quantinfer_core::{DType, Tensor};
     use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
     use quantinfer_model::Qwen3Config;
-    use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q8_0};
+    use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q8_0};
 
     fn filled(shape: Vec<usize>, value: f32) -> Tensor {
         let count = shape.iter().product();
@@ -847,5 +852,17 @@ mod tests {
         let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
         let linear = super::load_linear(&reader, "blk.0.attn_q.weight").unwrap();
         assert_eq!(linear.dtype(), DType::Q4_K);
+    }
+
+    #[test]
+    fn loads_q5_k_linear_weight_from_gguf() {
+        let mut writer = GgufWriter::new();
+        writer.add_q5_k_tensor(
+            "blk.0.attn_q.weight",
+            &quantize_q5_k(&filled(vec![256, 1], 0.25)).unwrap(),
+        );
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let linear = super::load_linear(&reader, "blk.0.attn_q.weight").unwrap();
+        assert_eq!(linear.dtype(), DType::Q5_K);
     }
 }

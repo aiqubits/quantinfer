@@ -4,7 +4,9 @@
 
 use std::fmt;
 
-use quantinfer_core::{CoreError, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Tensor};
+use quantinfer_core::{
+    CoreError, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor,
+};
 
 pub type Result<T> = std::result::Result<T, KernelError>;
 
@@ -43,6 +45,8 @@ pub trait KernelBackend {
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>;
 
     fn matmul_q4_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor>;
+
+    fn matmul_q5_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor>;
 
     fn rms_norm(&self, input: &Tensor, weight: &Tensor, epsilon: f32) -> Result<Tensor>;
 

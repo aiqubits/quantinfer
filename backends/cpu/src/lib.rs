@@ -3,8 +3,8 @@
 #![forbid(unsafe_code)]
 
 use quantinfer_core::{
-    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Shape, Tensor, Q4_0_BLOCK_SIZE,
-    Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, Shape, Tensor,
+    Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
@@ -84,6 +84,45 @@ impl CpuScalar {
             block.scale * f32::from(scales[subblock]) * f32::from(quantized)
                 - block.min_scale * f32::from(mins[subblock]),
         )
+    }
+
+    fn quantized_value_q5_k(&self, tensor: &QuantizedTensorQ5K, index: usize) -> Result<f32> {
+        let block = tensor
+            .blocks()
+            .get(index / Q4_K_BLOCK_SIZE)
+            .ok_or_else(|| KernelError::InvalidInput("Q5_K index is out of bounds".to_owned()))?;
+        let local = index % Q4_K_BLOCK_SIZE;
+        let mut scales = [0_u8; 8];
+        let mut mins = [0_u8; 8];
+        for subblock in 0..4 {
+            scales[subblock] = block.scales[subblock] & 0x3f;
+            mins[subblock] = block.scales[4 + subblock] & 0x3f;
+            scales[4 + subblock] =
+                (block.scales[8 + subblock] & 0xf) | ((block.scales[subblock] >> 6) << 4);
+            mins[4 + subblock] =
+                (block.scales[8 + subblock] >> 4) | ((block.scales[4 + subblock] >> 6) << 4);
+        }
+        let group = local / 64;
+        let within = local % 64;
+        let packed = block.values[group * 32 + within % 32];
+        let mut q = if within < 32 {
+            packed & 0xf
+        } else {
+            packed >> 4
+        };
+        if block.high_bits[within % 32]
+            & (1 << (if within < 32 {
+                2 * group
+            } else {
+                2 * group + 1
+            }))
+            != 0
+        {
+            q += 16;
+        }
+        let subblock = local / 32;
+        Ok(block.scale * f32::from(scales[subblock]) * f32::from(q)
+            - block.min_scale * f32::from(mins[subblock]))
     }
 }
 
@@ -177,6 +216,30 @@ impl KernelBackend for CpuScalar {
                 for inner in 0..k {
                     sum += lhs_values[row * k + inner]
                         * self.quantized_value_q4_k(rhs, inner * n + column)?;
+                }
+                output[row * n + column] = sum;
+            }
+        }
+        Ok(Tensor::from_f32(vec![m, n], output)?)
+    }
+
+    fn matmul_q5_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor> {
+        let (m, k) = self.expect_matrix(lhs, "lhs")?;
+        let rhs_shape = rhs.shape().dims();
+        if rhs_shape.len() != 2 || rhs_shape[0] != k {
+            return Err(KernelError::InvalidInput(
+                "Q5_K rhs must be a rank-2 matrix with a matching inner dimension".to_owned(),
+            ));
+        }
+        let n = rhs_shape[1];
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let mut output = vec![0.0; m * n];
+        for row in 0..m {
+            for column in 0..n {
+                let mut sum = 0.0;
+                for inner in 0..k {
+                    sum += lhs_values[row * k + inner]
+                        * self.quantized_value_q5_k(rhs, inner * n + column)?;
                 }
                 output[row * n + column] = sum;
             }
@@ -317,8 +380,8 @@ impl KernelBackend for CpuScalar {
 mod tests {
     use super::{CpuScalar, KernelBackend};
     use quantinfer_core::{
-        Q4KBlock, Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K,
-        Tensor,
+        Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
+        QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor,
     };
 
     #[test]
@@ -373,6 +436,25 @@ mod tests {
         )
         .unwrap();
         let result = backend.matmul_q4_k(&lhs, &rhs).unwrap();
+        assert!(result.as_f32().unwrap()[0] > 200.0);
+    }
+
+    #[test]
+    fn computes_q5_k_matrix_product() {
+        let backend = CpuScalar::new();
+        let lhs = Tensor::from_f32(vec![1, 256], vec![1.0; 256]).unwrap();
+        let rhs = QuantizedTensorQ5K::from_blocks(
+            vec![256, 1],
+            vec![Q5KBlock {
+                scale: 0.1,
+                min_scale: 0.0,
+                scales: [63; 12],
+                high_bits: [0; 32],
+                values: [0x99; 128],
+            }],
+        )
+        .unwrap();
+        let result = backend.matmul_q5_k(&lhs, &rhs).unwrap();
         assert!(result.as_f32().unwrap()[0] > 200.0);
     }
 
