@@ -7,7 +7,7 @@ use std::time::Instant;
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::Tensor;
 use quantinfer_kernel::KernelBackend;
-use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
+use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, quantize_q8_0};
 use quantinfer_tokenizer::{
     ByteTokenizer, ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
 };
@@ -43,6 +43,9 @@ fn run_bench() {
         .expect("benchmark rhs shape is valid");
     let quantized = quantize_q8_0(&rhs).expect("benchmark rhs is Q8_0 block aligned");
     let quantized_q4 = quantize_q4_0(&rhs).expect("benchmark rhs is Q4_0 block aligned");
+    let quantized_q4_k = quantize_q4_k(&rhs).expect("benchmark rhs is Q4_K block aligned");
+    let quantized_q5_k = quantize_q5_k(&rhs).expect("benchmark rhs is Q5_K block aligned");
+    let quantized_q6_k = quantize_q6_k(&rhs).expect("benchmark rhs is Q6_K block aligned");
     let backend = CpuScalar::new();
 
     let started = Instant::now();
@@ -72,6 +75,32 @@ fn run_bench() {
         "q4_0_matmul iterations={ITERATIONS} shape={INPUT_ROWS}x{INPUT_COLUMNS}x{OUTPUT_COLUMNS} elapsed_ns={} checksum={checksum:.6}",
         elapsed.as_nanos()
     );
+
+    macro_rules! run_quant_bench {
+        ($name:literal, $quantized:expr, $method:ident) => {{
+            let started = Instant::now();
+            let mut checksum = 0.0;
+            for _ in 0..ITERATIONS {
+                let result = backend
+                    .$method(black_box(&lhs), black_box(&$quantized))
+                    .expect("K-quant benchmark matmul should succeed");
+                checksum += result.as_f32().expect("benchmark result is F32")[0];
+            }
+            println!(
+                "{}_matmul iterations={} shape={}x{}x{} elapsed_ns={} checksum={:.6}",
+                $name,
+                ITERATIONS,
+                INPUT_ROWS,
+                INPUT_COLUMNS,
+                OUTPUT_COLUMNS,
+                started.elapsed().as_nanos(),
+                checksum
+            );
+        }};
+    }
+    run_quant_bench!("q4_k", quantized_q4_k, matmul_q4_k);
+    run_quant_bench!("q5_k", quantized_q5_k, matmul_q5_k);
+    run_quant_bench!("q6_k", quantized_q6_k, matmul_q6_k);
 }
 
 fn run_conformance() {
