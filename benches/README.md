@@ -35,3 +35,9 @@ Q8_0, and Q4_0. Compare performance runs on the same CPU model.
 
 The i7-12700 single-thread measurements for these four variants are recorded
 in `baselines/intel-i7-12700-cpu-scalar.json`.
+
+Model Conformance checks peak RSS against a 10% allowance and verifies exact
+KV cache sizes. On a CPU with a recorded timing baseline, it allows up to 35%
+more prefill, first-token, and decode latency, and requires at least 70% of
+baseline decode throughput. On other CPUs of the same architecture, it still
+checks memory and publishes the timings.

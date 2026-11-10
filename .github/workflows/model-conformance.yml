@@ -32,7 +32,7 @@ on:
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
       - "apps/quantinfer-cli/**"
-      - "benches/real-model.sh"
+      - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
       - "model-zoo/tokenizer/**"
@@ -91,7 +91,9 @@ jobs:
           bash benches/real-model.sh target/release/quantinfer-cli \
             "$(jq -r '.model_id' "$manifest")" "$(jq -r '.source_revision' "$manifest")" \
             f32 smollm2-f32.gguf > smollm2-f32-benchmark.txt
+          python3 benches/check-regressions.py smollm2-f32-benchmark.txt
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: smollm2-benchmark
           path: smollm2-f32-benchmark.txt
@@ -182,6 +184,7 @@ jobs:
               "$(jq -r '.model_id' "$manifest")" "$(jq -r '.source_revision' "$manifest")" \
               "$variant" "qwen3-$variant.gguf" > "qwen3-$variant-benchmark.txt"
           done
+          python3 benches/check-regressions.py qwen3-*-benchmark.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
