@@ -6,11 +6,13 @@ pub mod llama;
 pub mod profile;
 pub mod provider;
 pub mod qwen3;
+pub mod session;
 
 pub use llama::{LlamaLayerWeights, LlamaModel};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
 pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
+pub use session::{DecodeSession, DecodeStopReason};
 
 use std::fmt;
 
@@ -155,6 +157,8 @@ impl KvCache {
         max_sequence_length
             .checked_mul(num_key_value_heads)
             .and_then(|value| value.checked_mul(head_dim))
+            .and_then(|value| value.checked_mul(num_layers))
+            .and_then(|value| value.checked_mul(2 * std::mem::size_of::<f32>()))
             .ok_or_else(|| {
                 RuntimeError::InvalidInput("KV cache dimensions overflow usize".to_owned())
             })?;
