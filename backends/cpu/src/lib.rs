@@ -116,47 +116,50 @@ impl CpuScalar {
     where
         F: Fn(usize) -> Result<f32> + Sync + Send,
     {
-        let worker_count = self.config.threads.max(1).min(rows.max(1));
-        let mut output = vec![0.0; rows * columns];
-        if worker_count == 1 || rows < 2 {
-            for row in 0..rows {
-                for column in 0..columns {
-                    let mut sum = 0.0;
-                    for index in 0..inner {
-                        sum += lhs_values[row * inner + index] * value(index * columns + column)?;
+        if columns == 0 {
+            return Err(KernelError::InvalidInput(
+                "matmul output must have at least one column".to_owned(),
+            ));
+        }
+        let compute_rows = |lhs: &[f32], output: &mut [f32]| -> Result<()> {
+            for (lhs_row, output_row) in lhs
+                .chunks_exact(inner)
+                .zip(output.chunks_exact_mut(columns))
+            {
+                for (index, &left) in lhs_row.iter().enumerate() {
+                    let rhs_offset = index * columns;
+                    for (column, result) in output_row.iter_mut().enumerate() {
+                        *result += left * value(rhs_offset + column)?;
                     }
-                    output[row * columns + column] = sum;
                 }
             }
+            Ok(())
+        };
+
+        let worker_count = self.config.threads.max(1).min(rows);
+        let output_elements = rows.checked_mul(columns).ok_or_else(|| {
+            KernelError::InvalidInput("matmul output size overflows usize".to_owned())
+        })?;
+        let mut output = vec![0.0; output_elements];
+        if worker_count == 1 {
+            compute_rows(lhs_values, &mut output)?;
             return Ok(output);
         }
 
-        let chunk_size = rows.div_ceil(worker_count);
+        let rows_per_worker = rows.div_ceil(worker_count);
         std::thread::scope(|scope| -> Result<()> {
-            let mut handles = Vec::new();
-            for start in (0..rows).step_by(chunk_size) {
-                let end = (start + chunk_size).min(rows);
-                let value_ref = &value;
-                handles.push(scope.spawn(move || {
-                    let mut values = vec![0.0; (end - start) * columns];
-                    for row in start..end {
-                        for column in 0..columns {
-                            let mut sum = 0.0;
-                            for index in 0..inner {
-                                sum += lhs_values[row * inner + index]
-                                    * value_ref(index * columns + column)?;
-                            }
-                            values[(row - start) * columns + column] = sum;
-                        }
-                    }
-                    Ok::<_, KernelError>((start, values))
-                }));
+            let mut handles = Vec::with_capacity(worker_count);
+            for (lhs, output) in lhs_values
+                .chunks(rows_per_worker * inner)
+                .zip(output.chunks_mut(rows_per_worker * columns))
+            {
+                let compute = &compute_rows;
+                handles.push(scope.spawn(move || compute(lhs, output)));
             }
             for handle in handles {
-                let (start, values) = handle
+                handle
                     .join()
                     .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))??;
-                output[start * columns..(start * columns) + values.len()].copy_from_slice(&values);
             }
             Ok(())
         })?;
