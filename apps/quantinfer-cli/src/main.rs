@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use quantinfer_backend_cpu::CpuScalar;
+use quantinfer_core::{DType, QuantizationScheme};
 use quantinfer_format::{GgufReader, GgufValue, ModelPackage};
 use quantinfer_runtime::{
-    select_token, GenerationConfig, KvCache, LlamaModel, MemoryPlan, Qwen3Model,
+    select_token, ExecutionRequest, ExecutionResolver, GenerationConfig, KvCache, LlamaModel,
+    MemoryPlan, Qwen3Model,
 };
 use quantinfer_tokenizer::{
     ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
@@ -319,6 +321,9 @@ impl LoadedModel {
 }
 
 fn load_model(reader: &GgufReader) -> Result<LoadedModel, String> {
+    ExecutionResolver::with_default_cpu()
+        .resolve(&ExecutionRequest::cpu(DType::F32, QuantizationScheme::None))
+        .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
     let architecture = match reader.metadata().get("general.architecture") {
         Some(GgufValue::String(value)) => value.as_str(),
         _ => "qwen3",
