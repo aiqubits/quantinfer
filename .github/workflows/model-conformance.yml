@@ -40,7 +40,7 @@ jobs:
         run: |
           curl --fail --location --retry 3 --output /tmp/qwen3-tokenizer.json \
             "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/tokenizer.json"
-          echo "00339cff5ad56e5d7c0163d0767444c0e1bfae37e1328cae680011406caa51d0  /tmp/qwen3-tokenizer.json" | sha256sum --check
+          echo "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4  /tmp/qwen3-tokenizer.json" | sha256sum --check
           cargo run -p quantinfer-xtask -- tokenizer-golden \
             --tokenizer /tmp/qwen3-tokenizer.json \
             --golden model-zoo/tokenizer/qwen3-0.6b-golden.json

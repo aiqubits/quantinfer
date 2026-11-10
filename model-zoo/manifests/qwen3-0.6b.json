@@ -11,7 +11,7 @@
     },
     {
       "path": "tokenizer.json",
-      "sha256": "00339cff5ad56e5d7c0163d0767444c0e1bfae37e1328cae680011406caa51d0",
+      "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
       "required_for": ["tokenizer_golden", "chat_template"]
     },
     {
