@@ -353,7 +353,7 @@ impl Tokenizer for GgufBpeTokenizer {
                 .ok_or(TokenizerError::UnknownToken(*token_id))?;
             if Some(*token_id) == self.bos_token_id
                 || Some(*token_id) == self.eos_token_id
-                || is_special_token(token)
+                || is_decode_skipped_token(token)
             {
                 continue;
             }
@@ -390,6 +390,10 @@ fn is_special_token(token: &str) -> bool {
                 | "<tool_response>"
                 | "</tool_response>"
         )
+}
+
+fn is_decode_skipped_token(token: &str) -> bool {
+    token.starts_with("<|") && token.ends_with("|>")
 }
 
 fn byte_encoder() -> [char; 256] {

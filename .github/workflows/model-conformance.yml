@@ -36,6 +36,14 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Verify pinned Qwen3 official tokenizer vectors
+        run: |
+          curl --fail --location --retry 3 --output /tmp/qwen3-tokenizer.json \
+            "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/tokenizer.json"
+          echo "00339cff5ad56e5d7c0163d0767444c0e1bfae37e1328cae680011406caa51d0  /tmp/qwen3-tokenizer.json" | sha256sum --check
+          cargo run -p quantinfer-xtask -- tokenizer-golden \
+            --tokenizer /tmp/qwen3-tokenizer.json \
+            --golden model-zoo/tokenizer/qwen3-0.6b-golden.json
       - run: cargo run -p quantinfer-xtask -- conformance
       - run: cargo run -p quantinfer-xtask -- bench
 
