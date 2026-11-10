@@ -1,8 +1,12 @@
+use std::mem::size_of;
+
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::{
-    DType, QuantizationScheme, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme, Q4_0_BLOCK_SIZE,
+    Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_format::{GgmlType, GgufReader, ModelManifest};
+use quantinfer_model::{ModelSpec, TensorRole};
 use quantinfer_runtime::{ExecutionRequest, ExecutionResolver, Operation, Result, RuntimeError};
 
 /// Select a CPU kernel that supports the weight types recorded in a GGUF.
@@ -73,6 +77,42 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
             "CPU kernel factory is unavailable for provider {provider}"
         ))),
     }
+}
+
+/// Estimate the storage used by the CPU representation after GGUF decoding.
+pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<usize> {
+    let invalid = || RuntimeError::InvalidInput("CPU weight size overflows usize".to_owned());
+    let mut bytes = 0usize;
+    for tensor in reader.tensors() {
+        let elements: usize = tensor.shape.iter().product();
+        let (block_size, native_bytes) = match tensor.dtype {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => (1, size_of::<f32>()),
+            GgmlType::Q8_0 => (Q8_0_BLOCK_SIZE, size_of::<Q8_0Block>()),
+            GgmlType::Q4_0 => (Q4_0_BLOCK_SIZE, size_of::<Q4_0Block>()),
+            GgmlType::Q4_K => (Q4_K_BLOCK_SIZE, size_of::<Q4KBlock>()),
+            GgmlType::Q5_K => (Q4_K_BLOCK_SIZE, size_of::<Q5KBlock>()),
+            GgmlType::Q6_K => (Q4_K_BLOCK_SIZE, size_of::<Q6KBlock>()),
+        };
+        let tensor_bytes = (elements / block_size)
+            .checked_mul(native_bytes)
+            .ok_or_else(invalid)?;
+        bytes = bytes.checked_add(tensor_bytes).ok_or_else(invalid)?;
+    }
+    if spec.embedding.tied_lm_head && reader.tensor_info("output.weight").is_err() {
+        let embedding = spec
+            .tensor(TensorRole::TokenEmbedding, None)
+            .ok_or_else(|| RuntimeError::InvalidInput("model has no embedding".to_owned()))?;
+        let head_bytes = embedding
+            .logical_shape
+            .dims()
+            .iter()
+            .try_fold(size_of::<f32>(), |bytes, dimension| {
+                bytes.checked_mul(*dimension)
+            })
+            .ok_or_else(invalid)?;
+        bytes = bytes.checked_add(head_bytes).ok_or_else(invalid)?;
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]

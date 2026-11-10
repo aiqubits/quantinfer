@@ -1,3 +1,4 @@
+use quantinfer_model::ModelSpec;
 use serde::{Deserialize, Serialize};
 
 use crate::{Result, RuntimeError};
@@ -13,6 +14,53 @@ pub struct MemoryPlan {
 }
 
 impl MemoryPlan {
+    pub fn for_dense_prefill(
+        model: &ModelSpec,
+        weight_bytes: usize,
+        maximum_context_length: usize,
+        prefill_tokens: usize,
+    ) -> Result<Self> {
+        if prefill_tokens == 0 || prefill_tokens > maximum_context_length {
+            return Err(RuntimeError::InvalidInput(
+                "prefill tokens must fit the memory plan context".to_owned(),
+            ));
+        }
+        let attention = &model
+            .layers
+            .first()
+            .ok_or_else(|| RuntimeError::InvalidInput("model has no layers".to_owned()))?
+            .attention;
+        let mut plan = Self::for_model(
+            weight_bytes,
+            model.hidden_size,
+            model.vocabulary.size,
+            model.layers.len(),
+            attention.num_key_value_heads,
+            attention.head_dim,
+            maximum_context_length,
+        )?;
+        let allocation = |width: usize, buffers: usize| {
+            prefill_tokens
+                .checked_mul(width)
+                .and_then(|count| count.checked_mul(buffers))
+                .and_then(|count| count.checked_mul(std::mem::size_of::<f32>()))
+                .ok_or_else(|| {
+                    RuntimeError::InvalidInput("prefill memory size overflows usize".to_owned())
+                })
+        };
+        plan.activation_bytes = allocation(model.hidden_size, 4)?;
+        let projection_width = attention
+            .num_heads
+            .checked_mul(attention.head_dim)
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("attention width overflows usize".to_owned())
+            })?;
+        plan.temporary_workspace_bytes =
+            allocation(model.intermediate_size, 4)?.max(allocation(projection_width, 8)?);
+        plan.output_logits_bytes = allocation(model.vocabulary.size, 1)?;
+        Ok(plan)
+    }
+
     pub fn for_model(
         weight_bytes: usize,
         hidden_size: usize,
@@ -146,6 +194,29 @@ mod tests {
         assert_eq!(plan.kv_cache_bytes, 1024);
         assert!(plan.ensure_budget(plan.total_bytes().unwrap()).is_ok());
         assert!(plan.ensure_budget(plan.total_bytes().unwrap() - 1).is_err());
+    }
+
+    #[test]
+    fn plans_logits_for_every_prefill_token() {
+        let model = quantinfer_model::LlamaConfig::from_json(
+            r#"{
+                "vocab_size": 64,
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "max_position_embeddings": 128
+            }"#,
+        )
+        .unwrap()
+        .to_model_spec("fixture")
+        .unwrap();
+        let plan = MemoryPlan::for_dense_prefill(&model, 4096, 16, 5).unwrap();
+        assert_eq!(plan.weight_bytes, 4096);
+        assert_eq!(plan.output_logits_bytes, 5 * 64 * 4);
+        assert_eq!(plan.kv_cache_bytes, 2 * 16 * 2 * 4 * 2 * 4);
+        assert!(MemoryPlan::for_dense_prefill(&model, 4096, 16, 17).is_err());
     }
 
     #[test]

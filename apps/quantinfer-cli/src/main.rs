@@ -2,7 +2,7 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quantinfer_backend_cpu::CpuScalar;
@@ -45,7 +45,7 @@ fn run() -> Result<(), String> {
             let path = option_value(&arguments[1..], "--input")?
                 .map(PathBuf::from)
                 .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
-            let (reader, _) = open_model_reader(&path)?;
+            let (reader, _) = open_model_reader(&path, None)?;
             println!("metadata: {}", reader.metadata().len());
             for key in reader.metadata().keys() {
                 println!("metadata_key={key}");
@@ -119,7 +119,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .transpose()?;
     let profile = has_flag(arguments, "--profile");
     let model_read_started = Instant::now();
-    let (reader, manifest) = open_model_reader(&path)?;
+    let (reader, manifest) = open_model_reader(&path, memory_budget_bytes)?;
     let model_read_elapsed = model_read_started.elapsed();
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
@@ -156,8 +156,18 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     if prompt_tokens.is_empty() {
         return Err("prompt must encode to at least one token".to_owned());
     }
+    let architecture = model_architecture(&reader, manifest.as_ref())?;
+    if let Some(budget) = memory_budget_bytes {
+        check_memory_plan(
+            architecture,
+            &reader,
+            requested_max_sequence_length,
+            prompt_tokens.len(),
+            budget,
+        )?;
+    }
     let model_load_started = Instant::now();
-    let model = load_model(&reader, manifest.as_ref())?;
+    let model = load_model(architecture, &reader, manifest.as_ref())?;
     let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
     drop(reader);
     if prompt_tokens
@@ -186,21 +196,6 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .is_none_or(|length| length > max_sequence_length)
     {
         return Err("prompt and max_new_tokens exceed --max-sequence-length".to_owned());
-    }
-    if let Some(memory_budget_bytes) = memory_budget_bytes {
-        let memory_plan = MemoryPlan::for_model(
-            0,
-            model.hidden_size(),
-            model.vocab_size(),
-            model.num_hidden_layers(),
-            model.num_key_value_heads(),
-            model.head_dim(),
-            max_sequence_length,
-        )
-        .map_err(|error| format!("cannot build memory plan: {error}"))?;
-        memory_plan
-            .ensure_budget(memory_budget_bytes)
-            .map_err(|error| format!("memory budget check failed: {error}"))?;
     }
     let generation_config = GenerationConfig {
         max_new_tokens,
@@ -350,13 +345,6 @@ impl LoadedModel {
         }
     }
 
-    fn hidden_size(&self) -> usize {
-        match self {
-            Self::Qwen3(model) => model.config.hidden_size,
-            Self::Llama(model) => model.config.hidden_size,
-        }
-    }
-
     fn forward(
         &self,
         token_ids: &[usize],
@@ -369,16 +357,16 @@ impl LoadedModel {
     }
 }
 
-fn load_model(
-    reader: &GgufReader,
-    manifest: Option<&ModelManifest>,
-) -> Result<LoadedModel, String> {
+fn model_architecture<'a>(
+    reader: &'a GgufReader,
+    manifest: Option<&'a ModelManifest>,
+) -> Result<&'a str, String> {
     let gguf_architecture = match reader.metadata().get("general.architecture") {
         Some(GgufValue::String(value)) => Some(value.as_str()),
         Some(_) => return Err("GGUF general.architecture must be a string".to_owned()),
         None => None,
     };
-    let architecture = match manifest {
+    match manifest {
         Some(manifest) => {
             if gguf_architecture.is_some_and(|architecture| architecture != manifest.architecture) {
                 return Err(format!(
@@ -386,10 +374,17 @@ fn load_model(
                     manifest.architecture
                 ));
             }
-            &manifest.architecture
+            Ok(&manifest.architecture)
         }
-        None => gguf_architecture.unwrap_or("qwen3"),
-    };
+        None => Ok(gguf_architecture.unwrap_or("qwen3")),
+    }
+}
+
+fn load_model(
+    architecture: &str,
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+) -> Result<LoadedModel, String> {
     let backend = quantinfer::cpu::resolve_backend(reader, manifest)
         .map_err(|error| format!("cannot resolve CPU execution provider: {error}"))?;
     match architecture {
@@ -403,7 +398,60 @@ fn load_model(
     }
 }
 
-fn open_model_reader(path: &PathBuf) -> Result<(GgufReader, Option<ModelManifest>), String> {
+fn check_memory_plan(
+    architecture: &str,
+    reader: &GgufReader,
+    requested_context: Option<usize>,
+    prompt_length: usize,
+    budget: usize,
+) -> Result<(), String> {
+    let spec = match architecture {
+        "qwen3" => Qwen3Model::<CpuScalar>::spec_from_gguf(reader),
+        "llama" => LlamaModel::<CpuScalar>::spec_from_gguf(reader),
+        other => return Err(format!("unsupported GGUF architecture {other}")),
+    }
+    .map_err(|error| format!("cannot read model dimensions for memory plan: {error}"))?;
+    let context = requested_context.unwrap_or(spec.max_sequence_length);
+    if context == 0 || context > spec.max_sequence_length {
+        return Err(format!(
+            "--max-sequence-length must be between 1 and {}",
+            spec.max_sequence_length
+        ));
+    }
+    let weights = quantinfer::cpu::estimated_weight_bytes(reader, &spec)
+        .map_err(|error| format!("cannot estimate CPU weight memory: {error}"))?;
+    let loading_bytes = reader
+        .file_size_bytes()
+        .checked_add(weights)
+        .ok_or_else(|| "model loading memory size overflows usize".to_owned())?;
+    if loading_bytes > budget {
+        return Err(format!(
+            "memory budget check failed: loading the model requires at least {loading_bytes} bytes, budget is {budget}"
+        ));
+    }
+    MemoryPlan::for_dense_prefill(&spec, weights, context, prompt_length)
+        .and_then(|plan| plan.ensure_budget(budget))
+        .map_err(|error| format!("memory budget check failed: {error}"))
+}
+
+fn check_file_budget(path: &Path, budget: Option<usize>) -> Result<(), String> {
+    if let Some(budget) = budget {
+        let file_size = fs::metadata(path)
+            .map_err(|error| format!("cannot stat {}: {error}", path.display()))?
+            .len();
+        if file_size > budget as u64 {
+            return Err(format!(
+                "memory budget check failed: GGUF file is {file_size} bytes, budget is {budget}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn open_model_reader(
+    path: &Path,
+    budget: Option<usize>,
+) -> Result<(GgufReader, Option<ModelManifest>), String> {
     if path.is_dir() {
         let package = ModelPackage::open(path)
             .map_err(|error| format!("cannot open model package {}: {error}", path.display()))?;
@@ -419,6 +467,7 @@ fn open_model_reader(path: &PathBuf) -> Result<(GgufReader, Option<ModelManifest
                     .then(|| "model.gguf".to_owned())
             })
             .ok_or_else(|| "model package manifest does not identify a GGUF file".to_owned())?;
+        check_file_budget(&package.root().join(&model_name), budget)?;
         let bytes = package
             .read_verified(&model_name)
             .map_err(|error| format!("cannot verify model package tensor file: {error}"))?;
@@ -426,6 +475,7 @@ fn open_model_reader(path: &PathBuf) -> Result<(GgufReader, Option<ModelManifest
             .map_err(|error| format!("cannot parse packaged GGUF: {error}"))?;
         Ok((reader, Some(package.manifest)))
     } else {
+        check_file_budget(path, budget)?;
         GgufReader::open(
             fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?,
         )

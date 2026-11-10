@@ -469,6 +469,10 @@ impl GgufReader {
         &self.metadata
     }
 
+    pub fn file_size_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+
     pub fn tensors(&self) -> &[GgufTensorInfo] {
         &self.tensors
     }

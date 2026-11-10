@@ -1,7 +1,7 @@
 use quantinfer_core::{DType, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::{LlamaAdapter, LlamaConfig, TensorRole};
+use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelSpec, TensorRole};
 
 use crate::qwen3::{add, gqa_attention, load_linear, rope_tables, transpose_matrix, LinearWeight};
 use crate::{KvCache, Result, RuntimeError};
@@ -184,6 +184,12 @@ pub struct LlamaModel<B> {
 }
 
 impl<B: KernelBackend> LlamaModel<B> {
+    pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
+        config_from_gguf(reader)?
+            .to_model_spec("llama")
+            .map_err(RuntimeError::InvalidInput)
+    }
+
     pub fn new(
         config: LlamaConfig,
         backend: B,

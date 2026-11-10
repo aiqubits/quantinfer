@@ -4,7 +4,7 @@ use quantinfer_core::{
 };
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::{Qwen3Adapter, Qwen3Config, TensorRole};
+use quantinfer_model::{ModelSpec, Qwen3Adapter, Qwen3Config, TensorRole};
 
 use crate::{KvCache, Result, RuntimeError};
 
@@ -251,6 +251,12 @@ pub struct Qwen3Model<B> {
 }
 
 impl<B: KernelBackend> Qwen3Model<B> {
+    pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
+        config_from_gguf(reader)?
+            .to_model_spec("qwen3")
+            .map_err(RuntimeError::InvalidInput)
+    }
+
     pub fn new(
         config: Qwen3Config,
         backend: B,
