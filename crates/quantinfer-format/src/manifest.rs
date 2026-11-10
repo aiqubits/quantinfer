@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use quantinfer_core::{QuantizationScheme, TensorStorageDescriptor};
@@ -184,8 +185,13 @@ impl ModelPackage {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
+    let mut digest = Sha256::new();
+    io::copy(reader, &mut digest)?;
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 #[cfg(test)]

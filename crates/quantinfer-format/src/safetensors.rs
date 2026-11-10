@@ -127,15 +127,17 @@ impl SafeTensorFile {
     }
 }
 
+/// File-backed SafeTensors reader. Tensor reads seek to the requested payload.
 #[derive(Debug, Clone)]
-struct SafeTensorShard {
+pub struct SafeTensorFileReader {
     path: PathBuf,
     data_start: usize,
     tensors: BTreeMap<String, SafeTensorInfo>,
 }
 
-impl SafeTensorShard {
-    fn open(path: PathBuf) -> Result<Self> {
+impl SafeTensorFileReader {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
         let mut file = File::open(&path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         let file_len = usize::try_from(
@@ -178,7 +180,11 @@ impl SafeTensorShard {
         })
     }
 
-    fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
+    pub fn tensors(&self) -> &BTreeMap<String, SafeTensorInfo> {
+        &self.tensors
+    }
+
+    pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
         let path = &self.path;
         let info = self
             .tensors
@@ -214,7 +220,7 @@ impl SafeTensorShard {
 pub struct SafeTensorShards {
     index_path: PathBuf,
     tensor_to_shard: BTreeMap<String, String>,
-    shards: BTreeMap<String, SafeTensorShard>,
+    shards: BTreeMap<String, SafeTensorFileReader>,
 }
 
 impl SafeTensorShards {
@@ -249,7 +255,7 @@ impl SafeTensorShards {
                 continue;
             }
             let path = parent.join(shard);
-            let file = SafeTensorShard::open(path.clone()).map_err(|error| {
+            let file = SafeTensorFileReader::open(&path).map_err(|error| {
                 FormatError::Io(format!(
                     "cannot open SafeTensors shard {}: {error}",
                     path.display()

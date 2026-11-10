@@ -65,3 +65,12 @@ python tests/conformance/smollm2_reference.py /path/to/verified/model > tests/go
 QUANTINFER_SMOLLM2_GGUF=/path/to/converted/model.gguf \
   cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
 ```
+
+## SafeTensors conversion memory
+
+The converter accepts `model.safetensors` or `model.safetensors.index.json`
+through `--weights`. It reads and encodes one tensor at a time. GGUF payloads
+are spooled to a scratch file in the destination directory, then copied to a
+complete GGUF and published atomically. The destination filesystem needs room
+for both files during the copy. A requested manifest checksum is calculated
+by reading the completed GGUF incrementally.

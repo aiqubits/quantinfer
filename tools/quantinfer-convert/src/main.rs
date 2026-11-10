@@ -1,15 +1,18 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Seek;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 
 use quantinfer_core::{
     DType, QuantizationAxis, QuantizationScheme, Shape, Tensor, TensorStorageDescriptor,
     GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::{
-    ExecutionVariant, GgufValue, GgufWriter, ModelManifest, SafeTensorFile, SafeTensorShards,
-    TensorManifest,
+    sha256_reader, ExecutionVariant, GgufSpool, GgufValue, GgufWriter, ModelManifest,
+    SafeTensorFileReader, SafeTensorShards, TensorManifest,
 };
 use quantinfer_model::llama::ggml_qk_channel;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
@@ -176,6 +179,17 @@ fn run() -> Result<(), String> {
             );
         }
     }
+    let output_dir = output_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let scratch = tempfile::tempfile_in(output_dir).map_err(|error| {
+        format!(
+            "cannot create GGUF scratch file in {}: {error}",
+            output_dir.display()
+        )
+    })?;
+    let mut spool = GgufSpool::new(scratch, writer);
     let mut written_names = BTreeSet::new();
     let mut manifest_tensors = Vec::new();
     for (name, shape) in weights.tensors()? {
@@ -277,7 +291,7 @@ fn run() -> Result<(), String> {
             descriptor,
             checksum_sha256: None,
         });
-        if use_q8 {
+        let write_result = if use_q8 {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = q8_provider
@@ -288,44 +302,87 @@ fn run() -> Result<(), String> {
                     "Q8_0 provider returned a different scheme for {name}"
                 ));
             };
-            writer.add_q8_0_tensor(output_name, &quantized);
+            spool.append(|writer| {
+                writer.add_q8_0_tensor(output_name, &quantized);
+                Ok(())
+            })
         } else if use_q4 {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q4_0(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            writer.add_q4_0_tensor(output_name, &quantized);
+            spool.append(|writer| {
+                writer.add_q4_0_tensor(output_name, &quantized);
+                Ok(())
+            })
         } else if use_q4_k {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q4_k(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            writer.add_q4_k_tensor(output_name, &quantized);
+            spool.append(|writer| {
+                writer.add_q4_k_tensor(output_name, &quantized);
+                Ok(())
+            })
         } else if use_q5_k {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q5_k(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            writer.add_q5_k_tensor(output_name, &quantized);
+            spool.append(|writer| {
+                writer.add_q5_k_tensor(output_name, &quantized);
+                Ok(())
+            })
         } else if use_q6_k {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
             let quantized = quantize_q6_k(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            writer.add_q6_k_tensor(output_name, &quantized);
+            spool.append(|writer| {
+                writer.add_q6_k_tensor(output_name, &quantized);
+                Ok(())
+            })
         } else {
-            writer
-                .add_f32_tensor(output_name, shape, &values)
-                .map_err(|error| format!("cannot add tensor {name}: {error}"))?;
-        }
+            spool.append(|writer| writer.add_f32_tensor(output_name, shape, &values))
+        };
+        write_result.map_err(|error| format!("cannot add tensor {name}: {error}"))?;
     }
     model.validate_required_tensors(&written_names)?;
-    let bytes = writer
-        .finish()
-        .map_err(|error| format!("cannot write GGUF: {error}"))?;
-    fs::write(&output_path, &bytes)
+    #[cfg(unix)]
+    let output = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(0o666))
+        .tempfile_in(output_dir);
+    #[cfg(not(unix))]
+    let output = tempfile::NamedTempFile::new_in(output_dir);
+    let mut output =
+        output.map_err(|error| format!("cannot prepare {}: {error}", output_path.display()))?;
+    spool
+        .finish(output.as_file_mut())
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
-    if let Some(manifest_path) = manifest_path {
+    let checksum = if manifest_path.is_some() {
+        let file = output.as_file_mut();
+        file.rewind()
+            .and_then(|()| sha256_reader(file))
+            .map(Some)
+            .map_err(|error| format!("cannot hash {}: {error}", output_path.display()))?
+    } else {
+        None
+    };
+    if let Ok(metadata) = fs::metadata(&output_path) {
+        output
+            .as_file()
+            .set_permissions(metadata.permissions())
+            .map_err(|error| {
+                format!(
+                    "cannot set permissions on {}: {error}",
+                    output_path.display()
+                )
+            })?;
+    }
+    output
+        .persist(&output_path)
+        .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
+    if let (Some(manifest_path), Some(checksum)) = (manifest_path, checksum) {
         let mut manifest = ModelManifest::new(model.architecture(), model.architecture());
         manifest.source_format = "safetensors-to-gguf".to_owned();
         manifest.quantization = match quantization.as_deref() {
@@ -348,7 +405,7 @@ fn run() -> Result<(), String> {
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("model.gguf");
-        manifest.insert_checksum(output_name, &bytes);
+        manifest.checksums.insert(output_name.to_owned(), checksum);
         let json = manifest
             .to_json()
             .map_err(|error| format!("cannot serialize model manifest: {error}"))?;
@@ -382,7 +439,7 @@ fn q8_provider(use_ggml: bool) -> Result<&'static dyn QuantizationProvider, Stri
 }
 
 enum WeightSource {
-    Single(SafeTensorFile),
+    Single(SafeTensorFileReader),
     Sharded(SafeTensorShards),
 }
 
@@ -692,7 +749,7 @@ impl WeightSource {
                 .map(Self::Sharded)
                 .map_err(|error| format!("cannot parse SafeTensors index: {error}"))
         } else {
-            SafeTensorFile::open_path(path)
+            SafeTensorFileReader::open(path)
                 .map(Self::Single)
                 .map_err(|error| format!("cannot parse SafeTensors: {error}"))
         }

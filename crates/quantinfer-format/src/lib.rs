@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::{self, Read, Seek, Write};
 
 use half::{bf16, f16};
 use quantinfer_core::{
@@ -19,7 +20,9 @@ pub mod manifest;
 pub mod safetensors;
 
 pub use manifest::*;
-pub use safetensors::{SafeTensorDType, SafeTensorFile, SafeTensorInfo, SafeTensorShards};
+pub use safetensors::{
+    SafeTensorDType, SafeTensorFile, SafeTensorFileReader, SafeTensorInfo, SafeTensorShards,
+};
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
@@ -307,74 +310,129 @@ impl GgufWriter {
         });
     }
 
-    pub fn finish(mut self) -> Result<Vec<u8>> {
-        let mut names = std::collections::BTreeSet::new();
-        for tensor in &self.tensors {
-            if !names.insert(&tensor.name) {
-                return Err(FormatError::Invalid(format!(
-                    "duplicate GGUF tensor name {}",
-                    tensor.name
-                )));
-            }
-        }
-        self.metadata
-            .entry("general.alignment".to_owned())
-            .or_insert(GgufValue::U32(self.alignment as u32));
-        let metadata = encode_metadata(&self.metadata)?;
-        let mut infos = Vec::new();
-        let tensor_info_size = self.tensors.iter().try_fold(0usize, |size, tensor| {
-            size.checked_add(tensor_info_size(tensor)?)
-                .ok_or_else(|| FormatError::Invalid("GGUF header size overflows usize".to_owned()))
-        })?;
-        let header_size = 4usize
-            .checked_add(4)
-            .and_then(|size| size.checked_add(8))
-            .and_then(|size| size.checked_add(8))
-            .and_then(|size| size.checked_add(metadata.len()))
-            .and_then(|size| size.checked_add(tensor_info_size))
-            .ok_or_else(|| FormatError::Invalid("GGUF header size overflows usize".to_owned()))?;
-        let data_start = usize::try_from(align_up(header_size as u64, self.alignment)?)
-            .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
-        let mut data_offset = 0_u64;
-        for tensor in &self.tensors {
-            data_offset = align_up(data_offset, self.alignment)?;
-            encode_tensor_info(&mut infos, tensor, data_offset)?;
-            data_offset = data_offset
-                .checked_add(u64::try_from(tensor.data.len()).map_err(|_| {
-                    FormatError::Invalid("GGUF tensor size overflows u64".to_owned())
-                })?)
-                .ok_or_else(|| FormatError::Invalid("GGUF data size overflows u64".to_owned()))?;
-        }
-
-        let data_size = usize::try_from(data_offset)
+    pub fn finish(self) -> Result<Vec<u8>> {
+        let mut header = GgufHeader::new(self.alignment);
+        let padding = self
+            .tensors
+            .iter()
+            .map(|tensor| header.append(tensor))
+            .collect::<Result<Vec<_>>>()?;
+        let data_size = usize::try_from(header.data_size)
             .map_err(|_| FormatError::Invalid("GGUF data size overflows usize".to_owned()))?;
-        let capacity = data_start
-            .checked_add(data_size)
-            .ok_or_else(|| FormatError::Invalid("GGUF output size overflows usize".to_owned()))?;
-        let mut output = Vec::with_capacity(capacity);
-        output.extend_from_slice(GGUF_MAGIC);
-        output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
-        output.extend_from_slice(&(self.tensors.len() as u64).to_le_bytes());
-        output.extend_from_slice(&(self.metadata.len() as u64).to_le_bytes());
-        output.extend_from_slice(&metadata);
-        output.extend_from_slice(&infos);
-        output.resize(data_start, 0);
-        for tensor in self.tensors {
-            let relative = u64::try_from(output.len() - data_start)
-                .map_err(|_| FormatError::Invalid("GGUF output offset overflows u64".to_owned()))?;
-            let target = data_start
-                .checked_add(
-                    usize::try_from(align_up(relative, self.alignment)?).map_err(|_| {
-                        FormatError::Invalid("GGUF output offset overflows usize".to_owned())
-                    })?,
-                )
-                .ok_or_else(|| {
-                    FormatError::Invalid("GGUF output size overflows usize".to_owned())
-                })?;
-            output.resize(target, 0);
+        let mut output = header.encode(self.metadata)?;
+        output.try_reserve_exact(data_size).map_err(|error| {
+            FormatError::Invalid(format!("cannot allocate GGUF output: {error}"))
+        })?;
+        for (tensor, padding) in self.tensors.into_iter().zip(padding) {
+            output.resize(output.len() + padding, 0);
             output.extend_from_slice(&tensor.data);
         }
         Ok(output)
+    }
+}
+
+struct GgufHeader {
+    names: std::collections::BTreeSet<String>,
+    infos: Vec<u8>,
+    alignment: u64,
+    data_size: u64,
+}
+
+impl GgufHeader {
+    fn new(alignment: u64) -> Self {
+        Self {
+            names: Default::default(),
+            infos: Vec::new(),
+            alignment,
+            data_size: 0,
+        }
+    }
+
+    fn append(&mut self, tensor: &PendingTensor) -> Result<usize> {
+        if !self.names.insert(tensor.name.clone()) {
+            return Err(FormatError::Invalid(format!(
+                "duplicate GGUF tensor name {}",
+                tensor.name
+            )));
+        }
+        let offset = align_up(self.data_size, self.alignment)?;
+        let padding = (offset - self.data_size) as usize;
+        encode_tensor_info(&mut self.infos, tensor, offset)?;
+        self.data_size = offset
+            .checked_add(tensor.data.len() as u64)
+            .ok_or_else(|| FormatError::Invalid("GGUF data size overflows u64".to_owned()))?;
+        Ok(padding)
+    }
+
+    fn encode(self, mut metadata: BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
+        metadata
+            .entry("general.alignment".to_owned())
+            .or_insert(GgufValue::U32(self.alignment as u32));
+        let mut output = Vec::new();
+        output.extend_from_slice(GGUF_MAGIC);
+        output.extend_from_slice(&GGUF_VERSION.to_le_bytes());
+        output.extend_from_slice(&(self.names.len() as u64).to_le_bytes());
+        output.extend_from_slice(&(metadata.len() as u64).to_le_bytes());
+        output.extend_from_slice(&encode_metadata(&metadata)?);
+        output.extend_from_slice(&self.infos);
+        let data_start = usize::try_from(align_up(output.len() as u64, self.alignment)?)
+            .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
+        output.resize(data_start, 0);
+        Ok(output)
+    }
+}
+
+/// Writes tensor payloads to a scratch stream while retaining only the GGUF header.
+pub struct GgufSpool<F> {
+    scratch: F,
+    header: Option<GgufHeader>,
+    writer: GgufWriter,
+}
+
+impl<F: Read + Seek + Write> GgufSpool<F> {
+    /// The scratch stream must be empty and positioned at its beginning.
+    pub fn new(scratch: F, writer: GgufWriter) -> Self {
+        Self {
+            scratch,
+            header: Some(GgufHeader::new(writer.alignment)),
+            writer,
+        }
+    }
+
+    /// Encode a tensor with the usual writer and immediately spool its payload.
+    pub fn append(&mut self, encode: impl FnOnce(&mut GgufWriter) -> Result<()>) -> Result<()> {
+        let mut header = self.header.take().ok_or_else(|| {
+            FormatError::Invalid("cannot continue a failed GGUF stream".to_owned())
+        })?;
+        encode(&mut self.writer)?;
+        for tensor in self.writer.tensors.drain(..) {
+            let padding = header.append(&tensor)?;
+            self.scratch
+                .write_all(&[0; DEFAULT_ALIGNMENT as usize][..padding])
+                .and_then(|()| self.scratch.write_all(&tensor.data))
+                .map_err(|error| FormatError::Io(format!("cannot spool GGUF tensor: {error}")))?;
+        }
+        self.header = Some(header);
+        Ok(())
+    }
+
+    pub fn finish(mut self, output: &mut impl Write) -> Result<()> {
+        self.append(|_| Ok(()))?;
+        let header = self.header.take().expect("append validated the header");
+        let data_size = header.data_size;
+        let bytes = header.encode(self.writer.metadata)?;
+        let copied = self
+            .scratch
+            .rewind()
+            .and_then(|()| output.write_all(&bytes))
+            .and_then(|()| io::copy(&mut self.scratch.take(data_size), output))
+            .map_err(|error| FormatError::Io(format!("cannot write GGUF: {error}")))?;
+        if copied != data_size {
+            return Err(FormatError::Io(
+                "GGUF scratch stream was truncated".to_owned(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -766,16 +824,6 @@ impl GgufReader {
     }
 }
 
-fn tensor_info_size(tensor: &PendingTensor) -> Result<usize> {
-    8usize
-        .checked_add(tensor.name.len())
-        .and_then(|size| size.checked_add(4))
-        .and_then(|size| size.checked_add(tensor.shape.len().checked_mul(8)?))
-        .and_then(|size| size.checked_add(4))
-        .and_then(|size| size.checked_add(8))
-        .ok_or_else(|| FormatError::Invalid("GGUF tensor info size overflows usize".to_owned()))
-}
-
 fn encode_tensor_info(output: &mut Vec<u8>, tensor: &PendingTensor, offset: u64) -> Result<()> {
     write_string(output, &tensor.name)?;
     let dimensions = u32::try_from(tensor.shape.len())
@@ -1043,7 +1091,9 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FormatError, GgmlType, GgufReader, GgufValue, GgufWriter, QUANT_BLOCK_LAYOUT};
+    use super::{
+        FormatError, GgmlType, GgufReader, GgufSpool, GgufValue, GgufWriter, QUANT_BLOCK_LAYOUT,
+    };
     use quantinfer_core::{
         Q4_0Block, Q6KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K,
         QuantizedTensorQ6K, Tensor,
@@ -1152,6 +1202,36 @@ mod tests {
             reader.tensor_q4_0("blk.0.attn_q.weight").unwrap(),
             quantized
         );
+    }
+
+    #[test]
+    fn spools_tensors_with_identical_metadata_and_alignment() {
+        let quantized = QuantizedTensor4::from_blocks(
+            vec![32],
+            vec![Q4_0Block {
+                scale: 0.5,
+                values: [8; 32],
+            }],
+        )
+        .unwrap();
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata("general.architecture", GgufValue::String("llama".into()));
+        let mut spool = GgufSpool::new(std::io::Cursor::new(Vec::new()), writer.clone());
+        let add_f32 = |writer: &mut GgufWriter| writer.add_f32_tensor("norm", vec![1], &[2.0]);
+        let add_q4 = |writer: &mut GgufWriter| {
+            writer.add_q4_0_tensor("projection", &quantized);
+            Ok(())
+        };
+        add_f32(&mut writer).unwrap();
+        add_q4(&mut writer).unwrap();
+        spool.append(add_f32).unwrap();
+        spool.append(add_q4).unwrap();
+        let mut output = Vec::new();
+        spool.finish(&mut output).unwrap();
+        assert_eq!(output, writer.finish().unwrap());
+        let reader = GgufReader::open(output).unwrap();
+        assert_eq!(reader.tensor_info("projection").unwrap().offset, 32);
+        assert_eq!(reader.tensor_q4_0("projection").unwrap(), quantized);
     }
 
     #[test]

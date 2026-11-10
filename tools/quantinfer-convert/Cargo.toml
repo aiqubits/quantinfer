@@ -9,6 +9,7 @@ ggml = ["dep:quantinfer-adapter-ggml"]
 
 [dependencies]
 serde_json.workspace = true
+tempfile = "3"
 quantinfer-adapter-ggml = { path = "../../adapters/ggml", version = "0.1.0", features = ["external"], optional = true }
 quantinfer-core = { workspace = true }
 quantinfer-format = { workspace = true }
