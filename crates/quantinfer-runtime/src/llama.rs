@@ -590,7 +590,7 @@ fn expect_shape(tensor: &Tensor, expected: &[usize], name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{LlamaLayerWeights, LlamaModel};
-    use crate::KvCache;
+    use crate::{generate_stream, GenerationConfig, KvCache, StreamControl};
     use quantinfer_backend_cpu::CpuScalar;
     use quantinfer_core::Tensor;
     use quantinfer_model::LlamaConfig;
@@ -644,5 +644,26 @@ mod tests {
         let decode = model.forward(&[3], &mut cache).unwrap();
         assert_eq!(decode.shape().dims(), &[1, config.vocab_size]);
         assert_eq!(cache.sequence_length(0).unwrap(), 3);
+
+        cache.clear();
+        let mut emitted = Vec::new();
+        let generated = generate_stream(
+            &model,
+            &[1, 2],
+            &mut cache,
+            &GenerationConfig {
+                max_new_tokens: 4,
+                eos_token_id: Some(0),
+                ..GenerationConfig::default()
+            },
+            &mut |token| {
+                emitted.push(token);
+                Ok(StreamControl::Continue)
+            },
+        )
+        .unwrap();
+        assert_eq!(emitted, [0]);
+        assert_eq!(generated, emitted);
+        assert_eq!(cache.sequence_length(0).unwrap(), 2);
     }
 }

@@ -37,6 +37,23 @@ pub trait TokenSink {
     fn on_token(&mut self, token_id: usize) -> Result<StreamControl>;
 }
 
+/// Forward pass for a causal decoder with request-local KV state.
+pub trait DecoderModel {
+    fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor>;
+}
+
+impl<B: quantinfer_kernel::KernelBackend> DecoderModel for Qwen3Model<B> {
+    fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
+        Qwen3Model::forward(self, token_ids, cache)
+    }
+}
+
+impl<B: quantinfer_kernel::KernelBackend> DecoderModel for LlamaModel<B> {
+    fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
+        LlamaModel::forward(self, token_ids, cache)
+    }
+}
+
 impl<F> TokenSink for F
 where
     F: FnMut(usize) -> Result<StreamControl>,
@@ -407,6 +424,21 @@ where
     B: quantinfer_kernel::KernelBackend,
     S: TokenSink,
 {
+    generate_stream(model, prompt_tokens, cache, config, sink)
+}
+
+/// Emit selected token IDs from either supported decoder, using the supplied KV cache.
+pub fn generate_stream<M, S>(
+    model: &M,
+    prompt_tokens: &[usize],
+    cache: &mut KvCache,
+    config: &GenerationConfig,
+    sink: &mut S,
+) -> Result<Vec<usize>>
+where
+    M: DecoderModel + ?Sized,
+    S: TokenSink + ?Sized,
+{
     config.validate()?;
     if prompt_tokens.is_empty() {
         return Err(RuntimeError::InvalidInput(
@@ -418,11 +450,8 @@ where
     for _ in 0..config.max_new_tokens {
         let next = select_token(&last_logits(&logits)?, config)?;
         generated.push(next);
-        if config.eos_token_id == Some(next) {
-            let _ = sink.on_token(next)?;
-            break;
-        }
-        if sink.on_token(next)? == StreamControl::Stop {
+        let control = sink.on_token(next)?;
+        if config.eos_token_id == Some(next) || control == StreamControl::Stop {
             break;
         }
         logits = model.forward(&[next], cache)?;
