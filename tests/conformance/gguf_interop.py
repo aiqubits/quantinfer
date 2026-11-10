@@ -66,7 +66,7 @@ def llama_tokens(server, model, prompt, count):
                 process.wait()
 
 
-def compare_inventory(cli, model, dtype):
+def compare_inventory(cli, model, dtype, reference):
     actual = json.loads(subprocess.check_output(
         [cli, "inspect-gguf", "--input", model, "--json"], text=True,
     ))
@@ -93,7 +93,39 @@ def compare_inventory(cli, model, dtype):
     assert actual_tensors == expected_tensors, "tensor shapes, types or sizes differ"
     assert actual["metadata"]["general.architecture"] == "llama"
     assert actual_tensors["blk.0.attn_q.weight"][1] == dtype, "projection has unexpected dtype"
+    if reference:
+        source = GGUFReader(reference)
+        for key in (
+            "general.architecture", "llama.context_length", "llama.embedding_length",
+            "llama.feed_forward_length", "llama.block_count", "llama.attention.head_count",
+            "llama.attention.head_count_kv", "llama.rope.dimension_count", "llama.rope.freq_base",
+            "tokenizer.ggml.tokens", "tokenizer.ggml.merges", "tokenizer.ggml.pre",
+            "tokenizer.ggml.bos_token_id", "tokenizer.ggml.eos_token_id",
+            "tokenizer.ggml.add_bos_token",
+        ):
+            assert actual["metadata"][key] == source.fields[key].contents(), key
+        for key in ("llama.attention.key_length", "llama.attention.value_length"):
+            assert actual["metadata"][key] == source.fields.get(
+                key, source.fields["llama.rope.dimension_count"]
+            ).contents(), key
+        assert {name: row[0] for name, row in actual_tensors.items()} == {
+            tensor.name: tensor.shape.tolist() for tensor in source.tensors
+        }, "exported tensor names or dimensions differ from the external checkpoint"
     print(f"{len(expected_metadata)} metadata entries and {len(expected_tensors)} tensors agree")
+
+
+def quantinfer_tokens(cli, model, prompt, count):
+    output = subprocess.check_output([
+        cli, "generate", "--input", model, "--prompt", prompt,
+        "--max-new-tokens", str(count), "--max-sequence-length", "64",
+        "--temperature", "0",
+    ], text=True)
+    tokens = {
+        key: ast.literal_eval(value)
+        for key, value in (line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if key in ("prompt_tokens", "generated_tokens")
+    }
+    return tokens["prompt_tokens"], tokens["generated_tokens"]
 
 
 def main():
@@ -102,24 +134,18 @@ def main():
     parser.add_argument("--server", required=True)
     parser.add_argument("--model", required=True)
     parser.add_argument("--dtype", required=True, choices=["F32", "Q8_0", "Q4_0"])
+    parser.add_argument("--metadata-reference")
+    parser.add_argument("--package")
     parser.add_argument("--prompt", default="The capital of France is")
     parser.add_argument("--count", default=6, type=int)
     args = parser.parse_args()
-    compare_inventory(args.cli, args.model, args.dtype)
-    output = subprocess.check_output([
-        args.cli, "generate", "--input", args.model, "--prompt", args.prompt,
-        "--max-new-tokens", str(args.count), "--max-sequence-length", "64",
-        "--temperature", "0",
-    ], text=True)
-    actual = {
-        key: ast.literal_eval(value)
-        for key, value in (line.split("=", 1) for line in output.splitlines() if "=" in line)
-        if key in ("prompt_tokens", "generated_tokens")
-    }
+    compare_inventory(args.cli, args.model, args.dtype, args.metadata_reference)
     encoded, generated = llama_tokens(args.server, args.model, args.prompt, args.count)
-    assert actual["prompt_tokens"] == encoded, (actual["prompt_tokens"], encoded)
     assert len(generated) == args.count, f"reference generated only {len(generated)} tokens"
-    assert actual["generated_tokens"] == generated, (actual["generated_tokens"], generated)
+    inputs = [args.model, args.package] if args.package else [args.model]
+    for model in inputs:
+        actual = quantinfer_tokens(args.cli, model, args.prompt, args.count)
+        assert actual == (encoded, generated), (model, actual, encoded, generated)
     print(f"prompt_tokens={encoded} generated_tokens={generated}")
 
 

@@ -30,6 +30,32 @@ logits, the top 10 tokens, and eight greedy decode tokens with the reference.
 The same test runs against the pinned external F16 GGUF from the manifest.
 That import converts weights to F32 for CPU execution.
 
+## GGUF interoperability
+
+The GGUF Interoperability workflow uses the llama.cpp revision
+`0ec4027a2a0183de87c007069adddc06e665f7de`. It quantizes the pinned external
+SmolLM2 F16 artifact to Q8_0 and Q4_0, and also tests QuantInfer's F32, Q8_0
+and Q4_0 exports from the pinned SafeTensors checkpoint. The test compares
+metadata and all tensor shapes, types and byte lengths against llama.cpp's
+GGUF reader, then checks prompt IDs and six greedy generation tokens against
+llama-server. Exported models are also loaded through their model packages.
+
+For a BPE-based Llama checkpoint, use the GGML layout option with the
+pre-tokenizer name recognized by llama.cpp. SmolLM2 uses `smollm`.
+
+```sh
+cargo run --release -p quantinfer-convert -- \
+  --config config.json --weights model.safetensors --tokenizer tokenizer.json \
+  --gguf-layout ggml --tokenizer-pre smollm --quantize q8_0 --output model.gguf
+```
+
+The GGML layout stores linear weights in output rows with adjacent RoPE
+pairs for Q/K. QuantInfer keeps the imported Q8_0 and Q4_0 projection blocks
+and reorders Q/K rows without requantization. Embedding and output head
+weights are decoded to F32 for their existing CPU kernels. A requested
+quantization is applied to projections whose input rows are block-aligned.
+Omit `--gguf-layout` to produce the original QuantInfer layout.
+
 To regenerate the golden file, use the verified model directory with
 Transformers 4.57.6 and CPU PyTorch 2.11.0. The reference uses F32 weights,
 eager attention, positions starting at zero, and an all-ones attention mask.

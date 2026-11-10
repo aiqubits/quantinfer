@@ -2,8 +2,8 @@ use std::mem::size_of;
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::{
-    DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme, Q4_0_BLOCK_SIZE,
-    Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme,
+    GGML_OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_format::{GgmlType, GgufReader, GgufValue, ModelManifest};
 use quantinfer_model::{ModelSpec, TensorRole};
@@ -23,11 +23,10 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
         request.head_dimension = manifest.kernel_requirements.head_dimension;
         request.maximum_sequence_length = manifest.kernel_requirements.maximum_sequence_length;
         request.alignment = manifest.kernel_requirements.alignment;
-        if manifest
-            .tensors
-            .iter()
-            .any(|tensor| tensor.descriptor.physical_layout != request.tensor_layout)
-        {
+        if manifest.tensors.iter().any(|tensor| {
+            let layout = &tensor.descriptor.physical_layout;
+            layout != &request.tensor_layout && !(ggml_layout && layout == GGML_OUTPUT_ROWS_LAYOUT)
+        }) {
             return Err(RuntimeError::InvalidInput(
                 "model package declares an unsupported tensor layout".to_owned(),
             ));
@@ -57,7 +56,7 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
         request.operation = Some(Operation::QuantizedMatmul);
         request.alignment = Some(block_size);
         if ggml_layout {
-            request.tensor_layout = "ggml_output_rows".to_owned();
+            request.tensor_layout = GGML_OUTPUT_ROWS_LAYOUT.to_owned();
         }
         let quantized_plan = resolver.resolve(&request)?;
         if quantized_plan.provider_name != plan.provider_name {

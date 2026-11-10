@@ -328,6 +328,7 @@ impl<'a> TensorView<'a> {
 }
 
 pub const Q8_0_BLOCK_SIZE: usize = 32;
+pub const GGML_OUTPUT_ROWS_LAYOUT: &str = "ggml_output_rows";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q8_0Block {

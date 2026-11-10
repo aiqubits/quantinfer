@@ -3,11 +3,15 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-use quantinfer_core::{DType, QuantizationScheme, Shape, Tensor, TensorStorageDescriptor};
+use quantinfer_core::{
+    DType, QuantizationAxis, QuantizationScheme, Shape, Tensor, TensorStorageDescriptor,
+    GGML_OUTPUT_ROWS_LAYOUT,
+};
 use quantinfer_format::{
     ExecutionVariant, GgufValue, GgufWriter, ModelManifest, SafeTensorFile, SafeTensorShards,
     TensorManifest,
 };
+use quantinfer_model::llama::ggml_qk_channel;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
 use quantinfer_quant::{
     quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, NativeQ8_0Provider,
@@ -38,6 +42,19 @@ fn run() -> Result<(), String> {
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let requested_architecture = optional_value(&arguments, "--architecture");
     let quantization = optional_value(&arguments, "--quantize");
+    let ggml_layout = match optional_value(&arguments, "--gguf-layout").as_deref() {
+        None if arguments.iter().any(|argument| argument == "--gguf-layout") => {
+            return Err("--gguf-layout requires quantinfer or ggml".to_owned());
+        }
+        None | Some("quantinfer") => false,
+        Some("ggml") => true,
+        Some(value) => {
+            return Err(format!(
+                "unknown GGUF layout {value}; use quantinfer or ggml"
+            ))
+        }
+    };
+    let tokenizer_pre = optional_value(&arguments, "--tokenizer-pre");
     let use_ggml = arguments.iter().any(|argument| argument == "--ggml");
     if use_ggml && quantization.as_deref() != Some("q8_0") {
         return Err("--ggml requires --quantize q8_0".to_owned());
@@ -59,10 +76,39 @@ fn run() -> Result<(), String> {
     let config_json = fs::read_to_string(&config_path)
         .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
     let model = ConversionModel::from_config(&config_json, requested_architecture.as_deref())?;
+    let ggml_file_type = if ggml_layout {
+        if model.architecture() != "llama"
+            || tokenizer_path.is_none()
+            || tokenizer_pre.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(
+                "GGML layout requires Llama weights, --tokenizer, and --tokenizer-pre".to_owned(),
+            );
+        }
+        let config: Value = serde_json::from_str(&config_json)
+            .map_err(|error| format!("cannot parse GGML source configuration: {error}"))?;
+        if !config["rope_scaling"].is_null() || config["rope_interleaved"].as_bool() == Some(true) {
+            return Err(
+                "GGML export requires unscaled, half-split RoPE in the source checkpoint"
+                    .to_owned(),
+            );
+        }
+        Some(match quantization.as_deref() {
+            None => 0,
+            Some("q4_0") => 2,
+            Some("q8_0") => 7,
+            _ => return Err("GGML layout supports F32, Q4_0 and Q8_0 export".to_owned()),
+        })
+    } else {
+        if tokenizer_pre.is_some() {
+            return Err("--tokenizer-pre requires --gguf-layout ggml".to_owned());
+        }
+        None
+    };
     let weights = WeightSource::open(&weights_path)?;
 
     let mut writer = GgufWriter::new();
-    model.write_metadata(&mut writer)?;
+    model.write_metadata(&mut writer, ggml_file_type)?;
     if use_ggml {
         writer.insert_metadata(
             "quantinfer.quantization.provider",
@@ -100,6 +146,23 @@ fn run() -> Result<(), String> {
             );
         }
         writer.insert_metadata("tokenizer.ggml.model", GgufValue::String("gpt2".to_owned()));
+        if let Some(pre) = tokenizer_pre {
+            writer.insert_metadata("tokenizer.ggml.pre", GgufValue::String(pre));
+            let mut types = tokenizer.token_types;
+            types.resize(model.vocab_size(), 5);
+            writer.insert_metadata(
+                "tokenizer.ggml.token_type",
+                GgufValue::Array(types.into_iter().map(GgufValue::I32).collect()),
+            );
+            writer.insert_metadata(
+                "tokenizer.ggml.add_bos_token",
+                GgufValue::Bool(tokenizer.add_bos_token),
+            );
+            writer.insert_metadata(
+                "tokenizer.ggml.add_eos_token",
+                GgufValue::Bool(tokenizer.add_eos_token),
+            );
+        }
         if let Some(token_id) = tokenizer.bos_token_id {
             writer.insert_metadata(
                 "tokenizer.ggml.bos_token_id",
@@ -120,23 +183,31 @@ fn run() -> Result<(), String> {
             .tensor_f32(&name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
         let canonical_name = model.canonical_tensor_name(&name);
+        if ggml_layout && canonical_name.is_none() {
+            return Err(format!("unsupported source tensor {name} for GGML export"));
+        }
         let output_name = canonical_name.as_deref().unwrap_or(&name);
         if !written_names.insert(output_name.to_owned()) {
             return Err(format!(
                 "multiple SafeTensors entries map to GGUF tensor {output_name}"
             ));
         }
-        let (shape, values) = model.canonicalize_tensor_layout(output_name, &shape, values)?;
+        let (shape, values) = if ggml_layout {
+            model.ggml_tensor_layout(output_name, &shape, values)?
+        } else {
+            model.canonicalize_tensor_layout(output_name, &shape, values)?
+        };
+        let quantizable_width = if ggml_layout {
+            shape.first().copied().unwrap_or(0)
+        } else {
+            values.len()
+        };
         let use_q8 = quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE);
+            && quantizable_width.is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE);
         let use_q4 = quantization.as_deref() == Some("q4_0")
             && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE);
+            && quantizable_width.is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE);
         let use_q4_k = quantization.as_deref() == Some("q4_k")
             && is_quantizable_linear(output_name)
             && values
@@ -152,7 +223,7 @@ fn run() -> Result<(), String> {
             && values
                 .len()
                 .is_multiple_of(quantinfer_core::Q4_K_BLOCK_SIZE);
-        let descriptor = if use_q8 {
+        let mut descriptor = if use_q8 {
             TensorStorageDescriptor::quantized(
                 DType::Q8_0,
                 QuantizationScheme::Q8_0,
@@ -191,6 +262,16 @@ fn run() -> Result<(), String> {
             TensorStorageDescriptor::floating(DType::F32, Shape::from(shape.clone()))
         }
         .map_err(|error| format!("cannot describe tensor {name}: {error}"))?;
+        if ggml_layout && shape.len() == 2 {
+            if output_name == "token_embd.weight" {
+                descriptor.logical_shape = Shape::from(vec![shape[1], shape[0]]);
+            } else {
+                descriptor.physical_layout = GGML_OUTPUT_ROWS_LAYOUT.to_owned();
+                if use_q8 || use_q4 {
+                    descriptor.quantization_axis = QuantizationAxis::Axis(0);
+                }
+            }
+        }
         manifest_tensors.push(TensorManifest {
             name: output_name.to_owned(),
             descriptor,
@@ -404,7 +485,49 @@ impl ConversionModel {
         }
     }
 
-    fn write_metadata(&self, writer: &mut GgufWriter) -> Result<(), String> {
+    fn ggml_tensor_layout(
+        &self,
+        name: &str,
+        shape: &[usize],
+        values: Vec<f32>,
+    ) -> Result<(Vec<usize>, Vec<f32>), String> {
+        let Self::Llama { config, .. } = self else {
+            return Err("GGML layout requires Llama weights".to_owned());
+        };
+        match shape {
+            [_] => Ok((shape.to_vec(), values)),
+            &[output, input] if output != 0 && input != 0 => {
+                let expected_outputs = if name.ends_with(".attn_q.weight") {
+                    Some(config.query_projection_size())
+                } else if name.ends_with(".attn_k.weight") {
+                    Some(config.key_value_projection_size())
+                } else {
+                    None
+                };
+                let shape = vec![input, output];
+                let Some(expected) = expected_outputs else {
+                    return Ok((shape, values));
+                };
+                if output != expected || input != config.hidden_size {
+                    return Err(format!("invalid shape for GGML RoPE projection {name}"));
+                }
+                let head_dim = config.effective_head_dim();
+                let mut ordered = Vec::with_capacity(values.len());
+                for row in 0..output {
+                    let start = ggml_qk_channel(row, head_dim) * input;
+                    ordered.extend_from_slice(&values[start..start + input]);
+                }
+                Ok((shape, ordered))
+            }
+            _ => Err(format!("invalid tensor shape for GGML export at {name}")),
+        }
+    }
+
+    fn write_metadata(
+        &self,
+        writer: &mut GgufWriter,
+        ggml_file_type: Option<u32>,
+    ) -> Result<(), String> {
         let (
             prefix,
             vocab_size,
@@ -478,10 +601,26 @@ impl ConversionModel {
             format!("{prefix}.attention.layer_norm_rms_epsilon"),
             GgufValue::F32(rms_norm_eps),
         );
-        writer.insert_metadata(
-            format!("{prefix}.tie_word_embeddings"),
-            GgufValue::Bool(tie_word_embeddings),
-        );
+        if let Some(file_type) = ggml_file_type {
+            writer.insert_metadata("general.type", GgufValue::String("model".to_owned()));
+            writer.insert_metadata("general.file_type", GgufValue::U32(file_type));
+            writer.insert_metadata("general.quantization_version", GgufValue::U32(2));
+            for key in [
+                "attention.key_length",
+                "attention.value_length",
+                "rope.dimension_count",
+            ] {
+                writer.insert_metadata(
+                    format!("{prefix}.{key}"),
+                    GgufValue::U32(metadata_u32(head_dim, key)?),
+                );
+            }
+        } else {
+            writer.insert_metadata(
+                format!("{prefix}.tie_word_embeddings"),
+                GgufValue::Bool(tie_word_embeddings),
+            );
+        }
         writer.insert_metadata(
             format!("{prefix}.architectures"),
             GgufValue::Array(
@@ -613,6 +752,9 @@ struct TokenizerMetadata {
     merges: Vec<String>,
     bos_token_id: Option<usize>,
     eos_token_id: Option<usize>,
+    token_types: Vec<i32>,
+    add_bos_token: bool,
+    add_eos_token: bool,
 }
 
 fn load_tokenizer_metadata(
@@ -639,6 +781,7 @@ fn load_tokenizer_metadata(
         .checked_add(1)
         .ok_or_else(|| "tokenizer vocabulary size overflows usize".to_owned())?;
     let mut tokens = vec![None; token_count];
+    let mut token_types = vec![1; token_count];
     for (token, value) in vocab {
         let token_id = value
             .as_u64()
@@ -659,8 +802,15 @@ fn load_tokenizer_metadata(
                 .map_err(|_| format!("added tokenizer id for {token:?} overflows usize"))?;
             if token_id >= tokens.len() {
                 tokens.resize(token_id + 1, None);
+                token_types.resize(token_id + 1, 1);
             }
             tokens[token_id] = Some(token.to_owned());
+            token_types[token_id] =
+                if added_token.get("special").and_then(Value::as_bool) == Some(true) {
+                    3 // GGML control token
+                } else {
+                    4 // GGML user-defined token
+                };
         }
     }
     let tokens: Vec<String> = tokens
@@ -702,12 +852,26 @@ fn load_tokenizer_metadata(
         .transpose()?
         .unwrap_or_default();
     let config: Value = serde_json::from_str(config_json)
-        .map_err(|error| format!("cannot parse Qwen3 config for tokenizer ids: {error}"))?;
+        .map_err(|error| format!("cannot parse model config for tokenizer ids: {error}"))?;
+    let bos_token_id = token_id_from_value(config.get("bos_token_id"));
+    let eos_token_id = token_id_from_value(config.get("eos_token_id"));
+    let template = root["post_processor"]["single"].as_array();
+    let matches_special = |entry: Option<&Value>, token: Option<usize>| {
+        let Some(text) = token.and_then(|id| tokens.get(id)) else {
+            return false;
+        };
+        entry.and_then(|entry| entry["SpecialToken"]["id"].as_str()) == Some(text.as_str())
+    };
+    let add_bos_token = matches_special(template.and_then(|items| items.first()), bos_token_id);
+    let add_eos_token = matches_special(template.and_then(|items| items.last()), eos_token_id);
     Ok(TokenizerMetadata {
         tokens,
         merges,
-        bos_token_id: token_id_from_value(config.get("bos_token_id")),
-        eos_token_id: token_id_from_value(config.get("eos_token_id")),
+        bos_token_id,
+        eos_token_id,
+        token_types,
+        add_bos_token,
+        add_eos_token,
     })
 }
 
@@ -736,7 +900,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
     );
 }
 

@@ -46,7 +46,7 @@ jobs:
             -DLLAMA_OPENSSL=OFF
           cmake --build "$RUNNER_TEMP/llama" --target llama-server llama-quantize --parallel 3
           python -m pip install ./vendor/llama.cpp/gguf-py
-          cargo build --release --locked -p quantinfer-cli
+          cargo build --release --locked -p quantinfer-cli -p quantinfer-convert
       - name: Verify external Q8_0 and Q4_0 in both runtimes
         run: |
           manifest=model-zoo/manifests/smollm2-135m.json
@@ -58,4 +58,27 @@ jobs:
             "$RUNNER_TEMP/llama/bin/llama-quantize" smollm2-f16.gguf "$model" "$dtype" 1
             python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
               --server "$RUNNER_TEMP/llama/bin/llama-server" --model "$model" --dtype "$dtype"
+          done
+      - name: Verify QuantInfer GGML exports in both runtimes
+        shell: bash
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          source_url=$(jq -r '.source_repository + "/resolve/" + .source_revision' "$manifest")
+          jq -r '(.artifacts[], .weights) | "\(.sha256)  \(.path)"' "$manifest" > smollm2.sha256
+          while read -r _ path; do
+            curl --fail --location --retry 3 --output "$path" "$source_url/$path"
+          done < smollm2.sha256
+          sha256sum --check smollm2.sha256
+          for dtype in F32 Q8_0 Q4_0; do
+            package="smollm2-quantinfer-${dtype}"
+            mkdir "$package"
+            quantization=()
+            if [[ "$dtype" != F32 ]]; then quantization=(--quantize "${dtype,,}"); fi
+            target/release/quantinfer-convert --config config.json --weights model.safetensors \
+              --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
+              --output "$package/model.gguf" --manifest "$package/manifest.json" "${quantization[@]}"
+            sha256sum "$package/model.gguf"
+            python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
+              --server "$RUNNER_TEMP/llama/bin/llama-server" --model "$package/model.gguf" --dtype "$dtype" \
+              --metadata-reference smollm2-f16.gguf --package "$package"
           done

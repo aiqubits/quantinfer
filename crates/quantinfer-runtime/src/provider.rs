@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use quantinfer_core::{DType, Device, QuantizationScheme};
+use quantinfer_core::{DType, Device, QuantizationScheme, GGML_OUTPUT_ROWS_LAYOUT};
 
 use crate::{Result, RuntimeError};
 
@@ -225,7 +225,7 @@ impl Default for CpuScalarProvider {
             maximum_sequence_length: None,
         };
         let output_rows = |dtype, quantization| KernelCapability {
-            tensor_layout: "ggml_output_rows".to_owned(),
+            tensor_layout: GGML_OUTPUT_ROWS_LAYOUT.to_owned(),
             supported_operations: BTreeSet::from([Operation::QuantizedMatmul]),
             ..base(dtype, quantization, 32)
         };

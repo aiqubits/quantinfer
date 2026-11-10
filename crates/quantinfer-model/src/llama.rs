@@ -6,6 +6,12 @@ use crate::semantic::{
 };
 use quantinfer_core::Shape;
 
+/// Map an adjacent-pair GGML Q/K row to the checkpoint's half-split channel.
+pub fn ggml_qk_channel(row: usize, head_dim: usize) -> usize {
+    let channel = row % head_dim;
+    row - channel + channel / 2 + (channel % 2) * (head_dim / 2)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LlamaConfig {
     pub vocab_size: usize,
