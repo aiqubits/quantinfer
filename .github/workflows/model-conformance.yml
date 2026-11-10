@@ -2,6 +2,15 @@ name: Model Conformance
 
 on:
   workflow_dispatch:
+    inputs:
+      gguf_url:
+        description: "Fixed external GGUF artifact URL"
+        required: false
+        type: string
+      gguf_sha256:
+        description: "SHA-256 for the external GGUF artifact"
+        required: false
+        type: string
   push:
     branches: [main]
     paths:
@@ -13,6 +22,7 @@ on:
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
       - "tools/quantinfer-convert/**"
+      - "model-zoo/manifests/**"
       - ".github/workflows/model-conformance.yml"
 
 jobs:
@@ -28,3 +38,19 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo run -p quantinfer-xtask -- conformance
       - run: cargo run -p quantinfer-xtask -- bench
+
+  external-artifact:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.gguf_url != '' && inputs.gguf_sha256 != '' }}
+    needs: conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download and verify fixed GGUF artifact
+        env:
+          GGUF_URL: ${{ inputs.gguf_url }}
+          GGUF_SHA256: ${{ inputs.gguf_sha256 }}
+        run: |
+          curl --fail --location --retry 3 --output qwen3-0.6b.gguf "$GGUF_URL"
+          echo "$GGUF_SHA256  qwen3-0.6b.gguf" | sha256sum --check
+      - run: cargo run -p quantinfer-cli -- inspect-gguf --input qwen3-0.6b.gguf
