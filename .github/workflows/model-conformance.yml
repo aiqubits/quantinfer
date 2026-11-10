@@ -35,6 +35,7 @@ on:
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
       - "bindings/c/**"
+      - "bindings/python/**"
       - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
@@ -188,6 +189,11 @@ jobs:
             -L target/release -lquantinfer_c -Wl,-rpath,"$PWD/target/release" \
             -o "$RUNNER_TEMP/quantinfer-c-smoke"
           "$RUNNER_TEMP/quantinfer-c-smoke" smollm2-f32.gguf
+      - name: Install and exercise the Python binding with SmolLM2
+        run: |
+          python3 -m pip install --no-deps --target "$RUNNER_TEMP/quantinfer-python" ./bindings/python
+          PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
+            python3 bindings/python/tests/smoke.py smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
