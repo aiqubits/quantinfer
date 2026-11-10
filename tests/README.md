@@ -27,6 +27,8 @@ The Model Conformance workflow verifies the pinned checkpoint in
 `model-zoo/manifests/smollm2-135m.json`, converts it to GGUF, and runs the
 runtime integration test. The test compares prompt tokens, sampled prefill
 logits, the top 10 tokens, and eight greedy decode tokens with the reference.
+The same test runs against the pinned external F16 GGUF from the manifest.
+That import converts weights to F32 for CPU execution.
 
 To regenerate the golden file, use the verified model directory with
 Transformers 4.57.6 and CPU PyTorch 2.11.0. The reference uses F32 weights,

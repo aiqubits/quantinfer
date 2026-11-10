@@ -17,5 +17,10 @@
     "path": "model.safetensors",
     "size_bytes": 269060552,
     "sha256": "80521b40281d6ce74e35c9282c22539e75aa0ac8578892b2a59955ef78d55da1"
+  },
+  "external_f16_gguf": {
+    "url": "https://huggingface.co/mradermacher/SmolLM2-135M-GGUF/resolve/bf92313aa80eb55329ae75ccce3743101784c802/SmolLM2-135M.f16.gguf",
+    "size_bytes": 270885824,
+    "sha256": "e20e28fe398e731970eaefcb2abe810e5699ea3c5596c9dcf46004fab26bc05d"
   }
 }

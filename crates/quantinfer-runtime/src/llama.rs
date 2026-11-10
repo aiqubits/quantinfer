@@ -185,7 +185,7 @@ pub struct LlamaModel<B> {
 
 impl<B: KernelBackend> LlamaModel<B> {
     pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
-        config_from_gguf(reader)?
+        config_from_gguf(reader, uses_ggml_layout(reader)?)?
             .to_model_spec("llama")
             .map_err(RuntimeError::InvalidInput)
     }
@@ -252,15 +252,24 @@ impl<B: KernelBackend> LlamaModel<B> {
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
-        let config = config_from_gguf(reader)?;
+        let ggml_layout = uses_ggml_layout(reader)?;
+        let config = config_from_gguf(reader, ggml_layout)?;
         let adapter =
             LlamaAdapter::from_config(config.clone()).map_err(RuntimeError::InvalidInput)?;
         let spec = adapter.spec();
-        let embedding = reader.tensor_f32(crate::tensor_source(
+        let mut embedding = reader.tensor_f32(crate::tensor_source(
             spec,
             TensorRole::TokenEmbedding,
             None,
         )?)?;
+        if ggml_layout {
+            expect_shape(
+                &embedding,
+                &[config.hidden_size, config.vocab_size],
+                "GGML embedding",
+            )?;
+            embedding = embedding.reshape(spec.embedding.shape.clone())?;
+        }
         let final_norm = reader.tensor_f32(crate::tensor_source(
             spec,
             TensorRole::FinalNormalization,
@@ -268,6 +277,7 @@ impl<B: KernelBackend> LlamaModel<B> {
         )?)?;
         let head_name = crate::lm_head_source(&adapter)?;
         let lm_head = match reader.tensor_info(&head_name) {
+            Ok(_) if ggml_layout => load_ggml_matrix(reader, &head_name, None)?,
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
                 reader.tensor_f32(&head_name)?
             }
@@ -283,7 +293,18 @@ impl<B: KernelBackend> LlamaModel<B> {
         for layer in &spec.layers {
             let name = |role| crate::tensor_source(spec, role, Some(layer.index));
             let float = |role| Ok::<_, RuntimeError>(reader.tensor_f32(name(role)?)?);
-            let linear = |role| load_linear(reader, name(role)?);
+            let linear = |role| {
+                let name = name(role)?;
+                if !ggml_layout {
+                    return load_linear(reader, name);
+                }
+                let heads = match role {
+                    TensorRole::QueryProjection => Some(config.num_attention_heads),
+                    TensorRole::KeyProjection => Some(config.num_key_value_heads()),
+                    _ => None,
+                };
+                Ok(LinearWeight::F32(load_ggml_matrix(reader, name, heads)?))
+            };
             layers.push(LlamaLayerWeights {
                 input_layernorm: float(TensorRole::InputNormalization)?,
                 q_proj: linear(TensorRole::QueryProjection)?,
@@ -300,12 +321,70 @@ impl<B: KernelBackend> LlamaModel<B> {
     }
 }
 
-fn config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig> {
+fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
+    if reader.metadata().contains_key("llama.tie_word_embeddings") {
+        return Ok(false);
+    }
     let embedding = reader.tensor_info("token_embd.weight")?;
+    if let (Some(hidden), [first, second]) = (
+        metadata_usize(reader, "llama.embedding_length")?,
+        embedding.shape.as_slice(),
+    ) {
+        match (*first == hidden, *second == hidden) {
+            (true, false) => return Ok(true),
+            (false, true) => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(reader.metadata().contains_key("general.file_type"))
+}
+
+fn load_ggml_matrix(reader: &GgufReader, name: &str, rope_heads: Option<usize>) -> Result<Tensor> {
+    let tensor = reader.tensor_f32(name)?;
+    let &[input, output] = tensor.shape().dims() else {
+        return Err(RuntimeError::InvalidInput(format!(
+            "GGML matrix {name} must be rank 2"
+        )));
+    };
+    let source = tensor.as_f32()?;
+    let mut weights = vec![0.0; source.len()];
+    let head_dim = if let Some(heads) = rope_heads {
+        if !output.is_multiple_of(heads) || !(output / heads).is_multiple_of(2) {
+            return Err(RuntimeError::InvalidInput(format!(
+                "GGML matrix {name} has an invalid RoPE layout"
+            )));
+        }
+        Some(output / heads)
+    } else {
+        None
+    };
+    for (output_index, row) in source.chunks_exact(input).enumerate() {
+        // llama.cpp stores Q/K pairs adjacent for RoPE. The CPU runtime uses half-split pairs.
+        let column = if let Some(dim) = head_dim {
+            let channel = output_index % dim;
+            output_index - channel + channel / 2 + (channel % 2) * (dim / 2)
+        } else {
+            output_index
+        };
+        for (input_index, &value) in row.iter().enumerate() {
+            weights[input_index * output + column] = value;
+        }
+    }
+    Ok(Tensor::from_f32(vec![input, output], weights)?)
+}
+
+fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfig> {
+    let embedding = reader.tensor_info("token_embd.weight")?;
+    let (hidden_axis, vocab_axis) = if ggml_layout { (0, 1) } else { (1, 0) };
     let vocab_size = metadata_usize(reader, "llama.vocab_size")?
-        .unwrap_or_else(|| embedding.shape.first().copied().unwrap_or_default());
-    let hidden_size = metadata_usize(reader, "llama.embedding_length")?
-        .unwrap_or_else(|| embedding.shape.get(1).copied().unwrap_or_default());
+        .unwrap_or_else(|| embedding.shape.get(vocab_axis).copied().unwrap_or_default());
+    let hidden_size = metadata_usize(reader, "llama.embedding_length")?.unwrap_or_else(|| {
+        embedding
+            .shape
+            .get(hidden_axis)
+            .copied()
+            .unwrap_or_default()
+    });
     let num_hidden_layers = required_metadata_usize(reader, "llama.block_count")?;
     let num_attention_heads = required_metadata_usize(reader, "llama.attention.head_count")?;
     let num_key_value_heads = metadata_usize(reader, "llama.attention.head_count_kv")?;
@@ -319,11 +398,15 @@ fn config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig> {
         RuntimeError::InvalidInput("GGUF is missing llama.feed_forward_length".to_owned())
     })?;
     let max_position_embeddings = metadata_usize(reader, "llama.context_length")?.unwrap_or(2048);
-    let head_dim = metadata_usize(reader, "llama.attention.head_dim")?;
+    let mut head_dim = metadata_usize(reader, "llama.attention.head_dim")?;
+    if ggml_layout && head_dim.is_none() {
+        head_dim = metadata_usize(reader, "llama.attention.key_length")?;
+    }
     let rms_norm_eps =
         metadata_f32(reader, "llama.attention.layer_norm_rms_epsilon")?.unwrap_or(1e-5);
     let rope_theta = metadata_f32(reader, "llama.rope.freq_base")?.unwrap_or(10_000.0);
-    let tie_word_embeddings = metadata_bool(reader, "llama.tie_word_embeddings")?.unwrap_or(false);
+    let tie_word_embeddings = metadata_bool(reader, "llama.tie_word_embeddings")?
+        .unwrap_or_else(|| ggml_layout && reader.tensor_info("output.weight").is_err());
     let config = LlamaConfig {
         vocab_size,
         hidden_size,
@@ -339,6 +422,26 @@ fn config_from_gguf(reader: &GgufReader) -> Result<LlamaConfig> {
         architectures: Vec::new(),
     };
     config.validate().map_err(RuntimeError::InvalidInput)?;
+    if ggml_layout {
+        for key in ["llama.rope.dimension_count", "llama.attention.value_length"] {
+            if metadata_usize(reader, key)?
+                .is_some_and(|value| value != config.effective_head_dim())
+            {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "unsupported GGML metadata {key}"
+                )));
+            }
+        }
+        if reader
+            .metadata()
+            .get("llama.rope.scaling.type")
+            .is_some_and(|value| value != &GgufValue::String("none".to_owned()))
+        {
+            return Err(RuntimeError::InvalidInput(
+                "custom GGML RoPE scaling is unsupported".to_owned(),
+            ));
+        }
+    }
     Ok(config)
 }
 
