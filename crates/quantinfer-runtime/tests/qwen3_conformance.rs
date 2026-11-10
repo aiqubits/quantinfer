@@ -2,7 +2,7 @@ use std::{env, fs};
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
-use quantinfer_quant::dequantize_q8_0;
+use quantinfer_quant::{dequantize_q4_0, dequantize_q8_0};
 use quantinfer_runtime::{
     generate_qwen3_stream, GenerationConfig, KvCache, Qwen3Model, StreamControl,
 };
@@ -32,8 +32,8 @@ struct Baseline {
 }
 
 #[test]
-#[ignore = "requires pinned Qwen3-0.6B F32/Q8_0 conversions and Transformers reference"]
-fn matches_qwen3_transformers_reference_and_q8_quality_gates() {
+#[ignore = "requires pinned Qwen3-0.6B GGUF conversions and Transformers reference"]
+fn matches_qwen3_transformers_reference_and_quantized_quality_gates() {
     let reference_path = env::var_os("QUANTINFER_QWEN3_REFERENCE").unwrap();
     let reference: Reference = serde_json::from_slice(&fs::read(reference_path).unwrap()).unwrap();
     let baseline: Baseline = serde_json::from_str(include_str!(
@@ -47,33 +47,43 @@ fn matches_qwen3_transformers_reference_and_q8_quality_gates() {
 
     let f32 = run_variant("QUANTINFER_QWEN3_F32", GgmlType::F32, &baseline);
     let q8 = run_variant("QUANTINFER_QWEN3_Q8", GgmlType::Q8_0, &baseline);
+    let q4 = run_variant("QUANTINFER_QWEN3_Q4", GgmlType::Q4_0, &baseline);
 
     let official_error = errors(&reference.logits, &f32.logits);
-    let quantized_error = errors(&f32.logits, &q8.logits);
-    let weight_error = errors(&f32.query_weights, &q8.query_weights);
-    let f32_top = top_10(&f32.logits);
-    let overlap = top_10(&q8.logits)
-        .into_iter()
-        .filter(|token| f32_top.contains(token))
-        .count();
     println!(
-        "f32_vs_transformers={official_error:?} q8_logits={quantized_error:?} q8_top_10_overlap={overlap} q8_query_weights={weight_error:?}"
-    );
-    println!(
-        "f32_generated={:?} q8_generated={:?}",
-        f32.generated, q8.generated
+        "f32_vs_transformers={official_error:?} f32_generated={:?}",
+        f32.generated
     );
     assert_eq!(f32.generated, baseline.f32_generated_tokens);
     assert_eq!(q8.generated, baseline.q8_0_generated_tokens);
     assert_eq!(f32.generated.last(), Some(&baseline.eos_token_id));
     assert_eq!(q8.generated.last(), Some(&baseline.eos_token_id));
+    assert_eq!(q4.generated.last(), Some(&baseline.eos_token_id));
     assert!(official_error.max <= 0.001);
+    let f32_top = top_10(&f32.logits);
     assert_eq!(f32_top, top_10(&reference.logits));
-    assert!(quantized_error.max <= 0.9);
-    assert!(quantized_error.mse <= 0.05);
-    assert!(overlap >= 9);
-    assert!(weight_error.max <= 0.003);
-    assert!(weight_error.mean <= 0.0002);
+    for (name, run) in [("q8_0", q8), ("q4_0", q4)] {
+        let logit_error = errors(&f32.logits, &run.logits);
+        let weight_error = errors(&f32.query_weights, &run.query_weights);
+        let overlap = top_10(&run.logits)
+            .into_iter()
+            .filter(|token| f32_top.contains(token))
+            .count();
+        println!(
+            "{name}_logits={logit_error:?} {name}_top_10_overlap={overlap} {name}_query_weights={weight_error:?} {name}_generated={:?}",
+            run.generated
+        );
+        let (max_logit, max_mse, min_overlap, max_weight, mean_weight) = if name == "q8_0" {
+            (0.9, 0.05, 9, 0.003, 0.0002)
+        } else {
+            (9.0, 3.6, 4, 0.05, 0.0033)
+        };
+        assert!(logit_error.max <= max_logit, "{name} max logit error");
+        assert!(logit_error.mse <= max_mse, "{name} logit MSE");
+        assert!(overlap >= min_overlap, "{name} top-10 overlap");
+        assert!(weight_error.max <= max_weight, "{name} max weight error");
+        assert!(weight_error.mean <= mean_weight, "{name} mean weight error");
+    }
 }
 
 struct Run {
@@ -121,6 +131,7 @@ fn run_variant(path_var: &str, dtype: GgmlType, baseline: &Baseline) -> Run {
     let query = match dtype {
         GgmlType::F32 => reader.tensor_f32(query_name).unwrap(),
         GgmlType::Q8_0 => dequantize_q8_0(&reader.tensor_q8_0(query_name).unwrap()).unwrap(),
+        GgmlType::Q4_0 => dequantize_q4_0(&reader.tensor_q4_0(query_name).unwrap()).unwrap(),
         _ => unreachable!(),
     };
     let model = Qwen3Model::from_gguf(CpuScalar::new(), &reader).unwrap();

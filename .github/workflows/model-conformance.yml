@@ -170,6 +170,7 @@ jobs:
           QUANTINFER_QWEN3_REFERENCE: ${{ github.workspace }}/qwen3-reference.json
           QUANTINFER_QWEN3_F32: ${{ github.workspace }}/qwen3-f32.gguf
           QUANTINFER_QWEN3_Q8: ${{ github.workspace }}/qwen3-q8_0.gguf
+          QUANTINFER_QWEN3_Q4: ${{ github.workspace }}/qwen3-q4_0.gguf
         run: |
           cargo test --release --locked -p quantinfer-runtime --test qwen3_conformance -- --ignored --nocapture \
             | tee qwen3-conformance.log

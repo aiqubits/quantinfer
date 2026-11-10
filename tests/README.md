@@ -2,7 +2,7 @@
 
 Integration, conformance, numerical, compatibility, hardware, fixture, and golden-output tests.
 
-## Qwen3-0.6B F32 and Q8_0 conformance
+## Qwen3-0.6B F32, Q8_0 and Q4_0 conformance
 
 Model Conformance runs the full model checks on its weekly schedule and on
 manual dispatch. It verifies the pinned SafeTensors and tokenizer files,
@@ -10,9 +10,10 @@ converts the checkpoint, and checks the F32 and Q8_0 GGUF hashes against
 `golden/qwen3-0.6b-baseline.json`.
 
 The test compares every prefill logit against a pinned Transformers CPU
-reference and checks Q8_0 weight error, logit error, and top-10 overlap. The
-fixed non-thinking prompt also verifies the exact output tokens and EOS for
-both variants. The workflow publishes the independently generated reference
+reference and checks weight error, logit error, and top-10 overlap with separate
+Q8_0 and Q4_0 thresholds. The fixed non-thinking prompt verifies deterministic
+output and EOS for all three variants. F32 and Q8_0 must also match the frozen
+token sequence. The workflow publishes the independently generated reference
 logits and comparison results.
 
 ## SmolLM2-135M F32 conformance
