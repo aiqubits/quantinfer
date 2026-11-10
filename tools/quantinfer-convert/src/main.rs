@@ -8,7 +8,7 @@ use quantinfer_format::{
     ExecutionVariant, GgufValue, GgufWriter, ModelManifest, SafeTensorFile, SafeTensorShards,
     TensorManifest,
 };
-use quantinfer_model::{ModelAdapter, Qwen3Adapter, Qwen3Config};
+use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
 use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, quantize_q8_0};
 use serde_json::Value;
 
@@ -33,6 +33,7 @@ fn run() -> Result<(), String> {
     let output_path = required_path(&arguments, "--output")?;
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
+    let requested_architecture = optional_value(&arguments, "--architecture");
     let quantization = optional_value(&arguments, "--quantize");
     if let Some(value) = &quantization {
         if value != "q8_0"
@@ -49,92 +50,22 @@ fn run() -> Result<(), String> {
 
     let config_json = fs::read_to_string(&config_path)
         .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
-    let config = Qwen3Config::from_json(&config_json)
-        .map_err(|error| format!("cannot parse Qwen3 config: {error}"))?;
-    config
-        .validate()
-        .map_err(|error| format!("invalid Qwen3 config: {error}"))?;
-    let adapter = Qwen3Adapter::new(config.clone(), "qwen3")
-        .map_err(|error| format!("cannot build Qwen3 model adapter: {error}"))?;
+    let model = ConversionModel::from_config(&config_json, requested_architecture.as_deref())?;
     let weights = WeightSource::open(&weights_path)?;
 
     let mut writer = GgufWriter::new();
-    writer.insert_metadata(
-        "general.architecture",
-        GgufValue::String("qwen3".to_owned()),
-    );
-    writer.insert_metadata(
-        "qwen3.context_length",
-        GgufValue::U32(metadata_u32(
-            config.max_position_embeddings,
-            "max_position_embeddings",
-        )?),
-    );
-    writer.insert_metadata(
-        "qwen3.embedding_length",
-        GgufValue::U32(metadata_u32(config.hidden_size, "hidden_size")?),
-    );
-    writer.insert_metadata(
-        "qwen3.vocab_size",
-        GgufValue::U32(metadata_u32(config.vocab_size, "vocab_size")?),
-    );
-    writer.insert_metadata(
-        "qwen3.feed_forward_length",
-        GgufValue::U32(metadata_u32(config.intermediate_size, "intermediate_size")?),
-    );
-    writer.insert_metadata(
-        "qwen3.block_count",
-        GgufValue::U32(metadata_u32(config.num_hidden_layers, "num_hidden_layers")?),
-    );
-    writer.insert_metadata(
-        "qwen3.attention.head_count",
-        GgufValue::U32(metadata_u32(
-            config.num_attention_heads,
-            "num_attention_heads",
-        )?),
-    );
-    writer.insert_metadata(
-        "qwen3.attention.head_count_kv",
-        GgufValue::U32(metadata_u32(
-            config.num_key_value_heads,
-            "num_key_value_heads",
-        )?),
-    );
-    writer.insert_metadata(
-        "qwen3.attention.head_dim",
-        GgufValue::U32(metadata_u32(config.effective_head_dim(), "head_dim")?),
-    );
-    writer.insert_metadata("qwen3.rope.freq_base", GgufValue::F32(config.rope_theta));
-    writer.insert_metadata(
-        "qwen3.attention.layer_norm_rms_epsilon",
-        GgufValue::F32(config.rms_norm_eps),
-    );
-    writer.insert_metadata(
-        "qwen3.tie_word_embeddings",
-        GgufValue::Bool(config.tie_word_embeddings),
-    );
-    writer.insert_metadata(
-        "qwen3.architectures",
-        GgufValue::Array(
-            config
-                .architectures
-                .iter()
-                .cloned()
-                .map(GgufValue::String)
-                .collect(),
-        ),
-    );
+    model.write_metadata(&mut writer)?;
     if let Some(tokenizer_path) = tokenizer_path {
         let tokenizer = load_tokenizer_metadata(&tokenizer_path, &config_json)?;
-        if tokenizer.tokens.len() > config.vocab_size {
+        if tokenizer.tokens.len() > model.vocab_size() {
             return Err(format!(
                 "tokenizer vocabulary has {} entries, exceeding model vocabulary {}",
                 tokenizer.tokens.len(),
-                config.vocab_size
+                model.vocab_size()
             ));
         }
         let mut tokens = tokenizer.tokens;
-        while tokens.len() < config.vocab_size {
+        while tokens.len() < model.vocab_size() {
             let token_id = tokens.len();
             tokens.push(format!("<|reserved_{token_id}|>"));
         }
@@ -174,14 +105,14 @@ fn run() -> Result<(), String> {
         let values = weights
             .tensor_f32(&name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
-        let canonical_name = adapter.canonical_tensor_name(&name);
+        let canonical_name = model.canonical_tensor_name(&name);
         let output_name = canonical_name.as_deref().unwrap_or(&name);
         if !written_names.insert(output_name.to_owned()) {
             return Err(format!(
                 "multiple SafeTensors entries map to GGUF tensor {output_name}"
             ));
         }
-        let (shape, values) = adapter.canonicalize_tensor_layout(output_name, &shape, values)?;
+        let (shape, values) = model.canonicalize_tensor_layout(output_name, &shape, values)?;
         let use_q8 = quantization.as_deref() == Some("q8_0")
             && is_quantizable_linear(output_name)
             && values
@@ -287,14 +218,14 @@ fn run() -> Result<(), String> {
                 .map_err(|error| format!("cannot add tensor {name}: {error}"))?;
         }
     }
-    validate_required_tensors(&config, &written_names)?;
+    model.validate_required_tensors(&written_names)?;
     let bytes = writer
         .finish()
         .map_err(|error| format!("cannot write GGUF: {error}"))?;
     fs::write(&output_path, &bytes)
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
     if let Some(manifest_path) = manifest_path {
-        let mut manifest = ModelManifest::new("qwen3", "qwen3");
+        let mut manifest = ModelManifest::new(model.architecture(), model.architecture());
         manifest.source_format = "safetensors-to-gguf".to_owned();
         manifest.quantization = match quantization.as_deref() {
             Some("q8_0") => QuantizationScheme::Q8_0,
@@ -328,7 +259,8 @@ fn run() -> Result<(), String> {
         }
     }
     println!(
-        "converted {} tensors to {}",
+        "converted architecture={} tensors={} output={}",
+        model.architecture(),
         weights.tensor_count(),
         output_path.display()
     );
@@ -338,6 +270,247 @@ fn run() -> Result<(), String> {
 enum WeightSource {
     Single(SafeTensorFile),
     Sharded(SafeTensorShards),
+}
+
+enum ConversionModel {
+    Qwen3 {
+        config: Qwen3Config,
+        adapter: Qwen3Adapter,
+    },
+    Llama {
+        config: LlamaConfig,
+        adapter: LlamaAdapter,
+    },
+}
+
+impl ConversionModel {
+    fn from_config(
+        config_json: &str,
+        requested_architecture: Option<&str>,
+    ) -> Result<Self, String> {
+        let root: Value = serde_json::from_str(config_json)
+            .map_err(|error| format!("cannot parse model config: {error}"))?;
+        let architecture = requested_architecture
+            .or_else(|| root.get("model_type").and_then(Value::as_str))
+            .or_else(|| {
+                root.get("architectures")
+                    .and_then(Value::as_array)
+                    .and_then(|architectures| {
+                        architectures
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .find(|value| {
+                                let value = value.to_ascii_lowercase();
+                                value.contains("llama") || value.contains("qwen3")
+                            })
+                    })
+            })
+            .unwrap_or("qwen3")
+            .to_ascii_lowercase();
+        match architecture.as_str() {
+            value if value == "qwen3" || value == "qwen" || value.contains("qwen3") => {
+                let config = Qwen3Config::from_json(config_json)
+                    .map_err(|error| format!("cannot parse Qwen3 config: {error}"))?;
+                config
+                    .validate()
+                    .map_err(|error| format!("invalid Qwen3 config: {error}"))?;
+                let adapter = Qwen3Adapter::new(config.clone(), "qwen3")
+                    .map_err(|error| format!("cannot build Qwen3 model adapter: {error}"))?;
+                Ok(Self::Qwen3 { config, adapter })
+            }
+            value if value == "llama" || value == "llama2" || value.contains("llama") => {
+                let config = LlamaConfig::from_json(config_json)
+                    .map_err(|error| format!("cannot parse Llama config: {error}"))?;
+                config
+                    .validate()
+                    .map_err(|error| format!("invalid Llama config: {error}"))?;
+                let adapter = LlamaAdapter::new(config.clone(), "llama")
+                    .map_err(|error| format!("cannot build Llama model adapter: {error}"))?;
+                Ok(Self::Llama { config, adapter })
+            }
+            other => Err(format!(
+                "unsupported model architecture {other}; use qwen3 or llama"
+            )),
+        }
+    }
+
+    fn architecture(&self) -> &'static str {
+        match self {
+            Self::Qwen3 { .. } => "qwen3",
+            Self::Llama { .. } => "llama",
+        }
+    }
+
+    fn vocab_size(&self) -> usize {
+        match self {
+            Self::Qwen3 { config, .. } => config.vocab_size,
+            Self::Llama { config, .. } => config.vocab_size,
+        }
+    }
+
+    fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
+        match self {
+            Self::Qwen3 { adapter, .. } => adapter.canonical_tensor_name(source_name),
+            Self::Llama { adapter, .. } => adapter.canonical_tensor_name(source_name),
+        }
+    }
+
+    fn canonicalize_tensor_layout(
+        &self,
+        canonical_name: &str,
+        shape: &[usize],
+        values: Vec<f32>,
+    ) -> Result<(Vec<usize>, Vec<f32>), String> {
+        match self {
+            Self::Qwen3 { adapter, .. } => {
+                adapter.canonicalize_tensor_layout(canonical_name, shape, values)
+            }
+            Self::Llama { adapter, .. } => {
+                adapter.canonicalize_tensor_layout(canonical_name, shape, values)
+            }
+        }
+    }
+
+    fn write_metadata(&self, writer: &mut GgufWriter) -> Result<(), String> {
+        let (
+            prefix,
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            layers,
+            heads,
+            kv_heads,
+            head_dim,
+            rope_theta,
+            rms_norm_eps,
+            tie_word_embeddings,
+            architectures,
+        ) = match self {
+            Self::Qwen3 { config, .. } => (
+                "qwen3",
+                config.vocab_size,
+                config.hidden_size,
+                config.intermediate_size,
+                config.num_hidden_layers,
+                config.num_attention_heads,
+                config.num_key_value_heads,
+                config.effective_head_dim(),
+                config.rope_theta,
+                config.rms_norm_eps,
+                config.tie_word_embeddings,
+                &config.architectures,
+            ),
+            Self::Llama { config, .. } => (
+                "llama",
+                config.vocab_size,
+                config.hidden_size,
+                config.intermediate_size,
+                config.num_hidden_layers,
+                config.num_attention_heads,
+                config.num_key_value_heads(),
+                config.effective_head_dim(),
+                config.rope_theta,
+                config.rms_norm_eps,
+                config.tie_word_embeddings,
+                &config.architectures,
+            ),
+        };
+        writer.insert_metadata("general.architecture", GgufValue::String(prefix.to_owned()));
+        for (key, value) in [
+            (
+                "context_length",
+                match self {
+                    Self::Qwen3 { config, .. } => config.max_position_embeddings,
+                    Self::Llama { config, .. } => config.max_position_embeddings,
+                },
+            ),
+            ("embedding_length", hidden_size),
+            ("vocab_size", vocab_size),
+            ("feed_forward_length", intermediate_size),
+            ("block_count", layers),
+            ("attention.head_count", heads),
+            ("attention.head_count_kv", kv_heads),
+            ("attention.head_dim", head_dim),
+        ] {
+            writer.insert_metadata(
+                format!("{prefix}.{key}"),
+                GgufValue::U32(metadata_u32(value, key)?),
+            );
+        }
+        writer.insert_metadata(
+            format!("{prefix}.rope.freq_base"),
+            GgufValue::F32(rope_theta),
+        );
+        writer.insert_metadata(
+            format!("{prefix}.attention.layer_norm_rms_epsilon"),
+            GgufValue::F32(rms_norm_eps),
+        );
+        writer.insert_metadata(
+            format!("{prefix}.tie_word_embeddings"),
+            GgufValue::Bool(tie_word_embeddings),
+        );
+        writer.insert_metadata(
+            format!("{prefix}.architectures"),
+            GgufValue::Array(
+                architectures
+                    .iter()
+                    .cloned()
+                    .map(GgufValue::String)
+                    .collect(),
+            ),
+        );
+        Ok(())
+    }
+
+    fn validate_required_tensors(&self, written_names: &BTreeSet<String>) -> Result<(), String> {
+        let (tie_word_embeddings, layers, qk_norm) = match self {
+            Self::Qwen3 { config, .. } => {
+                (config.tie_word_embeddings, config.num_hidden_layers, true)
+            }
+            Self::Llama { config, .. } => {
+                (config.tie_word_embeddings, config.num_hidden_layers, false)
+            }
+        };
+        let mut required = vec![
+            "token_embd.weight".to_owned(),
+            "output_norm.weight".to_owned(),
+        ];
+        if !tie_word_embeddings {
+            required.push("output.weight".to_owned());
+        }
+        for layer in 0..layers {
+            required.extend([
+                format!("blk.{layer}.attn_norm.weight"),
+                format!("blk.{layer}.attn_q.weight"),
+                format!("blk.{layer}.attn_k.weight"),
+                format!("blk.{layer}.attn_v.weight"),
+                format!("blk.{layer}.attn_output.weight"),
+                format!("blk.{layer}.ffn_norm.weight"),
+                format!("blk.{layer}.ffn_gate.weight"),
+                format!("blk.{layer}.ffn_up.weight"),
+                format!("blk.{layer}.ffn_down.weight"),
+            ]);
+            if qk_norm {
+                required.extend([
+                    format!("blk.{layer}.attn_q_norm.weight"),
+                    format!("blk.{layer}.attn_k_norm.weight"),
+                ]);
+            }
+        }
+        let missing: Vec<_> = required
+            .into_iter()
+            .filter(|name| !written_names.contains(name))
+            .collect();
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "converted checkpoint is missing required {} tensors: {}",
+                self.architecture(),
+                missing.join(", ")
+            ))
+        }
+    }
 }
 
 impl WeightSource {
@@ -379,48 +552,6 @@ impl WeightSource {
             Self::Single(file) => file.tensors().len(),
             Self::Sharded(files) => files.tensors().count(),
         }
-    }
-}
-
-fn validate_required_tensors(
-    config: &Qwen3Config,
-    written_names: &BTreeSet<String>,
-) -> Result<(), String> {
-    let mut required = vec![
-        "token_embd.weight".to_owned(),
-        "output_norm.weight".to_owned(),
-    ];
-    if !config.tie_word_embeddings {
-        required.push("output.weight".to_owned());
-    }
-    for layer in 0..config.num_hidden_layers {
-        for suffix in [
-            "attn_norm",
-            "attn_q",
-            "attn_q_norm",
-            "attn_k",
-            "attn_k_norm",
-            "attn_v",
-            "attn_output",
-            "ffn_norm",
-            "ffn_gate",
-            "ffn_up",
-            "ffn_down",
-        ] {
-            required.push(format!("blk.{layer}.{suffix}.weight"));
-        }
-    }
-    let missing: Vec<_> = required
-        .into_iter()
-        .filter(|name| !written_names.contains(name))
-        .collect();
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "converted checkpoint is missing required Qwen3 tensors: {}",
-            missing.join(", ")
-        ))
     }
 }
 
@@ -572,13 +703,15 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k]"
     );
 }
 
 #[cfg(test)]
 mod tests {
-    use super::load_tokenizer_metadata;
+    use std::collections::BTreeSet;
+
+    use super::{load_tokenizer_metadata, ConversionModel};
 
     #[test]
     fn reads_huggingface_tokenizer_vocab_and_merges() {
@@ -601,5 +734,48 @@ mod tests {
         assert_eq!(metadata.tokens, vec!["h", "i", "hi", "<|im_end|>"]);
         assert_eq!(metadata.merges, vec!["h i"]);
         assert_eq!(metadata.eos_token_id, Some(3));
+    }
+
+    #[test]
+    fn detects_llama_config_and_validates_canonical_tensor_set() {
+        let model = ConversionModel::from_config(
+            r#"{
+                "model_type": "llama",
+                "vocab_size": 32,
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "max_position_embeddings": 64,
+                "tie_word_embeddings": true,
+                "architectures": ["LlamaForCausalLM"]
+            }"#,
+            None,
+        )
+        .unwrap();
+        assert_eq!(model.architecture(), "llama");
+        assert_eq!(model.vocab_size(), 32);
+        assert_eq!(
+            model.canonical_tensor_name("model.layers.0.self_attn.q_proj.weight"),
+            Some("blk.0.attn_q.weight".to_owned())
+        );
+        let names = [
+            "token_embd.weight",
+            "output_norm.weight",
+            "blk.0.attn_norm.weight",
+            "blk.0.attn_q.weight",
+            "blk.0.attn_k.weight",
+            "blk.0.attn_v.weight",
+            "blk.0.attn_output.weight",
+            "blk.0.ffn_norm.weight",
+            "blk.0.ffn_gate.weight",
+            "blk.0.ffn_up.weight",
+            "blk.0.ffn_down.weight",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        model.validate_required_tensors(&names).unwrap();
     }
 }
