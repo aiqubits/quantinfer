@@ -24,6 +24,10 @@ health and `GET /metrics` exposes counters. Configure queue admission with
 `--request-timeout-ms`. `SIGINT` and `SIGTERM` stop accepting connections
 and allow active responses to finish.
 
+Set `--requests-per-second` to limit generation admissions across clients.
+The bucket holds one second of burst capacity. Throttled requests return
+HTTP 429 with a `Retry-After` header.
+
 The decode worker batches ready requests for the same loaded model, including
 new prompts and continuing decode steps. Each request keeps its own KV cache,
 position and deadline. `--max-batch-sequences` and `--max-batch-tokens` default

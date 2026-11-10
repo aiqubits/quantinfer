@@ -102,6 +102,17 @@ def check(binary, model, golden):
         else:
             raise AssertionError("server completed a request beyond its deadline")
 
+    with server(binary, "--requests-per-second", "1") as base:
+        for expected_status in (404, 429):
+            try:
+                request(base, "/v1/generate", {"model": "unknown", "tokens": [1]})
+            except urllib.error.HTTPError as error:
+                assert error.code == expected_status
+                if error.code == 429:
+                    assert error.headers["Retry-After"] == "1"
+            else:
+                raise AssertionError("unexpected successful response")
+
 
 if __name__ == "__main__":
     check(sys.argv[1], sys.argv[2], json.loads(Path(sys.argv[3]).read_text()))

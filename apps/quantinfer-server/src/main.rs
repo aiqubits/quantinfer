@@ -1,13 +1,14 @@
 //! Optional HTTP inference service.
 
 mod engine;
+mod rate;
 
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
 use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::{DefaultBodyLimit, State};
@@ -27,6 +28,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
 use engine::{Metrics, Submission};
+use rate::RateLimit;
 
 struct ServedModel {
     decoder: Arc<CpuModel>,
@@ -39,6 +41,7 @@ struct AppState {
     metrics: Arc<Metrics>,
     context_length: usize,
     request_timeout: Duration,
+    rate_limit: Option<Mutex<RateLimit>>,
 }
 
 struct Settings {
@@ -49,6 +52,7 @@ struct Settings {
     batch: engine::BatchLimits,
     kv_budget_bytes: usize,
     request_timeout: Duration,
+    requests_per_second: Option<NonZeroUsize>,
 }
 
 impl Settings {
@@ -64,6 +68,7 @@ impl Settings {
             },
             kv_budget_bytes: 512 * 1024 * 1024,
             request_timeout: Duration::from_secs(60),
+            requests_per_second: None,
         };
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
@@ -89,6 +94,12 @@ impl Settings {
                     }
                 }
                 "--kv-budget-bytes" => settings.kv_budget_bytes = number()?,
+                "--requests-per-second" => {
+                    settings.requests_per_second = Some(
+                        NonZeroUsize::new(number()?)
+                            .ok_or_else(|| format!("{flag} must be positive"))?,
+                    );
+                }
                 "--request-timeout-ms" => {
                     settings.request_timeout = Duration::from_millis(number()? as u64)
                 }
@@ -123,7 +134,7 @@ impl Settings {
 async fn main() {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N]");
+        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N] [--requests-per-second N]");
         return;
     }
     if let Err(error) = run(args).await {
@@ -170,6 +181,9 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         metrics,
         context_length: settings.context_length,
         request_timeout: settings.request_timeout,
+        rate_limit: settings
+            .requests_per_second
+            .map(|limit| Mutex::new(RateLimit::new(limit, Instant::now()))),
     });
     let router = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status": "ok"})) }))
@@ -251,6 +265,19 @@ async fn generate(
     Json(request): Json<GenerateRequest>,
 ) -> Response {
     state.metrics.requests.fetch_add(1, Ordering::Relaxed);
+    if state.rate_limit.as_ref().is_some_and(|limit| {
+        !limit
+            .lock()
+            .is_ok_and(|mut bucket| bucket.allow(Instant::now()))
+    }) {
+        state.metrics.rejected.fetch_add(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, "1")],
+            Json(json!({"error": "request rate limit exceeded"})),
+        )
+            .into_response();
+    }
     match start_request(&state, request).await {
         Ok(response) => response,
         Err(error) => {
