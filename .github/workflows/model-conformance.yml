@@ -34,6 +34,7 @@ on:
       - "backends/cpu/**"
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
+      - "bindings/c/**"
       - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
@@ -180,6 +181,13 @@ jobs:
           cargo build --release --locked -p quantinfer-server
           python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
             smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
+      - name: Compile and run the C ABI with SmolLM2
+        run: |
+          cargo build --release --locked -p quantinfer-c
+          cc -std=c11 -Wall -Wextra -Werror -I bindings/c/include bindings/c/tests/smoke.c \
+            -L target/release -lquantinfer_c -Wl,-rpath,"$PWD/target/release" \
+            -o "$RUNNER_TEMP/quantinfer-c-smoke"
+          "$RUNNER_TEMP/quantinfer-c-smoke" smollm2-f32.gguf
       - uses: actions/upload-artifact@v4
         if: always()
         with:
