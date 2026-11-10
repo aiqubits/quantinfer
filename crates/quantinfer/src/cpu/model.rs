@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use quantinfer_core::Tensor;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
+use quantinfer_model::ModelSpec;
 use quantinfer_runtime::{
     DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, LoraAdapter,
     ProjectionObserver, Qwen3Model, Result, RuntimeError,
@@ -22,6 +23,19 @@ pub enum DenseModel<B> {
 pub type CpuModel = DenseModel<CpuScalar>;
 
 impl DenseModel<CpuScalar> {
+    pub fn spec_from_gguf(
+        reader: &GgufReader,
+        manifest: Option<&ModelManifest>,
+    ) -> Result<ModelSpec> {
+        match model_architecture(reader, manifest)? {
+            "qwen3" => Qwen3Model::<CpuScalar>::spec_from_gguf(reader),
+            "llama" => LlamaModel::<CpuScalar>::spec_from_gguf(reader),
+            other => Err(RuntimeError::InvalidInput(format!(
+                "unsupported GGUF architecture {other}"
+            ))),
+        }
+    }
+
     pub fn from_gguf(
         reader: &GgufReader,
         manifest: Option<&ModelManifest>,

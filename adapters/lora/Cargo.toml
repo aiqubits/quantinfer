@@ -1,0 +1,14 @@
+[package]
+name = "quantinfer-adapter-lora"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quantinfer-core.workspace = true
+quantinfer-format.workspace = true
+quantinfer-model.workspace = true
+quantinfer-runtime.workspace = true
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true

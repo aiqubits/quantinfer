@@ -6,12 +6,10 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use quantinfer::cpu::{load_gguf_tokenizer, model_architecture, ModelSource};
-use quantinfer_backend_cpu::CpuScalar;
+use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
+use quantinfer::model::ModelSpec;
 use quantinfer_format::{GgufReader, ModelPackage};
-use quantinfer_runtime::{
-    select_token, GenerationConfig, InferenceProfile, LlamaModel, MemoryPlan, Qwen3Model,
-};
+use quantinfer_runtime::{select_token, GenerationConfig, InferenceProfile, MemoryPlan};
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
 
 mod backend;
@@ -146,6 +144,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     let path = option_value(arguments, "--input")?
         .map(PathBuf::from)
         .ok_or_else(|| "generate requires --input".to_owned())?;
+    let lora = option_value(arguments, "--lora")?.map(PathBuf::from);
     let token_ids = option_value(arguments, "--tokens")?;
     let prompt_text = option_value(arguments, "--prompt")?;
     if token_ids.is_some() == prompt_text.is_some() {
@@ -222,6 +221,11 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         } else {
             (requested_max_sequence_length, memory_budget_bytes)
         };
+    if lora.is_some() && memory_budget_bytes.is_some() {
+        return Err(
+            "--lora requires a generation configuration without a memory budget".to_owned(),
+        );
+    }
     let reader = source
         .open_reader(memory_budget_bytes)
         .map_err(|error| error.to_string())?;
@@ -262,18 +266,35 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     if prompt_tokens.is_empty() {
         return Err("prompt must encode to at least one token".to_owned());
     }
-    let architecture = model_architecture(&reader, manifest).map_err(|error| error.to_string())?;
+    let model_load_started = Instant::now();
+    let spec = (memory_budget_bytes.is_some() || inference_profile.is_some() || lora.is_some())
+        .then(|| CpuModel::spec_from_gguf(&reader, manifest))
+        .transpose()
+        .map_err(|error| error.to_string())?;
     if memory_budget_bytes.is_some() || inference_profile.is_some() {
         check_memory_plan(
-            architecture,
+            spec.as_ref()
+                .expect("the memory plan requires a model spec"),
             &reader,
             requested_max_sequence_length,
             prompt_tokens.len(),
             memory_budget_bytes,
         )?;
     }
-    let model_load_started = Instant::now();
-    let model = backend.load(&reader, manifest, inference_profile.as_ref())?;
+    let adapter = lora
+        .map(|directory| {
+            quantinfer_adapter_lora::load_peft(
+                directory,
+                spec.as_ref().expect("LoRA requires a model spec"),
+            )
+        })
+        .transpose()?;
+    let mut model = backend.load(&reader, manifest, inference_profile.as_ref())?;
+    if let Some(adapter) = adapter {
+        model
+            .attach_lora(adapter)
+            .map_err(|error| error.to_string())?;
+    }
     let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
     drop(reader);
     if prompt_tokens
@@ -407,18 +428,12 @@ fn peak_rss_kib() -> Option<u64> {
 }
 
 fn check_memory_plan(
-    architecture: &str,
+    spec: &ModelSpec,
     reader: &GgufReader,
     requested_context: Option<usize>,
     prompt_length: usize,
     budget: Option<usize>,
 ) -> Result<(), String> {
-    let spec = match architecture {
-        "qwen3" => Qwen3Model::<CpuScalar>::spec_from_gguf(reader),
-        "llama" => LlamaModel::<CpuScalar>::spec_from_gguf(reader),
-        other => return Err(format!("unsupported GGUF architecture {other}")),
-    }
-    .map_err(|error| format!("cannot read model dimensions for memory plan: {error}"))?;
     let context = requested_context.unwrap_or(spec.max_sequence_length);
     if context == 0 || context > spec.max_sequence_length {
         return Err(format!(
@@ -429,7 +444,7 @@ fn check_memory_plan(
     let Some(budget) = budget else {
         return Ok(());
     };
-    let weights = quantinfer::cpu::estimated_weight_bytes(reader, &spec)
+    let weights = quantinfer::cpu::estimated_weight_bytes(reader, spec)
         .map_err(|error| format!("cannot estimate CPU weight memory: {error}"))?;
     let loading_bytes = reader
         .file_size_bytes()
@@ -440,7 +455,7 @@ fn check_memory_plan(
             "memory budget check failed: loading the model requires at least {loading_bytes} bytes, budget is {budget}"
         ));
     }
-    MemoryPlan::for_dense_prefill(&spec, weights, context, prompt_length)
+    MemoryPlan::for_dense_prefill(spec, weights, context, prompt_length)
         .and_then(|plan| plan.ensure_budget(budget))
         .map_err(|error| format!("memory budget check failed: {error}"))
 }
@@ -513,7 +528,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 

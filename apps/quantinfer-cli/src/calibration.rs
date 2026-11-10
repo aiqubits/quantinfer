@@ -3,12 +3,11 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use quantinfer::cpu::{load_gguf_tokenizer, model_architecture, CpuModel, ModelSource};
+use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
 use quantinfer::model::TensorRole;
 use quantinfer::quant::ImatrixStatistics;
-use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::Tensor;
-use quantinfer_runtime::{LlamaModel, Qwen3Model, Result as RuntimeResult, RuntimeError};
+use quantinfer_runtime::{Result as RuntimeResult, RuntimeError};
 use quantinfer_tokenizer::Tokenizer;
 
 use crate::option_value;
@@ -42,13 +41,7 @@ pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
         .open_reader(None)
         .map_err(|error| error.to_string())?;
     let manifest = source.package().map(|package| &package.manifest);
-    let architecture = model_architecture(&weights, manifest).map_err(|error| error.to_string())?;
-    let spec = match architecture {
-        "qwen3" => Qwen3Model::<CpuScalar>::spec_from_gguf(&weights),
-        "llama" => LlamaModel::<CpuScalar>::spec_from_gguf(&weights),
-        other => return Err(format!("unsupported calibration architecture {other}")),
-    }
-    .map_err(|error| error.to_string())?;
+    let spec = CpuModel::spec_from_gguf(&weights, manifest).map_err(|error| error.to_string())?;
     let tokenizer = load_gguf_tokenizer(&weights).map_err(|error| error.to_string())?;
     let model = CpuModel::from_gguf(&weights, manifest, None).map_err(|error| error.to_string())?;
     drop(weights);

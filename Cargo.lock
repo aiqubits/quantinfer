@@ -1835,6 +1835,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantinfer-adapter-lora"
+version = "0.1.0"
+dependencies = [
+ "quantinfer-core",
+ "quantinfer-format",
+ "quantinfer-model",
+ "quantinfer-runtime",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quantinfer-backend-ascend"
 version = "0.1.0"
 dependencies = [
@@ -1905,7 +1918,7 @@ name = "quantinfer-cli"
 version = "0.1.0"
 dependencies = [
  "quantinfer",
- "quantinfer-backend-cpu",
+ "quantinfer-adapter-lora",
  "quantinfer-core",
  "quantinfer-format",
  "quantinfer-runtime",

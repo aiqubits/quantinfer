@@ -1,7 +1,9 @@
 use quantinfer::cpu::{CpuModel, DenseModel};
 use quantinfer::kernel::KernelBackend;
 use quantinfer_format::{GgufReader, ModelManifest};
-use quantinfer_runtime::{DecoderModel, InferenceProfile, KvCache, Result as RuntimeResult};
+use quantinfer_runtime::{
+    DecoderModel, InferenceProfile, KvCache, LoraAdapter, Result as RuntimeResult,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
@@ -126,6 +128,7 @@ pub trait Generator: DecoderModel {
     fn vocab_size(&self) -> usize;
     fn max_position_embeddings(&self) -> usize;
     fn new_cache(&self, context_length: usize) -> RuntimeResult<KvCache>;
+    fn attach_lora(&mut self, adapter: LoraAdapter) -> RuntimeResult<()>;
 }
 
 impl<B: KernelBackend> Generator for DenseModel<B> {
@@ -139,5 +142,9 @@ impl<B: KernelBackend> Generator for DenseModel<B> {
 
     fn new_cache(&self, context_length: usize) -> RuntimeResult<KvCache> {
         self.new_cache(context_length)
+    }
+
+    fn attach_lora(&mut self, adapter: LoraAdapter) -> RuntimeResult<()> {
+        self.attach_lora(adapter)
     }
 }

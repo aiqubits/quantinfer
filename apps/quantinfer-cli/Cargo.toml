@@ -10,7 +10,7 @@ wgpu = ["quantinfer/wgpu"]
 
 [dependencies]
 quantinfer = { workspace = true }
-quantinfer-backend-cpu = { workspace = true }
+quantinfer-adapter-lora.workspace = true
 quantinfer-core = { workspace = true }
 quantinfer-format = { workspace = true }
 quantinfer-runtime = { workspace = true }

@@ -32,6 +32,7 @@ on:
       - "crates/quantinfer-runtime/**"
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
+      - "adapters/lora/**"
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
       - "bindings/c/**"
@@ -213,6 +214,24 @@ jobs:
           gguf=$("${generate[@]}" --input smollm2-q4_0.gguf | grep '^generated_tokens=')
           qif=$("${generate[@]}" --input smollm2-q4_0.qif | grep '^generated_tokens=')
           test "$gguf" = "$qif"
+      - name: Apply PEFT LoRA to quantized SmolLM2
+        shell: bash
+        run: |
+          python3 tests/conformance/make_lora_fixture.py config.json "$RUNNER_TEMP/smollm2-lora"
+          adapter="$RUNNER_TEMP/smollm2-lora"
+          generate=(target/release/quantinfer-cli generate --max-new-tokens 1 --max-sequence-length 64
+            --prompt "$(jq -r '.prompt' tests/golden/smollm2-135m-f32.json)")
+          "${generate[@]}" --input smollm2-q4_0.gguf | grep -Fx 'generated_tokens=[260]'
+          for model in smollm2-q4_0.gguf smollm2-q4_0.qif; do
+            "${generate[@]}" --input "$model" --lora "$adapter" | grep -Fx 'generated_tokens=[43]'
+          done
+          jq '.rank_pattern.q_proj = 3' "$adapter/adapter_config.json" > "$adapter/invalid.json"
+          mv "$adapter/invalid.json" "$adapter/adapter_config.json"
+          if "${generate[@]}" --input smollm2-q4_0.gguf --lora "$adapter" 2> lora-error.txt; then
+            echo 'generation accepted a LoRA factor with an invalid rank' >&2
+            exit 1
+          fi
+          grep -F 'has shape [2, 576], expected [3, 576]' lora-error.txt
       - name: Exercise HTTP generation and streaming with SmolLM2
         run: |
           cargo build --release --locked -p quantinfer-server

@@ -47,7 +47,7 @@ impl ModelAdapter for Qwen3Adapter {
     }
 
     fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
-        canonical_qwen3_tensor_name(source_name)
+        canonical_dense_tensor_name(source_name)
     }
 
     fn canonicalize_tensor_layout(
@@ -95,7 +95,7 @@ impl ModelAdapter for LlamaAdapter {
     }
 
     fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
-        canonical_llama_tensor_name(source_name)
+        canonical_dense_tensor_name(source_name)
     }
 
     fn canonicalize_tensor_layout(
@@ -108,7 +108,8 @@ impl ModelAdapter for LlamaAdapter {
     }
 }
 
-fn canonical_qwen3_tensor_name(name: &str) -> Option<String> {
+/// Map a Hugging Face Llama or Qwen3 weight name to its canonical tensor name.
+pub fn canonical_dense_tensor_name(name: &str) -> Option<String> {
     let parts: Vec<&str> = name.split('.').collect();
     match parts.as_slice() {
         ["model", "embed_tokens", "weight"] | ["model", "token_embeddings", "weight"] => {
@@ -145,10 +146,6 @@ fn canonical_qwen3_tensor_name(name: &str) -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn canonical_llama_tensor_name(name: &str) -> Option<String> {
-    canonical_qwen3_tensor_name(name)
 }
 
 fn canonicalize_layout(
