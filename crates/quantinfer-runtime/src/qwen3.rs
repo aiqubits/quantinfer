@@ -633,7 +633,7 @@ pub(crate) fn gqa_attention(
 #[cfg(test)]
 mod tests {
     use super::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
-    use crate::KvCache;
+    use crate::{generate_qwen3_stream, GenerationConfig, KvCache, StreamControl};
     use quantinfer_backend_cpu::CpuScalar;
     use quantinfer_core::{DType, Tensor};
     use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
@@ -733,6 +733,38 @@ mod tests {
         let decode = model.forward(&[3], &mut cache).unwrap();
         assert_eq!(decode.shape().dims(), &[1, config.vocab_size]);
         assert_eq!(cache.sequence_length(0).unwrap(), 3);
+    }
+
+    #[test]
+    fn streams_tokens_and_honors_sink_stop() {
+        let config = config();
+        let model = Qwen3Model::new(
+            config.clone(),
+            CpuScalar::new(),
+            filled(vec![config.vocab_size, config.hidden_size], 0.01),
+            vec![layer()],
+            filled(vec![config.hidden_size], 1.0),
+            filled(vec![config.hidden_size, config.vocab_size], 0.01),
+        )
+        .unwrap();
+        let mut cache = KvCache::new(1, config.max_position_embeddings, 1, 4).unwrap();
+        let mut streamed = Vec::new();
+        let generated = generate_qwen3_stream(
+            &model,
+            &[1, 2],
+            &mut cache,
+            &GenerationConfig {
+                max_new_tokens: 4,
+                ..GenerationConfig::default()
+            },
+            &mut |token| {
+                streamed.push(token);
+                Ok(StreamControl::Stop)
+            },
+        )
+        .unwrap();
+        assert_eq!(generated, streamed);
+        assert_eq!(streamed.len(), 1);
     }
 
     #[test]

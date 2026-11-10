@@ -26,6 +26,25 @@ pub enum RuntimeError {
     Kernel(quantinfer_kernel::KernelError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamControl {
+    Continue,
+    Stop,
+}
+
+pub trait TokenSink {
+    fn on_token(&mut self, token_id: usize) -> Result<StreamControl>;
+}
+
+impl<F> TokenSink for F
+where
+    F: FnMut(usize) -> Result<StreamControl>,
+{
+    fn on_token(&mut self, token_id: usize) -> Result<StreamControl> {
+        self(token_id)
+    }
+}
+
 impl fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -343,6 +362,56 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
         .last()
         .map(|(index, _)| *index)
         .ok_or_else(|| RuntimeError::InvalidInput("sampling candidate set is empty".to_owned()))
+}
+
+pub fn generate_qwen3_stream<B, S>(
+    model: &Qwen3Model<B>,
+    prompt_tokens: &[usize],
+    cache: &mut KvCache,
+    config: &GenerationConfig,
+    sink: &mut S,
+) -> Result<Vec<usize>>
+where
+    B: quantinfer_kernel::KernelBackend,
+    S: TokenSink,
+{
+    config.validate()?;
+    if prompt_tokens.is_empty() {
+        return Err(RuntimeError::InvalidInput(
+            "streaming generation requires a non-empty prompt".to_owned(),
+        ));
+    }
+    let mut logits = model.forward(prompt_tokens, cache)?;
+    let mut generated = Vec::with_capacity(config.max_new_tokens);
+    for _ in 0..config.max_new_tokens {
+        let next = select_token(&last_logits(&logits)?, config)?;
+        generated.push(next);
+        if config.eos_token_id == Some(next) {
+            let _ = sink.on_token(next)?;
+            break;
+        }
+        if sink.on_token(next)? == StreamControl::Stop {
+            break;
+        }
+        logits = model.forward(&[next], cache)?;
+    }
+    Ok(generated)
+}
+
+fn last_logits(logits: &Tensor) -> Result<Tensor> {
+    let dims = logits.shape().dims();
+    if dims.len() != 2 || dims[0] == 0 || dims[1] == 0 {
+        return Err(RuntimeError::InvalidInput(
+            "model logits must have shape [tokens, vocab]".to_owned(),
+        ));
+    }
+    let values = logits.as_f32()?;
+    let vocab_size = dims[1];
+    let start = (dims[0] - 1) * vocab_size;
+    Ok(Tensor::from_f32(
+        vec![vocab_size],
+        values[start..].to_vec(),
+    )?)
 }
 
 fn deterministic_unit(seed: u64, values: &[f32]) -> f32 {
