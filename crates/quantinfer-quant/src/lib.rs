@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use quantinfer_core::{
-    DType, Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizationScheme, QuantizedTensor,
+    DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme, QuantizedTensor,
     QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K, Tensor,
     TensorStorageDescriptor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
@@ -432,6 +432,93 @@ pub fn dequantize_q5_k(input: &QuantizedTensorQ5K) -> Result<Tensor> {
     Ok(Tensor::from_f32(input.shape().clone(), output)?)
 }
 
+pub fn quantize_q6_k(input: &Tensor) -> Result<QuantizedTensorQ6K> {
+    let values = input.as_f32()?;
+    if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
+        return Err(QuantizationError::InvalidInput(
+            "Q6_K requires a multiple of 256 elements".to_owned(),
+        ));
+    }
+    let mut blocks = Vec::with_capacity(values.len() / Q4_K_BLOCK_SIZE);
+    for chunk in values.as_chunks::<Q4_K_BLOCK_SIZE>().0 {
+        let mut scales_f = [0.0_f32; 16];
+        let mut quantized = [0_u8; Q4_K_BLOCK_SIZE];
+        for (subblock, values) in chunk.as_chunks::<16>().0.iter().enumerate() {
+            let max_abs = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
+            let scale = (max_abs / 31.0).max(f32::EPSILON);
+            scales_f[subblock] = scale;
+            for (index, value) in values.iter().copied().enumerate() {
+                quantized[subblock * 16 + index] =
+                    ((value / scale).round().clamp(-32.0, 31.0) as i32 + 32) as u8;
+            }
+        }
+        let max_scale = scales_f
+            .iter()
+            .copied()
+            .fold(0.0, f32::max)
+            .max(f32::EPSILON);
+        let d = max_scale / 127.0;
+        let scales = scales_f.map(|value| (value / d).round().clamp(-128.0, 127.0) as i8);
+        let mut low_bits = [0_u8; 128];
+        let mut high_bits = [0_u8; 64];
+        for ip in 0..2 {
+            for il in 0..32 {
+                let q0 = quantized[ip * 128 + il];
+                let q1 = quantized[ip * 128 + 32 + il];
+                let q2 = quantized[ip * 128 + 64 + il];
+                let q3 = quantized[ip * 128 + 96 + il];
+                low_bits[ip * 64 + il] = (q0 & 0xf) | ((q2 & 0xf) << 4);
+                low_bits[ip * 64 + 32 + il] = (q1 & 0xf) | ((q3 & 0xf) << 4);
+                high_bits[ip * 32 + il] = ((q0 >> 4) & 3)
+                    | (((q1 >> 4) & 3) << 2)
+                    | (((q2 >> 4) & 3) << 4)
+                    | (((q3 >> 4) & 3) << 6);
+            }
+        }
+        blocks.push(Q6KBlock {
+            scale: d,
+            scales,
+            low_bits,
+            high_bits,
+        });
+    }
+    Ok(QuantizedTensorQ6K::from_blocks(
+        input.shape().clone(),
+        blocks,
+    )?)
+}
+
+pub fn dequantize_q6_k(input: &QuantizedTensorQ6K) -> Result<Tensor> {
+    let mut output = Vec::with_capacity(input.num_elements());
+    for block in input.blocks() {
+        let mut restored = vec![0.0_f32; Q4_K_BLOCK_SIZE];
+        for ip in 0..2 {
+            for il in 0..32 {
+                let high = block.high_bits[ip * 32 + il];
+                let q0 = (block.low_bits[ip * 64 + il] & 0xf) | ((high & 3) << 4);
+                let q1 = (block.low_bits[ip * 64 + 32 + il] & 0xf) | (((high >> 2) & 3) << 4);
+                let q2 = (block.low_bits[ip * 64 + il] >> 4) | (((high >> 4) & 3) << 4);
+                let q3 = (block.low_bits[ip * 64 + 32 + il] >> 4) | (((high >> 6) & 3) << 4);
+                let bases = [
+                    ip * 128 + il,
+                    ip * 128 + 32 + il,
+                    ip * 128 + 64 + il,
+                    ip * 128 + 96 + il,
+                ];
+                let qs = [q0, q1, q2, q3];
+                for (offset, q) in bases.into_iter().zip(qs) {
+                    let subblock = offset / 16;
+                    let signed = i32::from(q) - 32;
+                    restored[offset] =
+                        block.scale * f32::from(block.scales[subblock]) * signed as f32;
+                }
+            }
+        }
+        output.extend_from_slice(&restored);
+    }
+    Ok(Tensor::from_f32(input.shape().clone(), output)?)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum QuantizedData {
@@ -790,11 +877,51 @@ impl QuantizationProvider for NativeQ5KProvider {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NativeQ6KProvider;
+
+impl QuantizationProvider for NativeQ6KProvider {
+    fn scheme(&self) -> QuantizationScheme {
+        QuantizationScheme::Q6_K
+    }
+    fn storage_descriptor(&self, shape: quantinfer_core::Shape) -> Result<TensorStorageDescriptor> {
+        Ok(TensorStorageDescriptor::quantized(
+            DType::Q6_K,
+            QuantizationScheme::Q6_K,
+            shape,
+            Q4_K_BLOCK_SIZE,
+        )?)
+    }
+    fn validate(&self, input: &Tensor) -> Result<()> {
+        if !input.as_f32()?.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
+            return Err(QuantizationError::InvalidInput(
+                "Q6_K requires a multiple of 256 elements".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+    fn quantize(&self, input: &Tensor) -> Result<QuantizedData> {
+        self.validate(input)?;
+        Ok(QuantizedData::Q6_K(quantize_q6_k(input)?))
+    }
+    fn dequantize(&self, input: &QuantizedData) -> Result<Tensor> {
+        match input {
+            QuantizedData::Q6_K(tensor) => dequantize_q6_k(tensor),
+            _ => Err(QuantizationError::InvalidInput(
+                "NativeQ6KProvider expects Q6_K data".to_owned(),
+            )),
+        }
+    }
+    fn export_layout(&self) -> &'static str {
+        "ggml_q6_k"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         dequantize_q8_0, quantize_q8_0, CalibrationDataset, ImatrixStatistics, MixedPrecisionPlan,
-        NativeQ4KProvider, NativeQ4_0Provider, QuantizationProvider,
+        NativeQ4KProvider, NativeQ4_0Provider, NativeQ6KProvider, QuantizationProvider,
     };
     use quantinfer_core::{QuantizationScheme, Tensor};
 
@@ -866,5 +993,18 @@ mod tests {
         let report = provider.error_report(&input, &quantized).unwrap();
         assert!(report.max_absolute_error < 0.2);
         assert_eq!(provider.export_layout(), "ggml_q4_k");
+    }
+
+    #[test]
+    fn quantizes_and_dequantizes_standard_q6_k_blocks() {
+        let input = Tensor::from_f32(
+            vec![256],
+            (0..256).map(|index| index as f32 / 128.0 - 1.0).collect(),
+        )
+        .unwrap();
+        let provider = NativeQ6KProvider;
+        let quantized = provider.quantize(&input).unwrap();
+        let report = provider.error_report(&input, &quantized).unwrap();
+        assert!(report.max_absolute_error < 0.2);
     }
 }
