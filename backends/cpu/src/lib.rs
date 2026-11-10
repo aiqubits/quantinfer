@@ -105,14 +105,17 @@ impl CpuScalar {
         })
     }
 
-    fn matmul_rows(
+    fn matmul_rows_with<F>(
         &self,
         lhs_values: &[f32],
-        rhs_values: &[f32],
         rows: usize,
         inner: usize,
         columns: usize,
-    ) -> Result<Vec<f32>> {
+        value: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: Fn(usize) -> Result<f32> + Sync + Send,
+    {
         let worker_count = self.config.threads.max(1).min(rows.max(1));
         let mut output = vec![0.0; rows * columns];
         if worker_count == 1 || rows < 2 {
@@ -120,8 +123,7 @@ impl CpuScalar {
                 for column in 0..columns {
                     let mut sum = 0.0;
                     for index in 0..inner {
-                        sum +=
-                            lhs_values[row * inner + index] * rhs_values[index * columns + column];
+                        sum += lhs_values[row * inner + index] * value(index * columns + column)?;
                     }
                     output[row * columns + column] = sum;
                 }
@@ -134,6 +136,7 @@ impl CpuScalar {
             let mut handles = Vec::new();
             for start in (0..rows).step_by(chunk_size) {
                 let end = (start + chunk_size).min(rows);
+                let value_ref = &value;
                 handles.push(scope.spawn(move || {
                     let mut values = vec![0.0; (end - start) * columns];
                     for row in start..end {
@@ -141,23 +144,36 @@ impl CpuScalar {
                             let mut sum = 0.0;
                             for index in 0..inner {
                                 sum += lhs_values[row * inner + index]
-                                    * rhs_values[index * columns + column];
+                                    * value_ref(index * columns + column)?;
                             }
                             values[(row - start) * columns + column] = sum;
                         }
                     }
-                    (start, values)
+                    Ok::<_, KernelError>((start, values))
                 }));
             }
             for handle in handles {
                 let (start, values) = handle
                     .join()
-                    .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))?;
+                    .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))??;
                 output[start * columns..(start * columns) + values.len()].copy_from_slice(&values);
             }
             Ok(())
         })?;
         Ok(output)
+    }
+
+    fn matmul_rows(
+        &self,
+        lhs_values: &[f32],
+        rhs_values: &[f32],
+        rows: usize,
+        inner: usize,
+        columns: usize,
+    ) -> Result<Vec<f32>> {
+        self.matmul_rows_with(lhs_values, rows, inner, columns, |index| {
+            Ok(rhs_values[index])
+        })
     }
 
     fn quantized_value(&self, tensor: &QuantizedTensor, index: usize) -> Result<f32> {
@@ -290,17 +306,9 @@ impl KernelBackend for CpuScalar {
         }
         let n = rhs_shape[1];
         let lhs_values = self.f32_values(lhs, "lhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    let rhs_index = inner * n + column;
-                    sum += lhs_values[row * k + inner] * self.quantized_value(rhs, rhs_index)?;
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows_with(lhs_values, m, k, n, |index| {
+            self.quantized_value(rhs, index)
+        })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -314,18 +322,9 @@ impl KernelBackend for CpuScalar {
         }
         let n = rhs_shape[1];
         let lhs_values = self.f32_values(lhs, "lhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    let rhs_index = inner * n + column;
-                    sum +=
-                        lhs_values[row * k + inner] * self.quantized_value_q4_0(rhs, rhs_index)?;
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows_with(lhs_values, m, k, n, |index| {
+            self.quantized_value_q4_0(rhs, index)
+        })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -339,17 +338,9 @@ impl KernelBackend for CpuScalar {
         }
         let n = rhs_shape[1];
         let lhs_values = self.f32_values(lhs, "lhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    sum += lhs_values[row * k + inner]
-                        * self.quantized_value_q4_k(rhs, inner * n + column)?;
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows_with(lhs_values, m, k, n, |index| {
+            self.quantized_value_q4_k(rhs, index)
+        })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -363,17 +354,9 @@ impl KernelBackend for CpuScalar {
         }
         let n = rhs_shape[1];
         let lhs_values = self.f32_values(lhs, "lhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    sum += lhs_values[row * k + inner]
-                        * self.quantized_value_q5_k(rhs, inner * n + column)?;
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows_with(lhs_values, m, k, n, |index| {
+            self.quantized_value_q5_k(rhs, index)
+        })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -387,17 +370,9 @@ impl KernelBackend for CpuScalar {
         }
         let n = rhs_shape[1];
         let lhs_values = self.f32_values(lhs, "lhs")?;
-        let mut output = vec![0.0; m * n];
-        for row in 0..m {
-            for column in 0..n {
-                let mut sum = 0.0;
-                for inner in 0..k {
-                    sum += lhs_values[row * k + inner]
-                        * self.quantized_value_q6_k(rhs, inner * n + column)?;
-                }
-                output[row * n + column] = sum;
-            }
-        }
+        let output = self.matmul_rows_with(lhs_values, m, k, n, |index| {
+            self.quantized_value_q6_k(rhs, index)
+        })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
     }
 
@@ -652,6 +627,27 @@ mod tests {
             workspace_reuse: true,
         })
         .matmul(&lhs, &rhs)
+        .unwrap();
+        assert_eq!(threaded.as_f32().unwrap(), scalar.as_f32().unwrap());
+    }
+
+    #[test]
+    fn threaded_q8_matmul_matches_scalar_reference() {
+        let lhs = Tensor::from_f32(vec![8, 32], vec![1.0; 8 * 32]).unwrap();
+        let mut values = [0_i8; 32];
+        values.fill(1);
+        let rhs = QuantizedTensor::from_blocks(
+            vec![32, 1],
+            vec![quantinfer_core::Q8_0Block { scale: 0.5, values }],
+        )
+        .unwrap();
+        let scalar = CpuScalar::new().matmul_q8_0(&lhs, &rhs).unwrap();
+        let threaded = CpuScalar::with_config(CpuRuntimeConfig {
+            isa: CpuIsa::Scalar,
+            threads: 4,
+            workspace_reuse: true,
+        })
+        .matmul_q8_0(&lhs, &rhs)
         .unwrap();
         assert_eq!(threaded.as_f32().unwrap(), scalar.as_f32().unwrap());
     }
