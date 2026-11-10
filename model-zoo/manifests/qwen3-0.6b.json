@@ -24,7 +24,7 @@
     "external_artifact_required": true,
     "path": "model.safetensors",
     "size_bytes": 1503300328,
-    "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874",
+    "sha256": "f47f71177f32bcd101b7573ec9171e6a57f4f4d31148d38e382306f42996874b",
     "url": "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/model.safetensors"
   }
 }

@@ -1,6 +1,8 @@
 name: Model Conformance
 
 on:
+  schedule:
+    - cron: '30 3 * * 1'
   workflow_dispatch:
     inputs:
       gguf_url:
@@ -98,22 +100,71 @@ jobs:
       - run: cargo run -p quantinfer-cli -- inspect-gguf --input qwen3-0.6b.gguf
 
   qwen3-conversion:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.safetensors_url != '' && inputs.safetensors_sha256 != '' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     needs: conformance
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Download fixed Qwen3 SafeTensors and tokenizer
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download and verify pinned Qwen3 checkpoint
         env:
           SAFETENSORS_URL: ${{ inputs.safetensors_url }}
           SAFETENSORS_SHA256: ${{ inputs.safetensors_sha256 }}
         run: |
-          curl --fail --location --retry 3 --output model.safetensors "$SAFETENSORS_URL"
-          echo "$SAFETENSORS_SHA256  model.safetensors" | sha256sum --check
-          curl --fail --location --retry 3 --output config.json \
-            "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/config.json"
-          curl --fail --location --retry 3 --output tokenizer.json \
-            "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/tokenizer.json"
-      - run: cargo run -p quantinfer-convert -- --config config.json --weights model.safetensors --tokenizer tokenizer.json --output model.gguf --manifest manifest.json --quantize q8_0
-      - run: cargo run -p quantinfer-cli -- inspect-gguf --input model.gguf
+          manifest=model-zoo/manifests/qwen3-0.6b.json
+          source_url=$(jq -r '.source_repository + "/resolve/" + .source_revision' "$manifest")
+          expected_sha=$(jq -r '.weights.sha256' "$manifest")
+          if [[ -n "$SAFETENSORS_SHA256" && "$SAFETENSORS_SHA256" != "$expected_sha" ]]; then
+            echo "The override must provide the pinned Qwen3 checkpoint" >&2
+            exit 1
+          fi
+          weights_url=${SAFETENSORS_URL:-$(jq -r '.weights.url' "$manifest")}
+          mkdir qwen3
+          jq -r '.artifacts[] | "\(.sha256)  qwen3/\(.path)"' "$manifest" > qwen3-source.sha256
+          while read -r _ path; do
+            curl --fail --location --retry 3 --output "$path" "$source_url/${path#qwen3/}"
+          done < qwen3-source.sha256
+          curl --fail --location --retry 3 --output qwen3/model.safetensors "$weights_url"
+          printf '%s  qwen3/model.safetensors\n' "$expected_sha" >> qwen3-source.sha256
+          sha256sum --check qwen3-source.sha256
+      - name: Compute independent Transformers F32 reference
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.11.0'
+          python -m pip install 'transformers==4.57.6'
+          python tests/conformance/qwen3_reference.py qwen3 > qwen3-reference.json
+      - name: Convert and inspect F32 and Q8_0 GGUF
+        run: |
+          cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
+          for variant in f32 q8_0; do
+            options=()
+            if [[ "$variant" != f32 ]]; then options+=(--quantize "$variant"); fi
+            target/release/quantinfer-convert --config qwen3/config.json \
+              --weights qwen3/model.safetensors --tokenizer qwen3/tokenizer.json \
+              --output "qwen3-$variant.gguf" "${options[@]}"
+            target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
+              > "qwen3-$variant.inventory"
+          done
+          sha256sum qwen3-f32.gguf qwen3-q8_0.gguf > qwen3-gguf.sha256
+      - name: Gate real Qwen3 logits, generation and quantization error
+        shell: bash
+        env:
+          QUANTINFER_QWEN3_REFERENCE: ${{ github.workspace }}/qwen3-reference.json
+          QUANTINFER_QWEN3_F32: ${{ github.workspace }}/qwen3-f32.gguf
+          QUANTINFER_QWEN3_Q8: ${{ github.workspace }}/qwen3-q8_0.gguf
+        run: |
+          cargo test --release --locked -p quantinfer-runtime --test qwen3_conformance -- --ignored --nocapture \
+            | tee qwen3-conformance.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qwen3-conformance-report
+          path: |
+            qwen3-source.sha256
+            qwen3-gguf.sha256
+            qwen3-*.inventory
+            qwen3-reference.json
+            qwen3-conformance.log

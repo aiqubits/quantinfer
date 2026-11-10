@@ -259,8 +259,7 @@ fn run() -> Result<(), String> {
         }
     }
     println!(
-        "converted architecture={} tensors={} output={}",
-        model.architecture(),
+        "converted {} tensors to {}",
         weights.tensor_count(),
         output_path.display()
     );
