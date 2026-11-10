@@ -160,7 +160,7 @@ jobs:
           prompt=$(jq -r '.prompt' "$golden")
           eos=$(jq -r '.generated_tokens[0]' "$golden")
           for variant in q8_0 q4_0; do
-            model="smollm2-$variant.gguf"
+            model="$GITHUB_WORKSPACE/smollm2-$variant.gguf"
             target/release/quantinfer-convert --config config.json --weights model.safetensors \
               --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
               --quantize "$variant" --output "$model"
