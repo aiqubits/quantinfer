@@ -1,0 +1,24 @@
+name: Performance Regression
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backends/cpu/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-kernel/**"
+      - "crates/quantinfer-quant/**"
+      - "tools/xtask/**"
+      - ".github/workflows/performance.yml"
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          cargo run -p quantinfer-xtask -- bench | tee benchmark.txt
+          grep -E '^q8_0_matmul .*elapsed_ns=[0-9]+' benchmark.txt
+          grep -E '^q4_0_matmul .*elapsed_ns=[0-9]+' benchmark.txt
