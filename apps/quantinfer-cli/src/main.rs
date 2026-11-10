@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_format::{GgufReader, GgufValue, ModelPackage};
-use quantinfer_runtime::{select_token, GenerationConfig, KvCache, LlamaModel, Qwen3Model};
+use quantinfer_runtime::{
+    select_token, GenerationConfig, KvCache, LlamaModel, MemoryPlan, Qwen3Model,
+};
 use quantinfer_tokenizer::{
     ChatMessage, GgufBpeTokenizer, Qwen3ChatTemplate, ThinkingMode, Tokenizer,
 };
@@ -108,6 +110,13 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("invalid --max-sequence-length: {error}"))
         })
         .transpose()?;
+    let memory_budget_bytes = option_value(arguments, "--memory-budget-bytes")?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|error| format!("invalid --memory-budget-bytes: {error}"))
+        })
+        .transpose()?;
     let reader = open_model_reader(&path)?;
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
@@ -171,6 +180,21 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .is_none_or(|length| length > max_sequence_length)
     {
         return Err("prompt and max_new_tokens exceed --max-sequence-length".to_owned());
+    }
+    if let Some(memory_budget_bytes) = memory_budget_bytes {
+        let memory_plan = MemoryPlan::for_model(
+            0,
+            model.hidden_size(),
+            model.vocab_size(),
+            model.num_hidden_layers(),
+            model.num_key_value_heads(),
+            model.head_dim(),
+            max_sequence_length,
+        )
+        .map_err(|error| format!("cannot build memory plan: {error}"))?;
+        memory_plan
+            .ensure_budget(memory_budget_bytes)
+            .map_err(|error| format!("memory budget check failed: {error}"))?;
     }
     let generation_config = GenerationConfig {
         max_new_tokens,
@@ -272,6 +296,13 @@ impl LoadedModel {
         match self {
             Self::Qwen3(model) => model.config.effective_head_dim(),
             Self::Llama(model) => model.config.effective_head_dim(),
+        }
+    }
+
+    fn hidden_size(&self) -> usize {
+        match self {
+            Self::Qwen3(model) => model.config.hidden_size,
+            Self::Llama(model) => model.config.hidden_size,
         }
     }
 
@@ -425,7 +456,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf\n  generate --input MODEL.gguf (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--temperature T] [--seed N] [--eos-token-id ID]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID]"
     );
 }
 
