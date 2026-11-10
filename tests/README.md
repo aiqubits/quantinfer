@@ -21,7 +21,7 @@ Its rendered prompts must exactly match the Transformers 4.57.6 cases in
 `golden/qwen3-chat-template.json`, including system and assistant history,
 thinking modes, structured tool calls, and consecutive tool responses.
 
-## SmolLM2-135M F32 conformance
+## SmolLM2-135M F32, Q8_0 and Q4_0 conformance
 
 The Model Conformance workflow verifies the pinned checkpoint in
 `model-zoo/manifests/smollm2-135m.json`, converts it to GGUF, and runs the
@@ -29,6 +29,9 @@ runtime integration test. The test compares prompt tokens, sampled prefill
 logits, the top 10 tokens, and eight greedy decode tokens with the reference.
 The same test runs against the pinned external F16 GGUF from the manifest.
 That import converts weights to F32 for CPU execution.
+The Q8_0 and Q4_0 GGML exports use per-variant logit tolerances, top-10
+overlap and exact greedy token sequences. The CLI separately checks that an
+explicit EOS ID stops generation at the expected token.
 
 ## GGUF interoperability
 

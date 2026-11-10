@@ -152,11 +152,33 @@ jobs:
             "$(jq -r '.model_id' "$manifest")" "$(jq -r '.source_revision' "$manifest")" \
             f32 smollm2-f32.gguf > smollm2-f32-benchmark.txt
           python3 benches/check-regressions.py smollm2-f32-benchmark.txt
+      - name: Gate SmolLM2 Q8_0 and Q4_0 logits, generation and performance
+        shell: bash
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          golden=tests/golden/smollm2-135m-f32.json
+          prompt=$(jq -r '.prompt' "$golden")
+          eos=$(jq -r '.generated_tokens[0]' "$golden")
+          for variant in q8_0 q4_0; do
+            model="smollm2-$variant.gguf"
+            target/release/quantinfer-convert --config config.json --weights model.safetensors \
+              --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
+              --quantize "$variant" --output "$model"
+            QUANTINFER_SMOLLM2_GGUF="$model" QUANTINFER_SMOLLM2_VARIANT="$variant" \
+              cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
+            target/release/quantinfer-cli generate --input "$model" --prompt "$prompt" \
+              --max-new-tokens 8 --max-sequence-length 64 --eos-token-id "$eos" \
+              | grep -Fx "generated_tokens=[$eos]"
+            bash benches/real-model.sh target/release/quantinfer-cli \
+              "$(jq -r '.model_id' "$manifest")" "$(jq -r '.source_revision' "$manifest")" \
+              "ggml-$variant" "$model" > "smollm2-$variant-benchmark.txt"
+          done
+          python3 benches/check-regressions.py smollm2-q8_0-benchmark.txt smollm2-q4_0-benchmark.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: smollm2-benchmark
-          path: smollm2-f32-benchmark.txt
+          path: smollm2-*-benchmark.txt
 
   smollm2-external-f16:
     runs-on: ubuntu-latest

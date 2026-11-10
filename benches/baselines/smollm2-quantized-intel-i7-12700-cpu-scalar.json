@@ -1,0 +1,48 @@
+{
+  "benchmark_code_commit": "e46d48d9b4f6e6995b6685b58df95adc88752a2f",
+  "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700",
+  "cpu_arch": "x86_64",
+  "threads": 1,
+  "build_profile": "release",
+  "runtime_provider": "cpu-scalar",
+  "prompt_tokens": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "generated_token_count": 8,
+  "max_sequence_length": 64,
+  "energy_j_per_token": null,
+  "runs": [
+    {
+      "model_id": "HuggingFaceTB/SmolLM2-135M",
+      "source_revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+      "variant": "ggml-q8_0",
+      "gguf_sha256": "5188190f857a3b953e13e4bf23fa40615bc84d8489680db44372d819b89b4da1",
+      "model_load_ms": 439.088,
+      "prefill_ms": 327.5,
+      "ttft_ms": 327.544,
+      "profile_decode_ms": 463.662,
+      "profile_decode_tokens_per_sec": 15.097,
+      "peak_rss_kib": 575044,
+      "kv_cache_bytes": 599040,
+      "kv_cache_capacity_bytes": 2949120
+    },
+    {
+      "model_id": "HuggingFaceTB/SmolLM2-135M",
+      "source_revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+      "variant": "ggml-q4_0",
+      "gguf_sha256": "89705d9ece787a28c7b36f014fd4bb45029f6291a8d41a775d8f19b5d2f82742",
+      "model_load_ms": 448.771,
+      "prefill_ms": 306.521,
+      "ttft_ms": 306.557,
+      "profile_decode_ms": 427.718,
+      "profile_decode_tokens_per_sec": 16.366,
+      "peak_rss_kib": 523268,
+      "kv_cache_bytes": 599040,
+      "kv_cache_capacity_bytes": 2949120
+    }
+  ]
+}

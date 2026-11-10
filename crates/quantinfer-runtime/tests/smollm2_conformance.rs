@@ -1,7 +1,7 @@
 use std::{env, fs};
 
 use quantinfer_backend_cpu::CpuScalar;
-use quantinfer_format::{GgufReader, GgufValue};
+use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_runtime::{KvCache, LlamaModel};
 use quantinfer_tokenizer::{GgufBpeTokenizer, Tokenizer};
 use serde::Deserialize;
@@ -18,13 +18,34 @@ struct Golden {
 }
 
 #[test]
-#[ignore = "requires the converted SmolLM2-135M F32 artifact"]
+#[ignore = "requires a pinned SmolLM2-135M GGUF artifact"]
 fn matches_smollm2_transformers_reference() {
-    const MAX_LOGIT_ERROR: f32 = 0.001;
     let golden: Golden =
         serde_json::from_str(include_str!("../../../tests/golden/smollm2-135m-f32.json")).unwrap();
     let path = env::var_os("QUANTINFER_SMOLLM2_GGUF").expect("set QUANTINFER_SMOLLM2_GGUF");
+    let variant = env::var("QUANTINFER_SMOLLM2_VARIANT").unwrap_or_else(|_| "float".to_owned());
+    let (quant_dtype, max_logit_error, min_overlap, expected): (_, _, _, &[usize]) =
+        match variant.as_str() {
+            "float" => (None, 0.001, 10, &golden.generated_tokens),
+            "q8_0" => (Some(GgmlType::Q8_0), 0.15, 9, &golden.generated_tokens),
+            "q4_0" => (
+                Some(GgmlType::Q4_0),
+                3.8,
+                6,
+                &[260, 3432, 1789, 30, 657, 314, 253, 8196],
+            ),
+            _ => panic!("unsupported SmolLM2 conformance variant {variant}"),
+        };
     let reader = GgufReader::open(fs::read(path).unwrap()).unwrap();
+    let dtype = reader.tensor_info("blk.0.attn_q.weight").unwrap().dtype;
+    if let Some(expected_dtype) = quant_dtype {
+        assert_eq!(dtype, expected_dtype);
+    } else {
+        assert!(matches!(
+            dtype,
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16
+        ));
+    }
     let strings = |key: &str| match &reader.metadata()[key] {
         GgufValue::Array(values) => values
             .iter()
@@ -63,7 +84,11 @@ fn matches_smollm2_transformers_reference() {
     let prefill = last_row(logits.as_f32().unwrap(), vocab);
     let mut top = (0..vocab).collect::<Vec<_>>();
     top.sort_by(|&left, &right| prefill[right].total_cmp(&prefill[left]));
-    assert_eq!(&top[..golden.top_10.len()], golden.top_10);
+    let top = &top[..golden.top_10.len()];
+    let overlap = top
+        .iter()
+        .filter(|token| golden.top_10.contains(token))
+        .count();
     let max_error = golden
         .logits
         .iter()
@@ -72,14 +97,21 @@ fn matches_smollm2_transformers_reference() {
             (prefill[index] - expected).abs()
         })
         .fold(0.0, f32::max);
-    println!("SmolLM2 F32 sampled logit max error = {max_error:.8}");
+    println!("SmolLM2 {variant} sampled_logit_max_error={max_error:.8} top_10_overlap={overlap}");
     assert!(
-        max_error <= MAX_LOGIT_ERROR,
-        "sampled logit error {max_error} exceeds {MAX_LOGIT_ERROR}"
+        max_error <= max_logit_error,
+        "sampled logit error {max_error} exceeds {max_logit_error}"
     );
+    assert!(
+        overlap >= min_overlap,
+        "top-10 overlap {overlap} is below {min_overlap}"
+    );
+    if quant_dtype.is_none() {
+        assert_eq!(top, golden.top_10);
+    }
 
     let mut generated = Vec::new();
-    for step in 0..golden.generated_tokens.len() {
+    for step in 0..expected.len() {
         let row = last_row(logits.as_f32().unwrap(), vocab);
         let (next, _) = row
             .iter()
@@ -87,13 +119,16 @@ fn matches_smollm2_transformers_reference() {
             .max_by(|(_, left), (_, right)| left.total_cmp(right))
             .unwrap();
         generated.push(next);
-        if next == golden.eos_token_id || step + 1 == golden.generated_tokens.len() {
+        if next == golden.eos_token_id || step + 1 == expected.len() {
             break;
         }
         logits = model.forward(&[next], &mut cache).unwrap();
     }
-    assert_eq!(generated, golden.generated_tokens);
-    assert_eq!(tokenizer.decode(&generated).unwrap(), golden.generated_text);
+    println!("SmolLM2 {variant} generated_tokens={generated:?}");
+    assert_eq!(generated, expected);
+    if quant_dtype.is_none() {
+        assert_eq!(tokenizer.decode(&generated).unwrap(), golden.generated_text);
+    }
     for layer in 0..model.config.num_hidden_layers {
         assert_eq!(
             cache.sequence_length(layer).unwrap(),
