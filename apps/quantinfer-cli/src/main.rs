@@ -119,7 +119,10 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("invalid --memory-budget-bytes: {error}"))
         })
         .transpose()?;
+    let profile = has_flag(arguments, "--profile");
+    let model_read_started = Instant::now();
     let reader = open_model_reader(&path)?;
+    let model_read_elapsed = model_read_started.elapsed();
     let tokenizer = if prompt_text.is_some() {
         Some(load_gguf_tokenizer(&reader)?)
     } else {
@@ -155,7 +158,10 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     if prompt_tokens.is_empty() {
         return Err("prompt must encode to at least one token".to_owned());
     }
+    let model_load_started = Instant::now();
     let model = load_model(&reader)?;
+    let model_load_elapsed = model_read_elapsed + model_load_started.elapsed();
+    drop(reader);
     if prompt_tokens
         .iter()
         .any(|token| *token >= model.vocab_size())
@@ -220,6 +226,8 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     )
     .map_err(|error| format!("cannot create KV cache: {error}"))?;
     let mut generated = Vec::with_capacity(max_new_tokens);
+    let mut first_token_at = None;
+    let mut last_token_at = None;
     let prefill_started = Instant::now();
     let mut logits = model
         .forward(&prompt_tokens, &mut cache)
@@ -229,6 +237,11 @@ fn generate(arguments: &[String]) -> Result<(), String> {
     for _ in 0..generation_config.max_new_tokens {
         let next = select_token(&last_logits(&logits)?, &generation_config)
             .map_err(|error| format!("token selection failed: {error}"))?;
+        if profile {
+            let now = Instant::now();
+            first_token_at.get_or_insert(now);
+            last_token_at = Some(now);
+        }
         generated.push(next);
         if generation_config.eos_token_id == Some(next) {
             break;
@@ -257,7 +270,45 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("cannot decode generated tokens: {error}"))?
         );
     }
+    if let (Some(first), Some(last)) = (first_token_at, last_token_at) {
+        let decode = last.duration_since(first);
+        println!(
+            "model_load_ms={:.3}",
+            model_load_elapsed.as_secs_f64() * 1000.0
+        );
+        println!(
+            "ttft_ms={:.3}",
+            first.duration_since(prefill_started).as_secs_f64() * 1000.0
+        );
+        println!("profile_decode_ms={:.3}", decode.as_secs_f64() * 1000.0);
+        if !decode.is_zero() {
+            println!(
+                "profile_decode_tokens_per_sec={:.3}",
+                (generated.len() - 1) as f64 / decode.as_secs_f64()
+            );
+        }
+        println!("kv_cache_bytes={}", cache.memory_bytes());
+        println!("kv_cache_capacity_bytes={}", cache.capacity_bytes());
+        println!("max_sequence_length={max_sequence_length}");
+        println!(
+            "peak_rss_kib={}",
+            peak_rss_kib().map_or_else(|| "unmeasured".to_owned(), |rss| rss.to_string())
+        );
+    }
     Ok(())
+}
+
+fn peak_rss_kib() -> Option<u64> {
+    fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("VmHWM:")?
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()
+        })
 }
 
 enum LoadedModel {
@@ -461,7 +512,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 
