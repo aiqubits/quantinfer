@@ -1,0 +1,21 @@
+{
+  "model_id": "HuggingFaceTB/SmolLM2-135M",
+  "architecture": "llama",
+  "source_repository": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M",
+  "source_revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+  "artifacts": [
+    {
+      "path": "config.json",
+      "sha256": "1d556eab73b69c7f11f64c557a2f9c6f440bd4c6b89bb2584a6b498c92603843"
+    },
+    {
+      "path": "tokenizer.json",
+      "sha256": "9ca9acddb6525a194ec8ac7a87f24fbba7232a9a15ffa1af0c1224fcd888e47c"
+    }
+  ],
+  "weights": {
+    "path": "model.safetensors",
+    "size_bytes": 269060552,
+    "sha256": "80521b40281d6ce74e35c9282c22539e75aa0ac8578892b2a59955ef78d55da1"
+  }
+}

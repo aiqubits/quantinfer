@@ -31,6 +31,8 @@ on:
       - "backends/cpu/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
+      - "model-zoo/tokenizer/**"
+      - "tests/**"
       - ".github/workflows/model-conformance.yml"
 
 jobs:
@@ -54,6 +56,30 @@ jobs:
             --golden model-zoo/tokenizer/qwen3-0.6b-golden.json
       - run: cargo run -p quantinfer-xtask -- conformance
       - run: cargo run -p quantinfer-xtask -- bench
+
+  smollm2-f32:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Download and verify pinned SmolLM2 checkpoint
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          source_url=$(jq -r '.source_repository + "/resolve/" + .source_revision' "$manifest")
+          jq -r '(.artifacts[], .weights) | "\(.sha256)  \(.path)"' "$manifest" > smollm2.sha256
+          while read -r _ path; do
+            curl --fail --location --retry 3 --output "$path" "$source_url/$path"
+          done < smollm2.sha256
+          sha256sum --check smollm2.sha256
+      - name: Convert and compare against Transformers F32 reference
+        env:
+          QUANTINFER_SMOLLM2_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
+        run: |
+          cargo run --release --locked -p quantinfer-convert -- \
+            --config config.json --weights model.safetensors --tokenizer tokenizer.json \
+            --output "$QUANTINFER_SMOLLM2_GGUF"
+          cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
 
   external-artifact:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.gguf_url != '' && inputs.gguf_sha256 != '' }}
