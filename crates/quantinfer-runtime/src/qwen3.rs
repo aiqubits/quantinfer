@@ -638,7 +638,9 @@ mod tests {
     use quantinfer_core::{DType, Tensor};
     use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
     use quantinfer_model::Qwen3Config;
-    use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q8_0};
+    use quantinfer_quant::{
+        quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, quantize_q8_0,
+    };
 
     fn filled(shape: Vec<usize>, value: f32) -> Tensor {
         let count = shape.iter().product();
@@ -867,5 +869,17 @@ mod tests {
         let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
         let linear = super::load_linear(&reader, "blk.0.attn_q.weight").unwrap();
         assert_eq!(linear.dtype(), DType::Q5_K);
+    }
+
+    #[test]
+    fn loads_q6_k_linear_weight_from_gguf() {
+        let mut writer = GgufWriter::new();
+        writer.add_q6_k_tensor(
+            "blk.0.attn_q.weight",
+            &quantize_q6_k(&filled(vec![256, 1], 0.25)).unwrap(),
+        );
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let linear = super::load_linear(&reader, "blk.0.attn_q.weight").unwrap();
+        assert_eq!(linear.dtype(), DType::Q6_K);
     }
 }
