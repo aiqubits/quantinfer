@@ -7,8 +7,9 @@ use std::fmt;
 
 use half::{bf16, f16};
 use quantinfer_core::{
-    Q4KBlock, Q4_0Block, Q8_0Block, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, Tensor,
-    Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
+    QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE,
+    Q8_0_BLOCK_SIZE,
 };
 
 pub type Result<T> = std::result::Result<T, FormatError>;
@@ -67,6 +68,8 @@ pub enum GgmlType {
     F16 = 1,
     Q4_0 = 2,
     Q4_K = 12,
+    Q5_K = 13,
+    Q6_K = 14,
     Q8_0 = 8,
     BF16 = 30,
 }
@@ -80,6 +83,8 @@ impl TryFrom<u32> for GgmlType {
             1 => Ok(Self::F16),
             2 => Ok(Self::Q4_0),
             12 => Ok(Self::Q4_K),
+            13 => Ok(Self::Q5_K),
+            14 => Ok(Self::Q6_K),
             8 => Ok(Self::Q8_0),
             30 => Ok(Self::BF16),
             _ => Err(FormatError::Invalid(format!(
@@ -261,6 +266,23 @@ impl GgufWriter {
             name: name.into(),
             shape: tensor.shape().dims().to_vec(),
             dtype: GgmlType::Q4_K,
+            data,
+        });
+    }
+
+    pub fn add_q5_k_tensor(&mut self, name: impl Into<String>, tensor: &QuantizedTensorQ5K) {
+        let mut data = Vec::with_capacity(tensor.blocks().len() * 176);
+        for block in tensor.blocks() {
+            data.extend_from_slice(&f16::from_f32(block.scale).to_le_bytes());
+            data.extend_from_slice(&f16::from_f32(block.min_scale).to_le_bytes());
+            data.extend_from_slice(&block.scales);
+            data.extend_from_slice(&block.high_bits);
+            data.extend_from_slice(&block.values);
+        }
+        self.tensors.push(PendingTensor {
+            name: name.into(),
+            shape: tensor.shape().dims().to_vec(),
+            dtype: GgmlType::Q5_K,
             data,
         });
     }
@@ -494,6 +516,11 @@ impl GgufReader {
                     "GGUF tensor {name} has type Q4_K, expected floating point"
                 )))
             }
+            GgmlType::Q5_K | GgmlType::Q6_K => {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {name} has a K-quant type, expected floating point"
+                )))
+            }
         };
         if values.len() != info.shape.iter().product::<usize>() {
             return Err(FormatError::Invalid(format!(
@@ -616,6 +643,41 @@ impl GgufReader {
             });
         }
         Ok(QuantizedTensorQ4K::from_blocks(info.shape.clone(), blocks)?)
+    }
+
+    pub fn tensor_q5_k(&self, name: &str) -> Result<QuantizedTensorQ5K> {
+        let info = self.tensor_info(name)?;
+        if info.dtype != GgmlType::Q5_K {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} has type {:?}, expected Q5_K",
+                info.dtype
+            )));
+        }
+        let bytes = self.tensor_bytes(name)?;
+        if !bytes.len().is_multiple_of(176) {
+            return Err(FormatError::Invalid(format!(
+                "GGUF Q5_K tensor {name} has an invalid byte length"
+            )));
+        }
+        let mut blocks = Vec::with_capacity(bytes.len() / 176);
+        for chunk in bytes.as_chunks::<176>().0 {
+            let scale = f16::from_le_bytes(chunk[..2].try_into().unwrap()).to_f32();
+            let min_scale = f16::from_le_bytes(chunk[2..4].try_into().unwrap()).to_f32();
+            let mut scales = [0_u8; 12];
+            scales.copy_from_slice(&chunk[4..16]);
+            let mut high_bits = [0_u8; 32];
+            high_bits.copy_from_slice(&chunk[16..48]);
+            let mut values = [0_u8; 128];
+            values.copy_from_slice(&chunk[48..]);
+            blocks.push(Q5KBlock {
+                scale,
+                min_scale,
+                scales,
+                high_bits,
+                values,
+            });
+        }
+        Ok(QuantizedTensorQ5K::from_blocks(info.shape.clone(), blocks)?)
     }
 }
 
@@ -751,6 +813,26 @@ fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
             }
             (elements / Q4_K_BLOCK_SIZE)
                 .checked_mul(144)
+                .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned()))
+        }
+        GgmlType::Q5_K => {
+            if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) {
+                return Err(FormatError::Invalid(
+                    "Q5_K tensor is not block aligned".to_owned(),
+                ));
+            }
+            (elements / Q4_K_BLOCK_SIZE)
+                .checked_mul(176)
+                .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned()))
+        }
+        GgmlType::Q6_K => {
+            if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) {
+                return Err(FormatError::Invalid(
+                    "Q6_K tensor is not block aligned".to_owned(),
+                ));
+            }
+            (elements / Q4_K_BLOCK_SIZE)
+                .checked_mul(210)
                 .ok_or_else(|| FormatError::Invalid("tensor size overflows usize".to_owned()))
         }
         GgmlType::Q8_0 => {

@@ -43,6 +43,8 @@ pub enum DType {
     Q8_0,
     Q4_0,
     Q4_K,
+    Q5_K,
+    Q6_K,
 }
 
 impl DType {
@@ -50,7 +52,7 @@ impl DType {
         match self {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
-            Self::Q8_0 | Self::Q4_0 | Self::Q4_K => 1,
+            Self::Q8_0 | Self::Q4_0 | Self::Q4_K | Self::Q5_K | Self::Q6_K => 1,
         }
     }
 
@@ -61,6 +63,8 @@ impl DType {
             Self::Q8_0 => 8,
             Self::Q4_0 => 4,
             Self::Q4_K => 4,
+            Self::Q5_K => 5,
+            Self::Q6_K => 6,
         }
     }
 }
@@ -379,6 +383,8 @@ pub enum QuantizationScheme {
     Q8_0,
     Q4_0,
     Q4_K,
+    Q5_K,
+    Q6_K,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -435,7 +441,7 @@ impl TensorStorageDescriptor {
             DType::F32 => StorageType::F32,
             DType::F16 => StorageType::F16,
             DType::BF16 => StorageType::BF16,
-            DType::Q8_0 | DType::Q4_0 | DType::Q4_K => {
+            DType::Q8_0 | DType::Q4_0 | DType::Q4_K | DType::Q5_K | DType::Q6_K => {
                 return Err(CoreError::InvalidData(
                     "floating descriptor requires F32, F16, or BF16".to_owned(),
                 ))
@@ -490,6 +496,8 @@ impl TensorStorageDescriptor {
                 QuantizationScheme::Q8_0 => "scalar".to_owned(),
                 QuantizationScheme::Q4_0 => "nibble_interleaved".to_owned(),
                 QuantizationScheme::Q4_K => "k_quant".to_owned(),
+                QuantizationScheme::Q5_K => "k_quant".to_owned(),
+                QuantizationScheme::Q6_K => "k_quant".to_owned(),
                 QuantizationScheme::None => "none".to_owned(),
             },
             backend_requirements: Vec::new(),
@@ -513,7 +521,9 @@ impl TensorStorageDescriptor {
             }
             (StorageType::Quantized, DType::Q8_0, QuantizationScheme::Q8_0)
             | (StorageType::Quantized, DType::Q4_0, QuantizationScheme::Q4_0)
-            | (StorageType::Quantized, DType::Q4_K, QuantizationScheme::Q4_K) => {
+            | (StorageType::Quantized, DType::Q4_K, QuantizationScheme::Q4_K)
+            | (StorageType::Quantized, DType::Q5_K, QuantizationScheme::Q5_K)
+            | (StorageType::Quantized, DType::Q6_K, QuantizationScheme::Q6_K) => {
                 self.block_size.is_some_and(|size| {
                     size > 0 && self.logical_shape.num_elements().is_multiple_of(size)
                 }) && self.scale_type.is_some()
@@ -642,6 +652,81 @@ impl QuantizedTensorQ4K {
         &mut self.blocks
     }
 
+    pub fn num_elements(&self) -> usize {
+        self.shape.num_elements()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q5KBlock {
+    pub scale: f32,
+    pub min_scale: f32,
+    pub scales: [u8; 12],
+    pub high_bits: [u8; 32],
+    pub values: [u8; 128],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizedTensorQ5K {
+    shape: Shape,
+    blocks: Vec<Q5KBlock>,
+}
+
+impl QuantizedTensorQ5K {
+    pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q5KBlock>) -> Result<Self> {
+        let shape = shape.into();
+        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE)
+            || blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements()
+        {
+            return Err(CoreError::InvalidData(
+                "Q5_K block count does not match tensor shape".to_owned(),
+            ));
+        }
+        Ok(Self { shape, blocks })
+    }
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+    pub fn blocks(&self) -> &[Q5KBlock] {
+        &self.blocks
+    }
+    pub fn num_elements(&self) -> usize {
+        self.shape.num_elements()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Q6KBlock {
+    pub scale: f32,
+    pub scales: [i8; 16],
+    pub low_bits: [u8; 128],
+    pub high_bits: [u8; 64],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantizedTensorQ6K {
+    shape: Shape,
+    blocks: Vec<Q6KBlock>,
+}
+
+impl QuantizedTensorQ6K {
+    pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q6KBlock>) -> Result<Self> {
+        let shape = shape.into();
+        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE)
+            || blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements()
+        {
+            return Err(CoreError::InvalidData(
+                "Q6_K block count does not match tensor shape".to_owned(),
+            ));
+        }
+        Ok(Self { shape, blocks })
+    }
+    pub fn shape(&self) -> &Shape {
+        &self.shape
+    }
+    pub fn blocks(&self) -> &[Q6KBlock] {
+        &self.blocks
+    }
     pub fn num_elements(&self) -> usize {
         self.shape.num_elements()
     }
