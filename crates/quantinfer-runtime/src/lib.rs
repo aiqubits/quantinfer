@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+mod batch;
 pub mod llama;
 pub mod profile;
 pub mod provider;
@@ -9,6 +10,7 @@ pub mod qwen3;
 pub mod scheduler;
 pub mod session;
 
+pub use batch::DecodeBatchItem;
 pub use llama::{LlamaLayerWeights, LlamaModel};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
@@ -44,17 +46,33 @@ pub trait TokenSink {
 /// Forward pass for a causal decoder with request-local KV state.
 pub trait DecoderModel {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor>;
+
+    /// Return one last-position logits vector per input sequence in request order.
+    fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
+        batch
+            .iter_mut()
+            .map(|request| last_logits(&self.forward(request.tokens, request.cache)?))
+            .collect()
+    }
 }
 
 impl<B: quantinfer_kernel::KernelBackend> DecoderModel for Qwen3Model<B> {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
         Qwen3Model::forward(self, token_ids, cache)
     }
+
+    fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
+        Qwen3Model::forward_batch(self, batch)
+    }
 }
 
 impl<B: quantinfer_kernel::KernelBackend> DecoderModel for LlamaModel<B> {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
         LlamaModel::forward(self, token_ids, cache)
+    }
+
+    fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
+        LlamaModel::forward_batch(self, batch)
     }
 }
 

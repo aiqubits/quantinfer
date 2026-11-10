@@ -6,6 +6,9 @@ use quantinfer_runtime::{KvCache, LlamaModel};
 use quantinfer_tokenizer::{GgufBpeTokenizer, Tokenizer};
 use serde::Deserialize;
 
+#[path = "support/batch.rs"]
+mod batch_support;
+
 #[derive(Deserialize)]
 struct Golden {
     prompt: String,
@@ -79,8 +82,18 @@ fn matches_smollm2_transformers_reference() {
         model.config.effective_head_dim(),
     )
     .unwrap();
+    let empty = cache.clone();
     let mut logits = model.forward(&prompt, &mut cache).unwrap();
     let vocab = model.config.vocab_size;
+    batch_support::assert_matches_independent_sequences(
+        &model,
+        &cache,
+        &empty,
+        expected[0],
+        &prompt[1..],
+        model.config.num_hidden_layers,
+        vocab,
+    );
     let prefill = last_row(logits.as_f32().unwrap(), vocab);
     let mut top = (0..vocab).collect::<Vec<_>>();
     top.sort_by(|&left, &right| prefill[right].total_cmp(&prefill[left]));

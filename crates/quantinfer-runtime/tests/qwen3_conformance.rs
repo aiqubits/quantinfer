@@ -11,6 +11,9 @@ use quantinfer_tokenizer::{
 };
 use serde::Deserialize;
 
+#[path = "support/batch.rs"]
+mod batch_support;
+
 #[derive(Deserialize)]
 struct Reference {
     prompt: String,
@@ -157,6 +160,17 @@ fn run_variant(path_var: &str, dtype: GgmlType, baseline: &Baseline) -> Run {
     let mut cache = new_cache();
     let prefill = model.forward(&prompt, &mut cache).unwrap();
     let vocab = model.config.vocab_size;
+    if dtype == GgmlType::Q8_0 {
+        batch_support::assert_matches_independent_sequences(
+            &model,
+            &cache,
+            &new_cache(),
+            baseline.q8_0_generated_tokens[0],
+            &prompt[1..3],
+            model.config.num_hidden_layers,
+            vocab,
+        );
+    }
     let values = prefill.as_f32().unwrap();
     let logits = values[values.len() - vocab..].to_vec();
     let config = GenerationConfig {

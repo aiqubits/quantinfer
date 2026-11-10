@@ -3,18 +3,33 @@
 use std::sync::Arc;
 
 use crate::{
-    last_logits, select_token, DecoderModel, GenerationConfig, KvCache, Result, RuntimeError,
+    last_logits, select_token, DecodeBatchItem, DecoderModel, GenerationConfig, KvCache, Result,
+    RuntimeError,
 };
 
 impl<M: DecoderModel + ?Sized> DecoderModel for &M {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<quantinfer_core::Tensor> {
         (**self).forward(token_ids, cache)
     }
+
+    fn forward_batch(
+        &self,
+        batch: &mut [DecodeBatchItem<'_>],
+    ) -> Vec<Result<quantinfer_core::Tensor>> {
+        (**self).forward_batch(batch)
+    }
 }
 
 impl<M: DecoderModel + ?Sized> DecoderModel for Arc<M> {
     fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<quantinfer_core::Tensor> {
         (**self).forward(token_ids, cache)
+    }
+
+    fn forward_batch(
+        &self,
+        batch: &mut [DecodeBatchItem<'_>],
+    ) -> Vec<Result<quantinfer_core::Tensor>> {
+        (**self).forward_batch(batch)
     }
 }
 

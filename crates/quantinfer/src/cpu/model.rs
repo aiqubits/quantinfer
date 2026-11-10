@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use quantinfer_core::Tensor;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_runtime::{
-    DecoderModel, InferenceProfile, KvCache, LlamaModel, Qwen3Model, Result, RuntimeError,
+    DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, Qwen3Model, Result,
+    RuntimeError,
 };
 use quantinfer_tokenizer::GgufBpeTokenizer;
 
@@ -93,6 +94,13 @@ impl DecoderModel for CpuModel {
         match self {
             Self::Qwen3(model) => model.forward(token_ids, cache),
             Self::Llama(model) => model.forward(token_ids, cache),
+        }
+    }
+
+    fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
+        match self {
+            Self::Qwen3(model) => model.forward_batch(batch),
+            Self::Llama(model) => model.forward_batch(batch),
         }
     }
 }

@@ -9,8 +9,9 @@ use quantinfer_quant::{
     dequantize_q4_0, dequantize_q4_k, dequantize_q5_k, dequantize_q6_k, dequantize_q8_0,
 };
 
-use crate::qwen3::{add, gqa_attention, load_linear, rope_tables, transpose_matrix, LinearWeight};
-use crate::{KvCache, Result, RuntimeError};
+use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
+use crate::qwen3::{add, load_linear, transpose_matrix, LinearWeight};
+use crate::{DecodeBatchItem, KvCache, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
 pub struct LlamaLayerWeights {
@@ -112,7 +113,8 @@ impl LlamaLayerWeights {
         config: &LlamaConfig,
         hidden: &Tensor,
         layer_index: usize,
-        cache: &mut KvCache,
+        attention: &DenseAttention,
+        batch: &mut [DecodeBatchItem<'_>],
     ) -> Result<Tensor> {
         let sequence_length = hidden.shape().dims()[0];
         let residual = hidden.clone();
@@ -141,30 +143,12 @@ impl LlamaLayerWeights {
                 config.num_key_value_heads(),
                 config.effective_head_dim(),
             ]))?;
-        let start_position = cache.sequence_length(layer_index)?;
-        let (cos, sin) = rope_tables(
-            config.rope_theta,
-            config.effective_head_dim(),
-            start_position,
-            sequence_length,
-        );
-        let query = backend.apply_rope(&query, &cos, &sin)?;
-        let key = backend.apply_rope(&key, &cos, &sin)?;
-        cache.append(layer_index, &key, &value)?;
-        let attended = gqa_attention(
-            &query,
-            cache,
-            layer_index,
-            config.num_attention_heads,
-            config.num_key_value_heads(),
-            config.effective_head_dim(),
-            start_position,
-            backend.reuse_workspace(),
-        )?
-        .reshape(Shape::from(vec![
-            sequence_length,
-            config.query_projection_size(),
-        ]))?;
+        let attended = attention
+            .apply(backend, &query, &key, &value, layer_index, batch)?
+            .reshape(Shape::from(vec![
+                sequence_length,
+                config.query_projection_size(),
+            ]))?;
         let projected = self.o_proj.matmul(backend, &attended)?;
         let residual = add(&residual, &projected)?;
         let normalized = backend.rms_norm(
@@ -247,13 +231,57 @@ impl<B: KernelBackend> LlamaModel<B> {
                 "input exceeds Llama max_position_embeddings".to_owned(),
             ));
         }
+        let mut request = [DecodeBatchItem {
+            tokens: token_ids,
+            cache,
+        }];
+        let hidden = self.forward_hidden(token_ids, &mut request)?;
+        self.project_logits(&hidden)
+    }
+
+    pub fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
+        let limits = DenseBatchLimits {
+            vocab_size: self.config.vocab_size,
+            max_positions: self.config.max_position_embeddings,
+            layers: self.layers.len(),
+            key_value_heads: self.config.num_key_value_heads(),
+            head_dim: self.config.effective_head_dim(),
+        };
+        limits.run(batch, |tokens, requests| {
+            let hidden = self.forward_hidden(tokens, requests)?;
+            self.project_logits(&last_hidden_rows(&hidden, requests)?)
+        })
+    }
+
+    fn forward_hidden(
+        &self,
+        token_ids: &[usize],
+        batch: &mut [DecodeBatchItem<'_>],
+    ) -> Result<Tensor> {
+        let attention = DenseAttention {
+            query_heads: self.config.num_attention_heads,
+            key_value_heads: self.config.num_key_value_heads(),
+            head_dim: self.config.effective_head_dim(),
+            rope_theta: self.config.rope_theta,
+        };
         let mut hidden = self.backend.embedding(&self.embedding, token_ids)?;
         for (index, layer) in self.layers.iter().enumerate() {
-            hidden = layer.forward(&self.backend, &self.config, &hidden, index, cache)?;
+            hidden = layer.forward(
+                &self.backend,
+                &self.config,
+                &hidden,
+                index,
+                &attention,
+                batch,
+            )?;
         }
+        Ok(hidden)
+    }
+
+    fn project_logits(&self, hidden: &Tensor) -> Result<Tensor> {
         let hidden = self
             .backend
-            .rms_norm(&hidden, &self.final_norm, self.config.rms_norm_eps)?;
+            .rms_norm(hidden, &self.final_norm, self.config.rms_norm_eps)?;
         Ok(self.backend.matmul(&hidden, &self.lm_head)?)
     }
 
