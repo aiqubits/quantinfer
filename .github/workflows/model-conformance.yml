@@ -36,6 +36,8 @@ on:
       - "apps/quantinfer-server/**"
       - "bindings/c/**"
       - "bindings/python/**"
+      - "bindings/wasm/**"
+      - "targets/wasm/**"
       - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
@@ -206,6 +208,34 @@ jobs:
           python3 -m pip install --no-deps --target "$RUNNER_TEMP/quantinfer-python" ./bindings/python
           PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
             python3 bindings/python/tests/smoke.py smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify WebAssembly generation against the native CPU runtime
+        shell: bash
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --release --locked -p quantinfer-wasm --target wasm32-unknown-unknown
+          version=$(cargo metadata --locked --format-version 1 | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          package="wasm-bindgen-$version-x86_64-unknown-linux-musl"
+          (
+            cd "$RUNNER_TEMP"
+            for suffix in tar.gz tar.gz.sha256sum; do
+              file="$package.$suffix"
+              curl --fail --location --retry 3 --output "$file" \
+                "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$version/$file"
+            done
+            read -r checksum _ < "$package.tar.gz.sha256sum"
+            printf '%s  %s\n' "$checksum" "$package.tar.gz" | sha256sum --check
+            tar -xzf "$package.tar.gz"
+          )
+          "$RUNNER_TEMP/$package/wasm-bindgen" --target nodejs --out-dir "$RUNNER_TEMP/wasm" \
+            target/wasm32-unknown-unknown/release/quantinfer_wasm.wasm
+          expected=$(target/release/quantinfer-cli generate --input smollm2-q4_0.qif \
+            --prompt "$(jq -r '.prompt' tests/golden/smollm2-135m-f32.json)" \
+            --max-new-tokens 8 --max-sequence-length 64 | sed -n 's/^generated_tokens=//p')
+          node bindings/wasm/tests/smoke.cjs "$RUNNER_TEMP/wasm/quantinfer_wasm.js" \
+            smollm2-q4_0.qif tests/golden/smollm2-135m-f32.json "$expected"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

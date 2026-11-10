@@ -9,3 +9,5 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 quantinfer.workspace = true
+quantinfer-target-wasm.workspace = true
+wasm-bindgen = "0.2"
