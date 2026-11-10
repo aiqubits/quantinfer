@@ -128,6 +128,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantinfer-adapter-ggml"
+version = "0.1.0"
+dependencies = [
+ "half",
+ "quantinfer-core",
+ "quantinfer-quant",
+]
+
+[[package]]
 name = "quantinfer-backend-ascend"
 version = "0.1.0"
 dependencies = [
@@ -198,6 +207,7 @@ dependencies = [
 name = "quantinfer-convert"
 version = "0.1.0"
 dependencies = [
+ "quantinfer-adapter-ggml",
  "quantinfer-core",
  "quantinfer-format",
  "quantinfer-model",

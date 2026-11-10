@@ -1,0 +1,13 @@
+[package]
+name = "quantinfer-adapter-ggml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+external = ["dep:half", "dep:quantinfer-core", "dep:quantinfer-quant"]
+
+[dependencies]
+half = { workspace = true, optional = true }
+quantinfer-core = { workspace = true, optional = true }
+quantinfer-quant = { workspace = true, optional = true }

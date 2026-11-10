@@ -1,0 +1,40 @@
+name: GGML Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "adapters/ggml/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-quant/**"
+      - "tools/quantinfer-convert/**"
+      - ".github/workflows/ggml-conformance.yml"
+
+jobs:
+  q8-0:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 0ec4027a2a0183de87c007069adddc06e665f7de
+          path: vendor/llama.cpp
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Build pinned GGML library
+        run: |
+          cmake -S vendor/llama.cpp -B "$RUNNER_TEMP/ggml" \
+            -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_CPU=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_COMMON=OFF
+          cmake --build "$RUNNER_TEMP/ggml" --target ggml-base --parallel 2
+          echo "QUANTINFER_GGML_LIB_DIR=$RUNNER_TEMP/ggml/bin" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$RUNNER_TEMP/ggml/bin" >> "$GITHUB_ENV"
+      - run: cargo test --locked -p quantinfer-adapter-ggml --features external
+      - run: cargo test --locked -p quantinfer-convert --features ggml
+      - run: cargo clippy --locked -p quantinfer-convert --features ggml --all-targets -- -D warnings

@@ -715,9 +715,8 @@ impl QuantizationProvider for NativeQ8_0Provider {
     }
 }
 
-/// The optional GGML adapter currently shares the validated native Rust
-/// implementation. A future FFI feature can replace its packing routine
-/// without changing the provider contract or runtime representation.
+/// Compatibility provider that exports native Rust Q8_0 in GGML layout.
+/// The external GGML quantizer is available in `quantinfer-adapter-ggml`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GgmlQ8_0Provider;
 

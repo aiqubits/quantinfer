@@ -9,7 +9,10 @@ use quantinfer_format::{
     TensorManifest,
 };
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
-use quantinfer_quant::{quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, quantize_q8_0};
+use quantinfer_quant::{
+    quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, NativeQ8_0Provider,
+    QuantizationProvider, QuantizedData,
+};
 use serde_json::Value;
 
 fn main() {
@@ -35,6 +38,11 @@ fn run() -> Result<(), String> {
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let requested_architecture = optional_value(&arguments, "--architecture");
     let quantization = optional_value(&arguments, "--quantize");
+    let use_ggml = arguments.iter().any(|argument| argument == "--ggml");
+    if use_ggml && quantization.as_deref() != Some("q8_0") {
+        return Err("--ggml requires --quantize q8_0".to_owned());
+    }
+    let q8_provider = q8_provider(use_ggml)?;
     if let Some(value) = &quantization {
         if value != "q8_0"
             && value != "q4_0"
@@ -55,6 +63,12 @@ fn run() -> Result<(), String> {
 
     let mut writer = GgufWriter::new();
     model.write_metadata(&mut writer)?;
+    if use_ggml {
+        writer.insert_metadata(
+            "quantinfer.quantization.provider",
+            GgufValue::String("ggml".to_owned()),
+        );
+    }
     if let Some(tokenizer_path) = tokenizer_path {
         let tokenizer = load_tokenizer_metadata(&tokenizer_path, &config_json)?;
         if tokenizer.tokens.len() > model.vocab_size() {
@@ -185,8 +199,14 @@ fn run() -> Result<(), String> {
         if use_q8 {
             let tensor = Tensor::from_f32(shape.clone(), values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = quantize_q8_0(&tensor)
+            let quantized = q8_provider
+                .quantize(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
+            let QuantizedData::Q8_0(quantized) = quantized else {
+                return Err(format!(
+                    "Q8_0 provider returned a different scheme for {name}"
+                ));
+            };
             writer.add_q8_0_tensor(output_name, &quantized);
         } else if use_q4 {
             let tensor = Tensor::from_f32(shape.clone(), values)
@@ -264,6 +284,20 @@ fn run() -> Result<(), String> {
         output_path.display()
     );
     Ok(())
+}
+
+fn q8_provider(use_ggml: bool) -> Result<&'static dyn QuantizationProvider, String> {
+    if !use_ggml {
+        return Ok(&NativeQ8_0Provider);
+    }
+    #[cfg(feature = "ggml")]
+    {
+        Ok(&quantinfer_adapter_ggml::GgmlQ8_0Provider)
+    }
+    #[cfg(not(feature = "ggml"))]
+    {
+        Err("--ggml requires a converter built with the ggml feature".to_owned())
+    }
 }
 
 enum WeightSource {
@@ -702,7 +736,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors --output model.gguf [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml]"
     );
 }
 
@@ -711,6 +745,21 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{load_tokenizer_metadata, ConversionModel};
+
+    #[test]
+    #[cfg(feature = "ggml")]
+    fn selects_the_external_q8_provider_explicitly() {
+        use super::{q8_provider, QuantizedData, Tensor};
+
+        let zeros = Tensor::from_f32(vec![32], vec![0.0; 32]).unwrap();
+        for (use_ggml, expected_scale) in [(false, 1.0), (true, 0.0)] {
+            let data = q8_provider(use_ggml).unwrap().quantize(&zeros).unwrap();
+            let QuantizedData::Q8_0(quantized) = data else {
+                panic!("expected Q8_0 blocks");
+            };
+            assert_eq!(quantized.blocks()[0].scale, expected_scale);
+        }
+    }
 
     #[test]
     fn reads_huggingface_tokenizer_vocab_and_merges() {
