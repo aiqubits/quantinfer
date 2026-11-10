@@ -24,6 +24,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "crates/quantinfer/**"
       - "crates/quantinfer-core/**"
       - "crates/quantinfer-format/**"
       - "crates/quantinfer-model/**"
@@ -58,6 +59,13 @@ jobs:
           cargo run -p quantinfer-xtask -- tokenizer-golden \
             --tokenizer /tmp/qwen3-tokenizer.json \
             --golden model-zoo/tokenizer/qwen3-0.6b-golden.json
+          manifest=model-zoo/manifests/qwen3-0.6b.json
+          source_url=$(jq -r '.source_repository + "/resolve/" + .source_revision' "$manifest")
+          config_sha=$(jq -r '.artifacts[] | select(.path == "tokenizer_config.json") | .sha256' "$manifest")
+          curl --fail --location --retry 3 --output /tmp/qwen3-tokenizer-config.json "$source_url/tokenizer_config.json"
+          printf '%s  /tmp/qwen3-tokenizer-config.json\n' "$config_sha" | sha256sum --check
+          QUANTINFER_TOKENIZER_CONFIG=/tmp/qwen3-tokenizer-config.json \
+            cargo test --locked -p quantinfer-tokenizer --test official_chat_template -- --ignored
       - run: cargo run -p quantinfer-xtask -- conformance
       - run: cargo run -p quantinfer-xtask -- bench
 

@@ -16,6 +16,11 @@ output and EOS for all three variants. F32 and Q8_0 must also match the frozen
 token sequence. The workflow publishes the independently generated reference
 logits and comparison results.
 
+The tokenizer job also verifies the official `tokenizer_config.json` hash.
+Its rendered prompts must exactly match the Transformers 4.57.6 cases in
+`golden/qwen3-chat-template.json`, including system and assistant history,
+thinking modes, structured tool calls, and consecutive tool responses.
+
 ## SmolLM2-135M F32 conformance
 
 The Model Conformance workflow verifies the pinned checkpoint in

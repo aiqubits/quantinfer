@@ -7,6 +7,10 @@ use std::fmt;
 
 use unicode_normalization::UnicodeNormalization;
 
+mod chat_template;
+
+pub use chat_template::HuggingFaceChatTemplate;
+
 pub type Result<T> = std::result::Result<T, TokenizerError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
