@@ -36,6 +36,17 @@ cargo run -p quantinfer-convert -- \
   --quantize q8_0
 ```
 
+The converter also accepts `model.safetensors.index.json` with sharded weights and can emit a verified model manifest. Q4_0 uses the standard GGML block layout.
+
+```bash
+cargo run -p quantinfer-convert -- \
+  --config config.json \
+  --weights model.safetensors.index.json \
+  --output model.gguf \
+  --manifest manifest.json \
+  --quantize q4_0
+```
+
 Inspect the resulting metadata and tensor inventory.
 
 ```bash
@@ -65,3 +76,5 @@ cargo run -p quantinfer-cli -- generate \
 ```
 
 The GGUF reader accepts F32, F16, BF16, and Q8_0 tensors. Linear Q8_0 weights execute through the CPU reference kernel, while floating point tensors are normalized to F32 at load time. `--temperature` and `--seed` enable deterministic seeded sampling. `ByteTokenizer` remains a deterministic fixture for unit tests.
+
+The CPU runtime also supports Q4_0 linear weights and Llama-style Dense models with GQA. A model package directory containing `manifest.json` and its checksummed `model.gguf` can be passed directly to `quantinfer-cli`.
