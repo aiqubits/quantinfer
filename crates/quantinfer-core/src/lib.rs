@@ -517,6 +517,14 @@ impl TensorStorageDescriptor {
                 "storage descriptor dimensions must be greater than zero".to_owned(),
             ));
         }
+        let elements = self
+            .logical_shape
+            .dims()
+            .iter()
+            .try_fold(1usize, |product, dimension| product.checked_mul(*dimension))
+            .ok_or_else(|| {
+                CoreError::InvalidShape("storage descriptor shape overflows usize".to_owned())
+            })?;
         let valid = match (self.storage_type, self.dtype, self.quantization) {
             (StorageType::F32, DType::F32, QuantizationScheme::None)
             | (StorageType::F16, DType::F16, QuantizationScheme::None)
@@ -531,9 +539,9 @@ impl TensorStorageDescriptor {
             | (StorageType::Quantized, DType::Q4_K, QuantizationScheme::Q4_K)
             | (StorageType::Quantized, DType::Q5_K, QuantizationScheme::Q5_K)
             | (StorageType::Quantized, DType::Q6_K, QuantizationScheme::Q6_K) => {
-                self.block_size.is_some_and(|size| {
-                    size > 0 && self.logical_shape.num_elements().is_multiple_of(size)
-                }) && self.scale_type.is_some()
+                self.block_size
+                    .is_some_and(|size| size > 0 && elements.is_multiple_of(size))
+                    && self.scale_type.is_some()
                     && !matches!(self.quantization_axis, QuantizationAxis::None)
             }
             _ => false,

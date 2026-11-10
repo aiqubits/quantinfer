@@ -17,6 +17,7 @@ use serde::Serialize;
 pub type Result<T> = std::result::Result<T, FormatError>;
 
 pub mod manifest;
+pub mod qif;
 pub mod safetensors;
 
 pub use manifest::*;
@@ -1049,13 +1050,17 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_value(&mut self) -> Result<GgufValue> {
+        self.read_value_with_limit(usize::MAX)
+    }
+
+    fn read_value_with_limit(&mut self, array_limit: usize) -> Result<GgufValue> {
         let kind = self.read_u32()?;
         if kind == 9 {
             let element_kind = self.read_u32()?;
             let length = usize::try_from(self.read_u64()?).map_err(|_| {
                 FormatError::Invalid("GGUF metadata array length overflows usize".to_owned())
             })?;
-            if length > self.bytes.len().saturating_sub(self.position) {
+            if length > array_limit || length > self.bytes.len().saturating_sub(self.position) {
                 return Err(FormatError::Invalid(
                     "GGUF metadata array exceeds file capacity".to_owned(),
                 ));
