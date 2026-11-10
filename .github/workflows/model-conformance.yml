@@ -427,6 +427,23 @@ jobs:
               --server "$llama/bin/llama-server" --model "qwen3-upstream-$dtype.gguf" \
               --architecture qwen3 --dtype "$dtype" "${options[@]}"
           done
+      - name: Calibrate and export Qwen3 Q4_0 for llama.cpp
+        shell: bash
+        run: |
+          printf '%s\n' '"The capital of France is"' \
+            '{"text":"Explain how plants turn light into energy."}' \
+            '"A short story about a train crossing the mountains."' > qwen3-prompts.jsonl
+          target/release/quantinfer-cli collect-imatrix --input qwen3-f32.gguf \
+            --dataset qwen3-prompts.jsonl --output qwen3-imatrix.json --max-sequence-length 64
+          jq -e 'length == 196 and (."blk.0.attn_q.weight" | length) == 1024 and
+            (."blk.0.ffn_down.weight" | length) == 3072' qwen3-imatrix.json
+          target/release/quantinfer-convert --config qwen3/config.json \
+            --weights qwen3/model.safetensors --tokenizer qwen3/tokenizer.json \
+            --gguf-layout ggml --tokenizer-pre qwen2 --quantize q4_0 \
+            --imatrix qwen3-imatrix.json --output qwen3-imatrix-q4_0.gguf
+          python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
+            --server "$RUNNER_TEMP/llama/bin/llama-server" --model qwen3-imatrix-q4_0.gguf \
+            --architecture qwen3 --dtype Q4_0 --count 5
       - uses: actions/upload-artifact@v4
         if: always()
         with:

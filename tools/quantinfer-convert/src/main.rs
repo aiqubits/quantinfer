@@ -100,13 +100,8 @@ fn run() -> Result<(), String> {
         .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
     let model = ConversionModel::from_config(&config_json, requested_architecture.as_deref())?;
     let ggml_file_type = if ggml_layout {
-        if model.architecture() != "llama"
-            || tokenizer_path.is_none()
-            || tokenizer_pre.as_deref().is_none_or(str::is_empty)
-        {
-            return Err(
-                "GGML layout requires Llama weights, --tokenizer, and --tokenizer-pre".to_owned(),
-            );
+        if tokenizer_path.is_none() || tokenizer_pre.as_deref().is_none_or(str::is_empty) {
+            return Err("GGML layout requires --tokenizer and --tokenizer-pre".to_owned());
         }
         let config: Value = serde_json::from_str(&config_json)
             .map_err(|error| format!("cannot parse GGML source configuration: {error}"))?;
@@ -610,12 +605,14 @@ impl ConversionModel {
         shape: &[usize],
         values: Vec<f32>,
     ) -> Result<(Vec<usize>, Vec<f32>), String> {
-        let Self::Llama { config, .. } = self else {
-            return Err("GGML layout requires Llama weights".to_owned());
-        };
         match shape {
             [_] => Ok((shape.to_vec(), values)),
             &[output, input] if output != 0 && input != 0 => {
+                let shape = vec![input, output];
+                let Self::Llama { config, .. } = self else {
+                    // Standard Qwen3 already uses the Hugging Face RoPE channel order.
+                    return Ok((shape, values));
+                };
                 let expected_outputs = if name.ends_with(".attn_q.weight") {
                     Some(config.query_projection_size())
                 } else if name.ends_with(".attn_k.weight") {
@@ -623,7 +620,6 @@ impl ConversionModel {
                 } else {
                     None
                 };
-                let shape = vec![input, output];
                 let Some(expected) = expected_outputs else {
                     return Ok((shape, values));
                 };

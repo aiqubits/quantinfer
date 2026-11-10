@@ -20,7 +20,7 @@ oversized prompts and writes the output only after all samples succeed.
 
 ## Importance-weighted Q4_0
 
-For a Llama checkpoint exported with GGML output rows, supply
+For a Llama or Qwen3 checkpoint exported with GGML output rows, supply
 `--imatrix IMATRIX.gguf` with `--gguf-layout ggml --quantize q4_0`.
 Use a GGUF calibration artifact from
 [llama-imatrix](https://github.com/ggml-org/llama.cpp/tree/master/tools/imatrix).
@@ -31,6 +31,14 @@ The JSON maps each quantized projection name, such as
 square of each input activation over the calibration samples. Each array
 must match the projection's input width and contain finite, nonnegative
 weights with at least one positive entry.
+
+For Qwen3, use `--tokenizer-pre qwen2` with the checkpoint's tokenizer.
+
+```sh
+quantinfer-convert --config config.json --weights model.safetensors \
+  --tokenizer tokenizer.json --tokenizer-pre qwen2 --gguf-layout ggml \
+  --quantize q4_0 --imatrix imatrix.json --output model-q4_0.gguf
+```
 
 The converter evaluates several clipping points for each Q4_0 block and
 keeps the scale with the smallest weighted reconstruction error. It
