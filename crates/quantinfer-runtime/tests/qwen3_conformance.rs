@@ -20,14 +20,33 @@ struct Reference {
     generated_tokens: Vec<usize>,
 }
 
+#[derive(Deserialize)]
+struct Baseline {
+    prompt: String,
+    prompt_tokens: Vec<usize>,
+    eos_token_id: usize,
+    max_sequence_length: usize,
+    max_new_tokens: usize,
+    f32_generated_tokens: Vec<usize>,
+    q8_0_generated_tokens: Vec<usize>,
+}
+
 #[test]
 #[ignore = "requires pinned Qwen3-0.6B F32/Q8_0 conversions and Transformers reference"]
 fn matches_qwen3_transformers_reference_and_q8_quality_gates() {
     let reference_path = env::var_os("QUANTINFER_QWEN3_REFERENCE").unwrap();
     let reference: Reference = serde_json::from_slice(&fs::read(reference_path).unwrap()).unwrap();
+    let baseline: Baseline = serde_json::from_str(include_str!(
+        "../../../tests/golden/qwen3-0.6b-baseline.json"
+    ))
+    .unwrap();
+    assert_eq!(reference.prompt, baseline.prompt);
+    assert_eq!(reference.prompt_tokens, baseline.prompt_tokens);
+    assert_eq!(reference.eos_token_id, baseline.eos_token_id);
+    assert_eq!(reference.generated_tokens, baseline.f32_generated_tokens);
 
-    let f32 = run_variant("QUANTINFER_QWEN3_F32", GgmlType::F32, &reference);
-    let q8 = run_variant("QUANTINFER_QWEN3_Q8", GgmlType::Q8_0, &reference);
+    let f32 = run_variant("QUANTINFER_QWEN3_F32", GgmlType::F32, &baseline);
+    let q8 = run_variant("QUANTINFER_QWEN3_Q8", GgmlType::Q8_0, &baseline);
 
     let official_error = errors(&reference.logits, &f32.logits);
     let quantized_error = errors(&f32.logits, &q8.logits);
@@ -44,14 +63,17 @@ fn matches_qwen3_transformers_reference_and_q8_quality_gates() {
         "f32_generated={:?} q8_generated={:?}",
         f32.generated, q8.generated
     );
-    assert_eq!(f32.generated, reference.generated_tokens);
-    assert!(official_error.max <= 0.02);
+    assert_eq!(f32.generated, baseline.f32_generated_tokens);
+    assert_eq!(q8.generated, baseline.q8_0_generated_tokens);
+    assert_eq!(f32.generated.last(), Some(&baseline.eos_token_id));
+    assert_eq!(q8.generated.last(), Some(&baseline.eos_token_id));
+    assert!(official_error.max <= 0.001);
     assert_eq!(f32_top, top_10(&reference.logits));
-    assert!(quantized_error.max <= 2.0);
-    assert!(quantized_error.mse <= 0.2);
-    assert!(overlap >= 7);
-    assert!(weight_error.max <= 0.02);
-    assert!(weight_error.mean <= 0.002);
+    assert!(quantized_error.max <= 0.9);
+    assert!(quantized_error.mse <= 0.05);
+    assert!(overlap >= 9);
+    assert!(weight_error.max <= 0.003);
+    assert!(weight_error.mean <= 0.0002);
 }
 
 struct Run {
@@ -60,7 +82,7 @@ struct Run {
     generated: Vec<usize>,
 }
 
-fn run_variant(path_var: &str, dtype: GgmlType, reference: &Reference) -> Run {
+fn run_variant(path_var: &str, dtype: GgmlType, baseline: &Baseline) -> Run {
     let path = env::var_os(path_var).unwrap_or_else(|| panic!("set {path_var}"));
     let reader = GgufReader::open(fs::read(path).unwrap()).unwrap();
     let strings = |key: &str| match &reader.metadata()[key] {
@@ -75,24 +97,24 @@ fn run_variant(path_var: &str, dtype: GgmlType, reference: &Reference) -> Run {
     };
     assert_eq!(
         reader.metadata()["tokenizer.ggml.eos_token_id"],
-        GgufValue::U32(reference.eos_token_id.try_into().unwrap())
+        GgufValue::U32(baseline.eos_token_id.try_into().unwrap())
     );
     let tokenizer = GgufBpeTokenizer::new(
         strings("tokenizer.ggml.tokens"),
         &strings("tokenizer.ggml.merges"),
         None,
-        Some(reference.eos_token_id),
+        Some(baseline.eos_token_id),
     )
     .unwrap();
     let chat = Qwen3ChatTemplate
         .render(
-            &[ChatMessage::new("user", &reference.prompt)],
+            &[ChatMessage::new("user", &baseline.prompt)],
             ThinkingMode::Disabled,
             true,
         )
         .unwrap();
     let prompt = tokenizer.encode(&chat).unwrap();
-    assert_eq!(prompt, reference.prompt_tokens);
+    assert_eq!(prompt, baseline.prompt_tokens);
 
     let query_name = "blk.0.attn_q.weight";
     assert_eq!(reader.tensor_info(query_name).unwrap().dtype, dtype);
@@ -106,7 +128,7 @@ fn run_variant(path_var: &str, dtype: GgmlType, reference: &Reference) -> Run {
     let new_cache = || {
         KvCache::new(
             model.config.num_hidden_layers,
-            64,
+            baseline.max_sequence_length,
             model.config.num_key_value_heads,
             model.config.effective_head_dim(),
         )
@@ -118,8 +140,8 @@ fn run_variant(path_var: &str, dtype: GgmlType, reference: &Reference) -> Run {
     let values = prefill.as_f32().unwrap();
     let logits = values[values.len() - vocab..].to_vec();
     let config = GenerationConfig {
-        max_new_tokens: 16,
-        eos_token_id: Some(reference.eos_token_id),
+        max_new_tokens: baseline.max_new_tokens,
+        eos_token_id: Some(baseline.eos_token_id),
         ..GenerationConfig::default()
     };
     let generate = |config: &GenerationConfig| {
@@ -141,14 +163,6 @@ fn run_variant(path_var: &str, dtype: GgmlType, reference: &Reference) -> Run {
     let generated = generate(&config);
     assert_eq!(generated, generate(&config));
     assert!(!tokenizer.decode(&generated).unwrap().trim().is_empty());
-    if generated.last() != config.eos_token_id.as_ref() {
-        let first = generated[0];
-        let eos_config = GenerationConfig {
-            eos_token_id: Some(first),
-            ..config
-        };
-        assert_eq!(generate(&eos_config), [first]);
-    }
 
     Run {
         logits,

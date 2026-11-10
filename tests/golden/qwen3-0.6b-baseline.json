@@ -1,0 +1,66 @@
+{
+  "model_id": "Qwen/Qwen3-0.6B",
+  "source_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+  "baseline_commit": "36cfc7ee86fca1a9eb8aac2bdaf568a5d2f9b9e1",
+  "runtime_provider": "cpu-scalar",
+  "cpu_arch": "x86_64",
+  "threads": 1,
+  "build_profile": "release",
+  "max_sequence_length": 64,
+  "max_new_tokens": 16,
+  "reference": {
+    "transformers": "4.57.6",
+    "torch": "2.11.0+cpu",
+    "dtype": "float32",
+    "attention": "eager",
+    "threads": 1
+  },
+  "prompt": "What is 2 + 2? Reply with only the number.",
+  "prompt_tokens": [
+    151644,
+    872,
+    198,
+    3838,
+    374,
+    220,
+    17,
+    488,
+    220,
+    17,
+    30,
+    17841,
+    448,
+    1172,
+    279,
+    1372,
+    13,
+    151645,
+    198,
+    151644,
+    77091,
+    198,
+    151667,
+    271,
+    151668,
+    271
+  ],
+  "eos_token_id": 151645,
+  "f32_generated_tokens": [
+    17,
+    151645
+  ],
+  "q8_0_generated_tokens": [
+    17,
+    151645
+  ],
+  "gguf": [
+    {
+      "path": "qwen3-f32.gguf",
+      "sha256": "3af4242bc1730dd272b78e70b22d52ba1421464b113f8c0a1ac4e077e6bda5e1"
+    },
+    {
+      "path": "qwen3-q8_0.gguf",
+      "sha256": "81601c59aa6663e34b3b3f1feb5e1b9c151fc71ea1978a459ee46e52fa7e0e35"
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "benchmark_code_commit": "1ab530527c34590bf3653701b33f1c3019949af0",
+  "cpu_model": "12th Gen Intel(R) Core(TM) i7-12700",
+  "cpu_arch": "x86_64",
+  "threads": 1,
+  "build_profile": "release",
+  "runtime_provider": "cpu-scalar",
+  "prompt_tokens": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "generated_token_count": 8,
+  "max_sequence_length": 64,
+  "energy_j_per_token": null,
+  "runs": [
+    {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "source_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "variant": "f32",
+      "gguf_sha256": "3af4242bc1730dd272b78e70b22d52ba1421464b113f8c0a1ac4e077e6bda5e1",
+      "model_load_ms": 5799.021,
+      "prefill_ms": 9806.561,
+      "ttft_ms": 9806.695,
+      "profile_decode_ms": 16971.781,
+      "profile_decode_tokens_per_sec": 0.412,
+      "peak_rss_kib": 5899728,
+      "kv_cache_bytes": 2981888,
+      "kv_cache_capacity_bytes": 14680064
+    },
+    {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "source_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "variant": "q8_0",
+      "gguf_sha256": "81601c59aa6663e34b3b3f1feb5e1b9c151fc71ea1978a459ee46e52fa7e0e35",
+      "model_load_ms": 1902.813,
+      "prefill_ms": 3569.1,
+      "ttft_ms": 3569.219,
+      "profile_decode_ms": 5174.763,
+      "profile_decode_tokens_per_sec": 1.353,
+      "peak_rss_kib": 3399588,
+      "kv_cache_bytes": 2981888,
+      "kv_cache_capacity_bytes": 14680064
+    },
+    {
+      "model_id": "Qwen/Qwen3-0.6B",
+      "source_revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "variant": "q4_0",
+      "gguf_sha256": "d1374767fffcae4427b5accbf95855bbb3aa071946f62b8e68fe1b548493f8fa",
+      "model_load_ms": 2117.038,
+      "prefill_ms": 3734.78,
+      "ttft_ms": 3734.913,
+      "profile_decode_ms": 5422.683,
+      "profile_decode_tokens_per_sec": 1.291,
+      "peak_rss_kib": 3185168,
+      "kv_cache_bytes": 2981888,
+      "kv_cache_capacity_bytes": 14680064
+    },
+    {
+      "model_id": "HuggingFaceTB/SmolLM2-135M",
+      "source_revision": "93efa2f097d58c2a74874c7e644dbc9b0cee75a2",
+      "variant": "f32",
+      "gguf_sha256": "2549efafb6629d3b44a3e1eba18bc2a222fcca24302fc2b7abe3f8b2d17cc762",
+      "model_load_ms": 943.057,
+      "prefill_ms": 936.763,
+      "ttft_ms": 936.806,
+      "profile_decode_ms": 1596.247,
+      "profile_decode_tokens_per_sec": 4.385,
+      "peak_rss_kib": 1172712,
+      "kv_cache_bytes": 599040,
+      "kv_cache_capacity_bytes": 2949120
+    }
+  ]
+}

@@ -162,6 +162,8 @@ jobs:
               > "qwen3-$variant.inventory"
           done
           sha256sum qwen3-f32.gguf qwen3-q8_0.gguf qwen3-q4_0.gguf > qwen3-gguf.sha256
+          jq -r '.gguf[] | "\(.sha256)  \(.path)"' tests/golden/qwen3-0.6b-baseline.json > qwen3-baseline.sha256
+          sha256sum --check qwen3-baseline.sha256
       - name: Gate real Qwen3 logits, generation and quantization error
         shell: bash
         env:

@@ -32,3 +32,6 @@ is marked unmeasured.
 
 Model Conformance publishes separate reports for SmolLM2 F32 and Qwen3 F32,
 Q8_0, and Q4_0. Compare performance runs on the same CPU model.
+
+The i7-12700 single-thread measurements for these four variants are recorded
+in `baselines/intel-i7-12700-cpu-scalar.json`.
