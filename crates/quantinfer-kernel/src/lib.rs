@@ -45,6 +45,20 @@ pub trait KernelBackend {
 
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>;
 
+    /// The RHS has logical shape [input, output] with consecutive blocks per output.
+    fn matmul_q8_0_output_rows(&self, _lhs: &Tensor, _rhs: &QuantizedTensor) -> Result<Tensor> {
+        Err(KernelError::Unsupported(
+            "Q8_0 output rows are unsupported".to_owned(),
+        ))
+    }
+
+    /// The RHS has logical shape [input, output] with consecutive blocks per output.
+    fn matmul_q4_0_output_rows(&self, _lhs: &Tensor, _rhs: &QuantizedTensor4) -> Result<Tensor> {
+        Err(KernelError::Unsupported(
+            "Q4_0 output rows are unsupported".to_owned(),
+        ))
+    }
+
     fn matmul_q4_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor>;
 
     fn matmul_q5_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor>;

@@ -46,6 +46,16 @@ fn run() -> Result<(), String> {
                 .map(PathBuf::from)
                 .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
             let (reader, _) = open_model_reader(&path, None)?;
+            if has_flag(&arguments[1..], "--json") {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "metadata": reader.metadata(),
+                        "tensors": reader.tensors(),
+                    })
+                );
+                return Ok(());
+            }
             println!("metadata: {}", reader.metadata().len());
             for key in reader.metadata().keys() {
                 println!("metadata_key={key}");
@@ -578,7 +588,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 

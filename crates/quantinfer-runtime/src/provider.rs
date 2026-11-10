@@ -224,6 +224,11 @@ impl Default for CpuScalarProvider {
             head_dimension: None,
             maximum_sequence_length: None,
         };
+        let output_rows = |dtype, quantization| KernelCapability {
+            tensor_layout: "ggml_output_rows".to_owned(),
+            supported_operations: BTreeSet::from([Operation::QuantizedMatmul]),
+            ..base(dtype, quantization, 32)
+        };
         Self {
             capabilities: vec![
                 base(DType::F32, QuantizationScheme::None, 1),
@@ -232,6 +237,8 @@ impl Default for CpuScalarProvider {
                 base(DType::Q4_K, QuantizationScheme::Q4_K, 256),
                 base(DType::Q5_K, QuantizationScheme::Q5_K, 256),
                 base(DType::Q6_K, QuantizationScheme::Q6_K, 256),
+                output_rows(DType::Q8_0, QuantizationScheme::Q8_0),
+                output_rows(DType::Q4_0, QuantizationScheme::Q4_0),
             ],
         }
     }

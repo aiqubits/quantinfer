@@ -1,0 +1,61 @@
+name: GGUF Interoperability
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/quantinfer-cli/**"
+      - "backends/cpu/**"
+      - "crates/quantinfer/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-format/**"
+      - "crates/quantinfer-kernel/**"
+      - "crates/quantinfer-model/**"
+      - "crates/quantinfer-quant/**"
+      - "crates/quantinfer-runtime/**"
+      - "crates/quantinfer-tokenizer/**"
+      - "tools/quantinfer-convert/**"
+      - "model-zoo/manifests/smollm2-135m.json"
+      - "tests/conformance/gguf_interop.py"
+      - ".github/workflows/gguf-interop.yml"
+      - "Cargo.lock"
+
+jobs:
+  llama-cpp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 0ec4027a2a0183de87c007069adddc06e665f7de
+          path: vendor/llama.cpp
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build pinned llama.cpp and QuantInfer
+        run: |
+          cmake -S vendor/llama.cpp -B "$RUNNER_TEMP/llama" \
+            -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF \
+            -DLLAMA_OPENSSL=OFF
+          cmake --build "$RUNNER_TEMP/llama" --target llama-server llama-quantize --parallel 3
+          python -m pip install ./vendor/llama.cpp/gguf-py
+          cargo build --release --locked -p quantinfer-cli
+      - name: Verify external Q8_0 and Q4_0 in both runtimes
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          curl --fail --location --retry 3 --output smollm2-f16.gguf \
+            "$(jq -r '.external_f16_gguf.url' "$manifest")"
+          printf '%s  smollm2-f16.gguf\n' "$(jq -r '.external_f16_gguf.sha256' "$manifest")" | sha256sum --check
+          for dtype in Q8_0 Q4_0; do
+            model="smollm2-external-${dtype}.gguf"
+            "$RUNNER_TEMP/llama/bin/llama-quantize" smollm2-f16.gguf "$model" "$dtype" 1
+            python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
+              --server "$RUNNER_TEMP/llama/bin/llama-server" --model "$model" --dtype "$dtype"
+          done

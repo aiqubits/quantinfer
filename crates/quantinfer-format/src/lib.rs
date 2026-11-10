@@ -11,6 +11,7 @@ use quantinfer_core::{
     QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K, Tensor, Q4_0_BLOCK_SIZE,
     Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
+use serde::Serialize;
 
 pub type Result<T> = std::result::Result<T, FormatError>;
 
@@ -49,7 +50,8 @@ impl From<quantinfer_core::CoreError> for FormatError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
 pub enum GgufValue {
     U32(u32),
     U64(u64),
@@ -61,7 +63,7 @@ pub enum GgufValue {
     Array(Vec<Self>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[allow(non_camel_case_types)]
 #[repr(u32)]
 pub enum GgmlType {
@@ -95,7 +97,7 @@ impl TryFrom<u32> for GgmlType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct GgufTensorInfo {
     pub name: String,
     pub shape: Vec<usize>,

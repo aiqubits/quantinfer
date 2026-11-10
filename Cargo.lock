@@ -256,6 +256,7 @@ dependencies = [
  "quantinfer-format",
  "quantinfer-runtime",
  "quantinfer-tokenizer",
+ "serde_json",
 ]
 
 [[package]]

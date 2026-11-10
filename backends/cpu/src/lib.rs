@@ -179,6 +179,49 @@ impl CpuScalar {
         })
     }
 
+    fn matmul_output_rows<B, T>(
+        &self,
+        lhs: &Tensor,
+        rhs_shape: &Shape,
+        blocks: &[B],
+        unpack: impl Fn(&B) -> (f32, &[T; 32]),
+        convert: impl Fn(T) -> f32,
+    ) -> Result<Tensor>
+    where
+        T: Copy,
+    {
+        let (rows, inner) = self.expect_matrix(lhs, "lhs")?;
+        let &[input, outputs] = rhs_shape.dims() else {
+            return Err(KernelError::InvalidInput(
+                "expected rank-2 quantized matrix".to_owned(),
+            ));
+        };
+        if input != inner || input == 0 || outputs == 0 || !input.is_multiple_of(32) {
+            return Err(KernelError::InvalidInput(
+                "invalid quantized output rows".to_owned(),
+            ));
+        }
+        let row_blocks = inner / 32;
+        let elements = rows.checked_mul(outputs).ok_or_else(|| {
+            KernelError::InvalidInput("matmul output size overflows usize".to_owned())
+        })?;
+        let mut result = Vec::with_capacity(elements);
+        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
+            let left = left.as_chunks::<32>().0;
+            for row in blocks.chunks_exact(row_blocks) {
+                let mut sum = 0.0;
+                for (left, block) in left.iter().zip(row) {
+                    let (scale, codes) = unpack(block);
+                    for (&activation, &code) in left.iter().zip(codes) {
+                        sum += activation * (scale * convert(code));
+                    }
+                }
+                result.push(sum);
+            }
+        }
+        Ok(Tensor::from_f32(vec![rows, outputs], result)?)
+    }
+
     fn quantized_value(&self, tensor: &QuantizedTensor, index: usize) -> Result<f32> {
         let block = tensor
             .blocks()
@@ -285,6 +328,26 @@ impl CpuScalar {
 }
 
 impl KernelBackend for CpuScalar {
+    fn matmul_q8_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor> {
+        self.matmul_output_rows(
+            lhs,
+            rhs.shape(),
+            rhs.blocks(),
+            |block| (block.scale, &block.values),
+            f32::from,
+        )
+    }
+
+    fn matmul_q4_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
+        self.matmul_output_rows(
+            lhs,
+            rhs.shape(),
+            rhs.blocks(),
+            |block| (block.scale, &block.values),
+            |code| f32::from(code) - 8.0,
+        )
+    }
+
     fn matmul(&self, lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
         let (m, k) = self.expect_matrix(lhs, "lhs")?;
         let (rhs_k, n) = self.expect_matrix(rhs, "rhs")?;

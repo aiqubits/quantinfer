@@ -17,14 +17,16 @@ pub enum LinearWeight {
     Q4_K(QuantizedTensorQ4K),
     Q5_K(QuantizedTensorQ5K),
     Q6_K(QuantizedTensorQ6K),
+    Q8_0OutputRows(QuantizedTensor),
+    Q4_0OutputRows(QuantizedTensor4),
 }
 
 impl LinearWeight {
     pub fn shape(&self) -> &Shape {
         match self {
             Self::F32(tensor) => tensor.shape(),
-            Self::Q8_0(tensor) => tensor.shape(),
-            Self::Q4_0(tensor) => tensor.shape(),
+            Self::Q8_0(tensor) | Self::Q8_0OutputRows(tensor) => tensor.shape(),
+            Self::Q4_0(tensor) | Self::Q4_0OutputRows(tensor) => tensor.shape(),
             Self::Q4_K(tensor) => tensor.shape(),
             Self::Q5_K(tensor) => tensor.shape(),
             Self::Q6_K(tensor) => tensor.shape(),
@@ -34,8 +36,8 @@ impl LinearWeight {
     pub fn dtype(&self) -> DType {
         match self {
             Self::F32(_) => DType::F32,
-            Self::Q8_0(_) => DType::Q8_0,
-            Self::Q4_0(_) => DType::Q4_0,
+            Self::Q8_0(_) | Self::Q8_0OutputRows(_) => DType::Q8_0,
+            Self::Q4_0(_) | Self::Q4_0OutputRows(_) => DType::Q4_0,
             Self::Q4_K(_) => DType::Q4_K,
             Self::Q5_K(_) => DType::Q5_K,
             Self::Q6_K(_) => DType::Q6_K,
@@ -50,6 +52,8 @@ impl LinearWeight {
             Self::Q4_K(weight) => Ok(backend.matmul_q4_k(input, weight)?),
             Self::Q5_K(weight) => Ok(backend.matmul_q5_k(input, weight)?),
             Self::Q6_K(weight) => Ok(backend.matmul_q6_k(input, weight)?),
+            Self::Q8_0OutputRows(weight) => Ok(backend.matmul_q8_0_output_rows(input, weight)?),
+            Self::Q4_0OutputRows(weight) => Ok(backend.matmul_q4_0_output_rows(input, weight)?),
         }
     }
 }

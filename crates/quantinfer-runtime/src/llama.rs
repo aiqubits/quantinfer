@@ -1,7 +1,12 @@
-use quantinfer_core::{DType, Shape, Tensor};
+use quantinfer_core::{
+    DType, QuantizedTensor, QuantizedTensor4, Shape, Tensor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelSpec, TensorRole};
+use quantinfer_quant::{
+    dequantize_q4_0, dequantize_q4_k, dequantize_q5_k, dequantize_q6_k, dequantize_q8_0,
+};
 
 use crate::qwen3::{add, gqa_attention, load_linear, rope_tables, transpose_matrix, LinearWeight};
 use crate::{KvCache, Result, RuntimeError};
@@ -257,11 +262,12 @@ impl<B: KernelBackend> LlamaModel<B> {
         let adapter =
             LlamaAdapter::from_config(config.clone()).map_err(RuntimeError::InvalidInput)?;
         let spec = adapter.spec();
-        let mut embedding = reader.tensor_f32(crate::tensor_source(
-            spec,
-            TensorRole::TokenEmbedding,
-            None,
-        )?)?;
+        let embedding_name = crate::tensor_source(spec, TensorRole::TokenEmbedding, None)?;
+        let mut embedding = if ggml_layout {
+            load_ggml_as_float(reader, embedding_name)?
+        } else {
+            reader.tensor_f32(embedding_name)?
+        };
         if ggml_layout {
             expect_shape(
                 &embedding,
@@ -303,7 +309,7 @@ impl<B: KernelBackend> LlamaModel<B> {
                     TensorRole::KeyProjection => Some(config.num_key_value_heads()),
                     _ => None,
                 };
-                Ok(LinearWeight::F32(load_ggml_matrix(reader, name, heads)?))
+                load_ggml_linear(reader, name, heads)
             };
             layers.push(LlamaLayerWeights {
                 input_layernorm: float(TensorRole::InputNormalization)?,
@@ -321,7 +327,7 @@ impl<B: KernelBackend> LlamaModel<B> {
     }
 }
 
-fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
+pub fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
     if reader.metadata().contains_key("llama.tie_word_embeddings") {
         return Ok(false);
     }
@@ -339,8 +345,99 @@ fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
     Ok(reader.metadata().contains_key("general.file_type"))
 }
 
+fn load_ggml_as_float(reader: &GgufReader, name: &str) -> Result<Tensor> {
+    match reader.tensor_info(name)?.dtype {
+        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => return Ok(reader.tensor_f32(name)?),
+        GgmlType::Q8_0 => dequantize_q8_0(&reader.tensor_q8_0(name)?),
+        GgmlType::Q4_0 => dequantize_q4_0(&reader.tensor_q4_0(name)?),
+        GgmlType::Q4_K => dequantize_q4_k(&reader.tensor_q4_k(name)?),
+        GgmlType::Q5_K => dequantize_q5_k(&reader.tensor_q5_k(name)?),
+        GgmlType::Q6_K => dequantize_q6_k(&reader.tensor_q6_k(name)?),
+    }
+    .map_err(|error| {
+        RuntimeError::InvalidInput(format!("cannot decode GGML tensor {name}: {error}"))
+    })
+}
+
+fn load_ggml_linear(
+    reader: &GgufReader,
+    name: &str,
+    rope_heads: Option<usize>,
+) -> Result<LinearWeight> {
+    let info = reader.tensor_info(name)?;
+    let &[input, output] = info.shape.as_slice() else {
+        return Err(RuntimeError::InvalidInput(format!(
+            "GGML matrix {name} must be rank 2"
+        )));
+    };
+    match info.dtype {
+        GgmlType::Q8_0 if input != 0 && input.is_multiple_of(Q8_0_BLOCK_SIZE) => {
+            let weight = reader.tensor_q8_0(name)?;
+            let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
+                QuantizedTensor::from_blocks(
+                    weight.shape().clone(),
+                    reorder_ggml_rows(weight.blocks(), input / Q8_0_BLOCK_SIZE, dim),
+                )?
+            } else {
+                weight
+            };
+            Ok(LinearWeight::Q8_0OutputRows(weight))
+        }
+        GgmlType::Q4_0 if input != 0 && input.is_multiple_of(Q4_0_BLOCK_SIZE) => {
+            let weight = reader.tensor_q4_0(name)?;
+            let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
+                QuantizedTensor4::from_blocks(
+                    weight.shape().clone(),
+                    reorder_ggml_rows(weight.blocks(), input / Q4_0_BLOCK_SIZE, dim),
+                )?
+            } else {
+                weight
+            };
+            Ok(LinearWeight::Q4_0OutputRows(weight))
+        }
+        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => Ok(LinearWeight::F32(load_ggml_matrix(
+            reader, name, rope_heads,
+        )?)),
+        dtype => Err(RuntimeError::InvalidInput(format!(
+            "unsupported GGML projection {name} with input width {input} and type {dtype:?}"
+        ))),
+    }
+}
+
+fn rope_head_dim(name: &str, output: usize, rope_heads: Option<usize>) -> Result<Option<usize>> {
+    rope_heads
+        .map(|heads| {
+            if heads == 0
+                || output == 0
+                || !output.is_multiple_of(heads)
+                || !(output / heads).is_multiple_of(2)
+            {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "GGML matrix {name} has an invalid RoPE layout"
+                )));
+            }
+            Ok(output / heads)
+        })
+        .transpose()
+}
+
+fn reorder_ggml_rows<T: Clone>(blocks: &[T], row_blocks: usize, dim: usize) -> Vec<T> {
+    let mut ordered = blocks.to_vec();
+    for (row, values) in blocks.chunks_exact(row_blocks).enumerate() {
+        let start = ggml_row_to_channel(row, dim) * row_blocks;
+        ordered[start..start + row_blocks].clone_from_slice(values);
+    }
+    ordered
+}
+
+fn ggml_row_to_channel(row: usize, dim: usize) -> usize {
+    // llama.cpp stores Q/K pairs adjacent for RoPE. The CPU runtime uses half-split pairs.
+    let channel = row % dim;
+    row - channel + channel / 2 + (channel % 2) * (dim / 2)
+}
+
 fn load_ggml_matrix(reader: &GgufReader, name: &str, rope_heads: Option<usize>) -> Result<Tensor> {
-    let tensor = reader.tensor_f32(name)?;
+    let tensor = load_ggml_as_float(reader, name)?;
     let &[input, output] = tensor.shape().dims() else {
         return Err(RuntimeError::InvalidInput(format!(
             "GGML matrix {name} must be rank 2"
@@ -348,24 +445,9 @@ fn load_ggml_matrix(reader: &GgufReader, name: &str, rope_heads: Option<usize>) 
     };
     let source = tensor.as_f32()?;
     let mut weights = vec![0.0; source.len()];
-    let head_dim = if let Some(heads) = rope_heads {
-        if !output.is_multiple_of(heads) || !(output / heads).is_multiple_of(2) {
-            return Err(RuntimeError::InvalidInput(format!(
-                "GGML matrix {name} has an invalid RoPE layout"
-            )));
-        }
-        Some(output / heads)
-    } else {
-        None
-    };
+    let head_dim = rope_head_dim(name, output, rope_heads)?;
     for (output_index, row) in source.chunks_exact(input).enumerate() {
-        // llama.cpp stores Q/K pairs adjacent for RoPE. The CPU runtime uses half-split pairs.
-        let column = if let Some(dim) = head_dim {
-            let channel = output_index % dim;
-            output_index - channel + channel / 2 + (channel % 2) * (dim / 2)
-        } else {
-            output_index
-        };
+        let column = head_dim.map_or(output_index, |dim| ggml_row_to_channel(output_index, dim));
         for (input_index, &value) in row.iter().enumerate() {
             weights[input_index * output + column] = value;
         }

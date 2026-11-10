@@ -5,14 +5,18 @@ use quantinfer_core::{
     DType, Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationScheme, Q4_0_BLOCK_SIZE,
     Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
-use quantinfer_format::{GgmlType, GgufReader, ModelManifest};
+use quantinfer_format::{GgmlType, GgufReader, GgufValue, ModelManifest};
 use quantinfer_model::{ModelSpec, TensorRole};
+use quantinfer_runtime::llama::uses_ggml_layout;
 use quantinfer_runtime::{ExecutionRequest, ExecutionResolver, Operation, Result, RuntimeError};
 
 /// Select a CPU kernel that supports the weight types recorded in a GGUF.
 pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) -> Result<CpuScalar> {
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
+    let is_llama = manifest.is_some_and(|manifest| manifest.architecture == "llama")
+        || matches!(reader.metadata().get("general.architecture"), Some(GgufValue::String(value)) if value == "llama");
+    let ggml_layout = is_llama && uses_ggml_layout(reader)?;
     request.tensor_layout = "row_major".to_owned();
     request.operation = Some(Operation::Matmul);
     if let Some(manifest) = manifest {
@@ -33,6 +37,9 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
 
     let mut checked = Vec::new();
     for tensor in reader.tensors() {
+        if ggml_layout && ggml_float_weight(&tensor.name) {
+            continue;
+        }
         if checked.contains(&tensor.dtype) {
             continue;
         }
@@ -49,6 +56,9 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
         request.quantization = scheme;
         request.operation = Some(Operation::QuantizedMatmul);
         request.alignment = Some(block_size);
+        if ggml_layout {
+            request.tensor_layout = "ggml_output_rows".to_owned();
+        }
         let quantized_plan = resolver.resolve(&request)?;
         if quantized_plan.provider_name != plan.provider_name {
             return Err(RuntimeError::InvalidInput(
@@ -79,10 +89,15 @@ pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) ->
     }
 }
 
+fn ggml_float_weight(name: &str) -> bool {
+    matches!(name, "token_embd.weight" | "output.weight")
+}
+
 /// Estimate the storage used by the CPU representation after GGUF decoding.
 pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<usize> {
     let invalid = || RuntimeError::InvalidInput("CPU weight size overflows usize".to_owned());
     let mut bytes = 0usize;
+    let ggml_layout = spec.architecture == "llama" && uses_ggml_layout(reader)?;
     for tensor in reader.tensors() {
         let elements: usize = tensor.shape.iter().product();
         let (block_size, native_bytes) = match tensor.dtype {
@@ -93,9 +108,12 @@ pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<u
             GgmlType::Q5_K => (Q4_K_BLOCK_SIZE, size_of::<Q5KBlock>()),
             GgmlType::Q6_K => (Q4_K_BLOCK_SIZE, size_of::<Q6KBlock>()),
         };
-        let tensor_bytes = (elements / block_size)
-            .checked_mul(native_bytes)
-            .ok_or_else(invalid)?;
+        let tensor_bytes = if ggml_layout && ggml_float_weight(&tensor.name) {
+            elements.checked_mul(size_of::<f32>())
+        } else {
+            (elements / block_size).checked_mul(native_bytes)
+        }
+        .ok_or_else(invalid)?;
         bytes = bytes.checked_add(tensor_bytes).ok_or_else(invalid)?;
     }
     if spec.embedding.tied_lm_head && reader.tensor_info("output.weight").is_err() {

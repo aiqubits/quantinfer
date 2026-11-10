@@ -11,8 +11,8 @@ quantinfer-format = { workspace = true }
 quantinfer-model = { workspace = true }
 quantinfer-tokenizer = { workspace = true }
 quantinfer-kernel = { workspace = true }
+quantinfer-quant.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
 quantinfer-backend-cpu = { workspace = true }
-quantinfer-quant = { workspace = true }
