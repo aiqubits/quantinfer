@@ -183,7 +183,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use quantinfer_core::{DType, QuantizationScheme, Shape, TensorStorageDescriptor};
 
-    use super::{sha256_hex, ModelManifest, TensorManifest};
+    use super::{sha256_hex, ModelManifest, ModelPackage, TensorManifest};
 
     #[test]
     fn round_trips_manifest_and_verifies_checksum() {
@@ -200,5 +200,19 @@ mod tests {
         decoded.verify_checksum("model.gguf", b"fixture").unwrap();
         assert_eq!(decoded.quantization, QuantizationScheme::None);
         assert_eq!(sha256_hex(b"fixture").len(), 64);
+    }
+
+    #[test]
+    fn opens_a_directory_package_and_reads_verified_model_bytes() {
+        let root = std::env::temp_dir().join(format!("quantinfer-package-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let model_bytes = b"fixture-gguf";
+        std::fs::write(root.join("model.gguf"), model_bytes).unwrap();
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.insert_checksum("model.gguf", model_bytes);
+        std::fs::write(root.join("manifest.json"), manifest.to_json().unwrap()).unwrap();
+        let package = ModelPackage::open(&root).unwrap();
+        assert_eq!(package.read_verified("model.gguf").unwrap(), model_bytes);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
