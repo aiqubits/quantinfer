@@ -26,4 +26,5 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo run -p quantinfer-xtask -- conformance
       - run: cargo run -p quantinfer-xtask -- bench

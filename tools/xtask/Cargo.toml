@@ -9,3 +9,4 @@ quantinfer-backend-cpu = { workspace = true }
 quantinfer-core = { workspace = true }
 quantinfer-kernel = { workspace = true }
 quantinfer-quant = { workspace = true }
+quantinfer-tokenizer = { workspace = true }
