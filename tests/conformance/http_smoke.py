@@ -62,25 +62,28 @@ def check(binary, model, golden):
         models = json.loads(request(base, "/v1/models"))["data"]
         assert [entry["id"] for entry in models] == ["primary", "secondary"]
         common = {"prompt": prompt, "max_new_tokens": len(expected)}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            ordinary = executor.submit(
-                request, base, "/v1/generate", {**common, "model": "primary"}
-            )
-            streamed = executor.submit(
-                request, base, "/v1/generate", {**common, "model": "secondary", "stream": True}
-            )
-            result = json.loads(ordinary.result())
-            events = [json.loads(line[6:]) for line in streamed.result().splitlines()
-                      if line.startswith("data: ")]
-        assert result["tokens"] == expected
-        assert result["text"] == golden["generated_text"]
-        assert result["finish_reason"] == "length"
-        assert [event["token_id"] for event in events] == expected
-        assert events[-1]["finish_reason"] == "length"
-        assert events[-1]["request_id"] != result["request_id"]
+        for stream_model in ("secondary", "primary"):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                ordinary = executor.submit(
+                    request, base, "/v1/generate", {**common, "model": "primary"}
+                )
+                streamed = executor.submit(
+                    request, base, "/v1/generate", {**common, "model": stream_model, "stream": True}
+                )
+                result = json.loads(ordinary.result())
+                events = [json.loads(line[6:]) for line in streamed.result().splitlines()
+                          if line.startswith("data: ")]
+            assert result["tokens"] == expected
+            assert result["text"] == golden["generated_text"]
+            assert result["finish_reason"] == "length"
+            assert [event["token_id"] for event in events] == expected
+            assert events[-1]["finish_reason"] == "length"
+            assert events[-1]["request_id"] != result["request_id"]
         metrics = request(base, "/metrics")
-        assert "quantinfer_requests_total 2\n" in metrics
-        assert f"quantinfer_generated_tokens_total {2 * len(expected)}\n" in metrics
+        counters = {name: int(value) for name, value in (line.split() for line in metrics.splitlines())}
+        assert counters["quantinfer_requests_total"] == 4
+        assert counters["quantinfer_generated_tokens_total"] == 4 * len(expected)
+        assert counters["quantinfer_batched_forward_steps_total"] > 0
 
     with server(binary, "--model", f"primary={model}", "--kv-budget-bytes", "1") as base:
         try:

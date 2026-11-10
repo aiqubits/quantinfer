@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -14,6 +15,13 @@ pub struct Metrics {
     pub rejected: AtomicU64,
     pub generated_tokens: AtomicU64,
     pub finished: AtomicU64,
+    pub batched_steps: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+pub struct BatchLimits {
+    pub sequences: NonZeroUsize,
+    pub tokens: NonZeroUsize,
 }
 
 pub struct Submission {
@@ -26,6 +34,7 @@ pub struct Submission {
 pub fn start(
     maximum_requests: usize,
     maximum_kv_bytes: usize,
+    batch: BatchLimits,
     metrics: Arc<Metrics>,
 ) -> Result<(mpsc::Sender<Submission>, JoinHandle<()>), String> {
     let scheduler = DecodeScheduler::new(maximum_requests, maximum_kv_bytes)
@@ -33,7 +42,7 @@ pub fn start(
     let (sender, receiver) = mpsc::channel(maximum_requests);
     let worker = thread::Builder::new()
         .name("quantinfer-decode".to_owned())
-        .spawn(move || run(scheduler, receiver, maximum_requests, &metrics))
+        .spawn(move || run(scheduler, receiver, maximum_requests, batch, &metrics))
         .map_err(|error| format!("cannot start decode worker: {error}"))?;
     Ok((sender, worker))
 }
@@ -42,6 +51,7 @@ fn run(
     mut scheduler: DecodeScheduler<Arc<CpuModel>>,
     mut input: mpsc::Receiver<Submission>,
     maximum_requests: usize,
+    batch: BatchLimits,
     metrics: &Metrics,
 ) {
     let mut listeners = BTreeMap::new();
@@ -67,31 +77,33 @@ fn run(
             listeners.remove(&id);
             metrics.finished.fetch_add(1, Ordering::Relaxed);
         }
-        let Some(event) = scheduler.poll_next() else {
-            continue;
-        };
-        let (id, finished) = match &event {
-            DecodeEvent::Token {
-                request_id,
-                stop_reason,
-                ..
-            } => {
-                metrics.generated_tokens.fetch_add(1, Ordering::Relaxed);
-                (*request_id, stop_reason.is_some())
+        let events = scheduler.poll_batch(batch.sequences, batch.tokens);
+        if events.len() > 1 {
+            metrics.batched_steps.fetch_add(1, Ordering::Relaxed);
+        }
+        for event in events {
+            let (id, finished) = match &event {
+                DecodeEvent::Token {
+                    request_id,
+                    stop_reason,
+                    ..
+                } => {
+                    metrics.generated_tokens.fetch_add(1, Ordering::Relaxed);
+                    (*request_id, stop_reason.is_some())
+                }
+                DecodeEvent::Stopped { request_id, .. }
+                | DecodeEvent::Failed { request_id, .. } => (*request_id, true),
+            };
+            let delivered = listeners
+                .get(&id)
+                .is_some_and(|output| output.try_send(event).is_ok());
+            if finished || !delivered {
+                if !finished {
+                    scheduler.cancel(id);
+                }
+                listeners.remove(&id);
+                metrics.finished.fetch_add(1, Ordering::Relaxed);
             }
-            DecodeEvent::Stopped { request_id, .. } | DecodeEvent::Failed { request_id, .. } => {
-                (*request_id, true)
-            }
-        };
-        let delivered = listeners
-            .get(&id)
-            .is_some_and(|output| output.try_send(event).is_ok());
-        if finished || !delivered {
-            if !finished {
-                scheduler.cancel(id);
-            }
-            listeners.remove(&id);
-            metrics.finished.fetch_add(1, Ordering::Relaxed);
         }
     }
 }

@@ -23,3 +23,9 @@ health and `GET /metrics` exposes counters. Configure queue admission with
 `--max-requests` and `--kv-budget-bytes`, and request deadlines with
 `--request-timeout-ms`. `SIGINT` and `SIGTERM` stop accepting connections
 and allow active responses to finish.
+
+The decode worker batches ready requests for the same loaded model, including
+new prompts and continuing decode steps. Each request keeps its own KV cache,
+position and deadline. `--max-batch-sequences` and `--max-batch-tokens` default
+to eight sequences and 512 input tokens. Larger prompts get an exclusive
+forward step. `quantinfer_batched_forward_steps_total` counts grouped steps.

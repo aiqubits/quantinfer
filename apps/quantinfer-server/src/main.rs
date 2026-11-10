@@ -5,6 +5,7 @@ mod engine;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::env;
+use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -45,6 +46,7 @@ struct Settings {
     models: BTreeMap<String, String>,
     context_length: usize,
     maximum_requests: usize,
+    batch: engine::BatchLimits,
     kv_budget_bytes: usize,
     request_timeout: Duration,
 }
@@ -56,6 +58,10 @@ impl Settings {
             models: BTreeMap::new(),
             context_length: 512,
             maximum_requests: 8,
+            batch: engine::BatchLimits {
+                sequences: NonZeroUsize::new(8).unwrap(),
+                tokens: NonZeroUsize::new(512).unwrap(),
+            },
             kv_budget_bytes: 512 * 1024 * 1024,
             request_timeout: Duration::from_secs(60),
         };
@@ -73,6 +79,15 @@ impl Settings {
                 "--bind" => settings.bind = value,
                 "--context-length" => settings.context_length = number()?,
                 "--max-requests" => settings.maximum_requests = number()?,
+                "--max-batch-sequences" | "--max-batch-tokens" => {
+                    let limit = NonZeroUsize::new(number()?)
+                        .ok_or_else(|| format!("{flag} must be positive"))?;
+                    if flag == "--max-batch-sequences" {
+                        settings.batch.sequences = limit;
+                    } else {
+                        settings.batch.tokens = limit;
+                    }
+                }
                 "--kv-budget-bytes" => settings.kv_budget_bytes = number()?,
                 "--request-timeout-ms" => {
                     settings.request_timeout = Duration::from_millis(number()? as u64)
@@ -108,7 +123,7 @@ impl Settings {
 async fn main() {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--kv-budget-bytes N] [--request-timeout-ms N]");
+        println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N]");
         return;
     }
     if let Err(error) = run(args).await {
@@ -146,6 +161,7 @@ async fn run(args: Vec<String>) -> Result<(), String> {
     let (queue, worker) = engine::start(
         settings.maximum_requests,
         settings.kv_budget_bytes,
+        settings.batch,
         metrics.clone(),
     )?;
     let state = Arc::new(AppState {
@@ -199,11 +215,12 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Json<serde_json::Val
 async fn metrics_response(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let metrics = &state.metrics;
     let body = format!(
-        "quantinfer_requests_total {}\nquantinfer_requests_rejected_total {}\nquantinfer_requests_finished_total {}\nquantinfer_generated_tokens_total {}\n",
+        "quantinfer_requests_total {}\nquantinfer_requests_rejected_total {}\nquantinfer_requests_finished_total {}\nquantinfer_generated_tokens_total {}\nquantinfer_batched_forward_steps_total {}\n",
         metrics.requests.load(Ordering::Relaxed),
         metrics.rejected.load(Ordering::Relaxed),
         metrics.finished.load(Ordering::Relaxed),
         metrics.generated_tokens.load(Ordering::Relaxed),
+        metrics.batched_steps.load(Ordering::Relaxed),
     );
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }

@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use quantinfer_core::Tensor;
+
 use crate::{
     last_logits, select_token, DecodeBatchItem, DecoderModel, GenerationConfig, KvCache, Result,
     RuntimeError,
@@ -46,6 +48,16 @@ enum DecodeInput {
     Prompt(Vec<usize>),
     Token(usize),
     Finished(DecodeStopReason),
+}
+
+impl DecodeInput {
+    fn tokens(&self) -> Option<&[usize]> {
+        match self {
+            Self::Prompt(tokens) => Some(tokens),
+            Self::Token(token) => Some(std::slice::from_ref(token)),
+            Self::Finished(_) => None,
+        }
+    }
 }
 
 /// Advances one request by one token. KV state is owned by the session.
@@ -97,6 +109,14 @@ impl<M: DecoderModel> DecodeSession<M> {
         &self.cache
     }
 
+    pub(crate) fn model(&self) -> &M {
+        &self.model
+    }
+
+    pub(crate) fn pending_tokens(&self) -> usize {
+        self.next_input.tokens().map_or(0, <[usize]>::len)
+    }
+
     pub fn stop_reason(&self) -> Option<DecodeStopReason> {
         match self.next_input {
             DecodeInput::Finished(reason) => Some(reason),
@@ -127,7 +147,11 @@ impl<M: DecoderModel> DecodeSession<M> {
             DecodeInput::Token(token) => self.model.forward(&[token], &mut self.cache)?,
             DecodeInput::Finished(_) => unreachable!("the session was active"),
         };
-        let token = select_token(&last_logits(&logits)?, &self.config)?;
+        self.accept_logits(&last_logits(&logits)?).map(Some)
+    }
+
+    fn accept_logits(&mut self, logits: &Tensor) -> Result<usize> {
+        let token = select_token(logits, &self.config)?;
         self.emitted += 1;
         self.next_input = if self.config.eos_token_id == Some(token) {
             DecodeInput::Finished(DecodeStopReason::Eos)
@@ -136,7 +160,41 @@ impl<M: DecoderModel> DecodeSession<M> {
         } else {
             DecodeInput::Token(token)
         };
-        Ok(Some(token))
+        Ok(token)
+    }
+}
+
+impl<M: DecoderModel> DecodeSession<Arc<M>> {
+    /// The scheduler groups active sessions sharing one model allocation.
+    pub(crate) fn step_batch(sessions: &mut [&mut Self]) -> Vec<Result<usize>> {
+        let model = sessions[0].model.clone();
+        let mut items: Vec<_> = sessions
+            .iter_mut()
+            .map(|session| DecodeBatchItem {
+                tokens: session
+                    .next_input
+                    .tokens()
+                    .expect("batch sessions are active"),
+                cache: &mut session.cache,
+            })
+            .collect();
+        let mut outputs = model.forward_batch(&mut items);
+        if outputs.len() != sessions.len() {
+            outputs = vec![
+                Err(RuntimeError::InvalidInput(
+                    "decoder returned an invalid batch result count".to_owned()
+                ));
+                sessions.len()
+            ];
+        }
+        sessions
+            .iter_mut()
+            .zip(outputs)
+            .map(|(session, logits)| {
+                session.next_input = DecodeInput::Finished(DecodeStopReason::Failed);
+                session.accept_logits(&logits?)
+            })
+            .collect()
     }
 }
 
