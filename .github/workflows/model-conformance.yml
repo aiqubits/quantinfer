@@ -199,10 +199,10 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.11.0'
           python -m pip install 'transformers==4.57.6'
           python tests/conformance/qwen3_reference.py qwen3 > qwen3-reference.json
-      - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
+      - name: Convert and inspect F32, Q8_0, Q4_0 and Q4_K GGUF
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
-          for variant in f32 q8_0 q4_0; do
+          for variant in f32 q8_0 q4_0 q4_k; do
             options=()
             if [[ "$variant" != f32 ]]; then options+=(--quantize "$variant"); fi
             target/release/quantinfer-convert --config qwen3/config.json \
@@ -211,7 +211,7 @@ jobs:
             target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
               > "qwen3-$variant.inventory"
           done
-          sha256sum qwen3-f32.gguf qwen3-q8_0.gguf qwen3-q4_0.gguf > qwen3-gguf.sha256
+          sha256sum qwen3-f32.gguf qwen3-q8_0.gguf qwen3-q4_0.gguf qwen3-q4_k.gguf > qwen3-gguf.sha256
           jq -r '.gguf[] | "\(.sha256)  \(.path)"' tests/golden/qwen3-0.6b-baseline.json > qwen3-baseline.sha256
           sha256sum --check qwen3-baseline.sha256
       - name: Gate real Qwen3 logits, generation and quantization error
@@ -221,6 +221,7 @@ jobs:
           QUANTINFER_QWEN3_F32: ${{ github.workspace }}/qwen3-f32.gguf
           QUANTINFER_QWEN3_Q8: ${{ github.workspace }}/qwen3-q8_0.gguf
           QUANTINFER_QWEN3_Q4: ${{ github.workspace }}/qwen3-q4_0.gguf
+          QUANTINFER_QWEN3_Q4_K: ${{ github.workspace }}/qwen3-q4_k.gguf
         run: |
           cargo test --release --locked -p quantinfer-runtime --test qwen3_conformance -- --ignored --nocapture \
             | tee qwen3-conformance.log

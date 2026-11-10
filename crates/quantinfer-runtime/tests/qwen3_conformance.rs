@@ -2,7 +2,7 @@ use std::{env, fs};
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
-use quantinfer_quant::{dequantize_q4_0, dequantize_q8_0};
+use quantinfer_quant::{dequantize_q4_0, dequantize_q4_k, dequantize_q8_0};
 use quantinfer_runtime::{
     generate_qwen3_stream, GenerationConfig, KvCache, Qwen3Model, StreamControl,
 };
@@ -58,11 +58,17 @@ fn matches_qwen3_transformers_reference_and_quantized_quality_gates() {
     assert_eq!(q8.generated, baseline.q8_0_generated_tokens);
     assert_eq!(f32.generated.last(), Some(&baseline.eos_token_id));
     assert_eq!(q8.generated.last(), Some(&baseline.eos_token_id));
-    assert_eq!(q4.generated.last(), Some(&baseline.eos_token_id));
     assert!(official_error.max <= 0.001);
     let f32_top = top_10(&f32.logits);
     assert_eq!(f32_top, top_10(&reference.logits));
-    for (name, run) in [("q8_0", q8), ("q4_0", q4)] {
+    let mut variants = vec![("q8_0", q8), ("q4_0", q4)];
+    if env::var_os("QUANTINFER_QWEN3_Q4_K").is_some() {
+        variants.push((
+            "q4_k",
+            run_variant("QUANTINFER_QWEN3_Q4_K", GgmlType::Q4_K, &baseline),
+        ));
+    }
+    for (name, run) in variants {
         let logit_error = errors(&f32.logits, &run.logits);
         let weight_error = errors(&f32.query_weights, &run.query_weights);
         let overlap = top_10(&run.logits)
@@ -73,11 +79,13 @@ fn matches_qwen3_transformers_reference_and_quantized_quality_gates() {
             "{name}_logits={logit_error:?} {name}_top_10_overlap={overlap} {name}_query_weights={weight_error:?} {name}_generated={:?}",
             run.generated
         );
-        let (max_logit, max_mse, min_overlap, max_weight, mean_weight) = if name == "q8_0" {
-            (0.9, 0.05, 9, 0.003, 0.0002)
-        } else {
-            (9.0, 3.6, 4, 0.05, 0.0033)
+        let (max_logit, max_mse, min_overlap, max_weight, mean_weight) = match name {
+            "q8_0" => (0.9, 0.05, 9, 0.003, 0.0002),
+            "q4_0" => (9.0, 3.6, 4, 0.05, 0.0033),
+            "q4_k" => (13.0, 9.0, 6, 0.032, 0.0025),
+            _ => unreachable!(),
         };
+        assert_eq!(run.generated.last(), Some(&baseline.eos_token_id));
         assert!(logit_error.max <= max_logit, "{name} max logit error");
         assert!(logit_error.mse <= max_mse, "{name} logit MSE");
         assert!(overlap >= min_overlap, "{name} top-10 overlap");
@@ -132,6 +140,7 @@ fn run_variant(path_var: &str, dtype: GgmlType, baseline: &Baseline) -> Run {
         GgmlType::F32 => reader.tensor_f32(query_name).unwrap(),
         GgmlType::Q8_0 => dequantize_q8_0(&reader.tensor_q8_0(query_name).unwrap()).unwrap(),
         GgmlType::Q4_0 => dequantize_q4_0(&reader.tensor_q4_0(query_name).unwrap()).unwrap(),
+        GgmlType::Q4_K => dequantize_q4_k(&reader.tensor_q4_k(query_name).unwrap()).unwrap(),
         _ => unreachable!(),
     };
     let model = Qwen3Model::from_gguf(CpuScalar::new(), &reader).unwrap();
