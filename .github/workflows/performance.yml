@@ -22,3 +22,8 @@ jobs:
           cargo run -p quantinfer-xtask -- bench | tee benchmark.txt
           grep -E '^q8_0_matmul .*elapsed_ns=[0-9]+' benchmark.txt
           grep -E '^q4_0_matmul .*elapsed_ns=[0-9]+' benchmark.txt
+          grep -E '^q4_k_matmul .*elapsed_ns=[0-9]+' benchmark.txt
+          grep -E '^q5_k_matmul .*elapsed_ns=[0-9]+' benchmark.txt
+          grep -E '^q6_k_matmul .*elapsed_ns=[0-9]+' benchmark.txt
+          grep -E '^rss_kb_before=[0-9]+' benchmark.txt
+          grep -E '^rss_kb_after=[0-9]+' benchmark.txt
