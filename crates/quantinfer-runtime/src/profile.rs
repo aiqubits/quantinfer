@@ -192,21 +192,33 @@ impl InferenceProfile {
         plan: &ExecutionPlan,
     ) -> Result<&'a ExecutionVariant> {
         self.validate()?;
-        let quantization = plan.capability.quantization;
-        let quantization_name = match quantization {
-            QuantizationScheme::None => "f32",
-            QuantizationScheme::Q8_0 => "q8_0",
-            QuantizationScheme::Q4_0 => "q4_0",
-            QuantizationScheme::Q4_K => "q4_k",
-            QuantizationScheme::Q5_K => "q5_k",
-            QuantizationScheme::Q6_K => "q6_k",
-        };
-        if self.quantization_variant != quantization_name || quantization != manifest.quantization {
-            return Err(RuntimeError::InvalidInput(format!(
-                "inference profile quantization {} does not match the resolved {quantization_name} model",
-                self.quantization_variant
-            )));
+        self.check_plan(plan)?;
+        self.bind_variant(manifest, plan.capability.quantization)
+    }
+
+    /// Bind one model variant to every kernel plan selected for its tensor schemes.
+    pub fn bind_mixed<'a>(
+        &self,
+        manifest: &'a ModelManifest,
+        plans: &[ExecutionPlan],
+    ) -> Result<&'a ExecutionVariant> {
+        self.validate()?;
+        if !plans.first().is_some_and(|first| {
+            plans
+                .iter()
+                .any(|plan| plan.capability.quantization != first.capability.quantization)
+        }) {
+            return Err(RuntimeError::InvalidInput(
+                "mixed precision requires kernel plans for multiple tensor schemes".to_owned(),
+            ));
         }
+        for plan in plans {
+            self.check_plan(plan)?;
+        }
+        self.bind_variant(manifest, QuantizationScheme::Mixed)
+    }
+
+    fn check_plan(&self, plan: &ExecutionPlan) -> Result<()> {
         if self.runtime_provider != plan.provider_name
             || self.kernel_provider != plan.kernel_provider_name
         {
@@ -225,6 +237,21 @@ impl InferenceProfile {
                     self.context_length
                 )));
             }
+        }
+        Ok(())
+    }
+
+    fn bind_variant<'a>(
+        &self,
+        manifest: &'a ModelManifest,
+        quantization: QuantizationScheme,
+    ) -> Result<&'a ExecutionVariant> {
+        let quantization_name = quantization.name();
+        if self.quantization_variant != quantization_name || quantization != manifest.quantization {
+            return Err(RuntimeError::InvalidInput(format!(
+                "inference profile quantization {} does not match the resolved {quantization_name} model",
+                self.quantization_variant
+            )));
         }
         manifest
             .execution_variants

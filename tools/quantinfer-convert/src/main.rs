@@ -7,8 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use quantinfer_core::{
-    DType, QuantizationAxis, QuantizationScheme, Shape, Tensor, TensorStorageDescriptor,
-    GGML_OUTPUT_ROWS_LAYOUT,
+    QuantizationAxis, QuantizationScheme, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::{
     sha256_reader, ExecutionVariant, GgufSpool, GgufValue, GgufWriter, ModelManifest,
@@ -17,8 +16,8 @@ use quantinfer_format::{
 use quantinfer_model::llama::ggml_qk_channel;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
 use quantinfer_quant::{
-    quantize_q4_0, quantize_q4_k, quantize_q5_k, quantize_q6_k, NativeQ8_0Provider,
-    QuantizationProvider, QuantizedData,
+    FloatProvider, MixedPrecisionPlan, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
+    NativeQ6KProvider, NativeQ8_0Provider, QuantizationProvider, QuantizedData,
 };
 use serde_json::Value;
 
@@ -49,7 +48,16 @@ fn run() -> Result<(), String> {
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let requested_architecture = optional_value(&arguments, "--architecture");
-    let quantization = optional_value(&arguments, "--quantize");
+    let quantization = optional_value(&arguments, "--quantize")
+        .as_deref()
+        .map(parse_quantization)
+        .transpose()?
+        .unwrap_or(QuantizationScheme::None);
+    let mixed_precision = arguments
+        .iter()
+        .any(|argument| argument == "--mixed-precision")
+        .then(|| load_mixed_precision(&required_path(&arguments, "--mixed-precision")?))
+        .transpose()?;
     let ggml_layout = match optional_value(&arguments, "--gguf-layout").as_deref() {
         None if arguments.iter().any(|argument| argument == "--gguf-layout") => {
             return Err("--gguf-layout requires quantinfer or ggml".to_owned());
@@ -64,22 +72,15 @@ fn run() -> Result<(), String> {
     };
     let tokenizer_pre = optional_value(&arguments, "--tokenizer-pre");
     let use_ggml = arguments.iter().any(|argument| argument == "--ggml");
-    if use_ggml && quantization.as_deref() != Some("q8_0") {
+    if use_ggml && quantization != QuantizationScheme::Q8_0 {
         return Err("--ggml requires --quantize q8_0".to_owned());
     }
-    let q8_provider = q8_provider(use_ggml)?;
-    if let Some(value) = &quantization {
-        if value != "q8_0"
-            && value != "q4_0"
-            && value != "q4_k"
-            && value != "q5_k"
-            && value != "q6_k"
-        {
-            return Err(format!(
-                "unsupported quantization {value}; use q8_0, q4_0, q4_k, q5_k, or q6_k"
-            ));
-        }
+    if mixed_precision.is_some() && (ggml_layout || use_ggml) {
+        return Err(
+            "--mixed-precision requires the QuantInfer layout and native quantizers".to_owned(),
+        );
     }
+    let q8_provider = q8_provider(use_ggml)?;
 
     let config_json = fs::read_to_string(&config_path)
         .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?;
@@ -101,10 +102,10 @@ fn run() -> Result<(), String> {
                     .to_owned(),
             );
         }
-        Some(match quantization.as_deref() {
-            None => 0,
-            Some("q4_0") => 2,
-            Some("q8_0") => 7,
+        Some(match quantization {
+            QuantizationScheme::None => 0,
+            QuantizationScheme::Q4_0 => 2,
+            QuantizationScheme::Q8_0 => 7,
             _ => return Err("GGML layout supports F32, Q4_0 and Q8_0 export".to_owned()),
         })
     } else {
@@ -117,6 +118,12 @@ fn run() -> Result<(), String> {
 
     let mut writer = GgufWriter::new();
     model.write_metadata(&mut writer, ggml_file_type)?;
+    if mixed_precision.is_some() {
+        writer.insert_metadata(
+            "quantinfer.quantization.variant",
+            GgufValue::String(QuantizationScheme::Mixed.name().to_owned()),
+        );
+    }
     if use_ggml {
         writer.insert_metadata(
             "quantinfer.quantization.provider",
@@ -197,6 +204,7 @@ fn run() -> Result<(), String> {
     let mut spool = GgufSpool::new(scratch, writer);
     let mut written_names = BTreeSet::new();
     let mut manifest_tensors = Vec::new();
+    let mut projection_schemes = Vec::new();
     for (name, shape) in weights.tensors()? {
         let values = weights
             .tensor_f32(&name)
@@ -221,72 +229,56 @@ fn run() -> Result<(), String> {
         } else {
             values.len()
         };
-        let use_q8 = quantization.as_deref() == Some("q8_0")
-            && is_quantizable_linear(output_name)
-            && quantizable_width.is_multiple_of(quantinfer_core::Q8_0_BLOCK_SIZE);
-        let use_q4 = quantization.as_deref() == Some("q4_0")
-            && is_quantizable_linear(output_name)
-            && quantizable_width.is_multiple_of(quantinfer_core::Q4_0_BLOCK_SIZE);
-        let use_q4_k = quantization.as_deref() == Some("q4_k")
-            && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q4_K_BLOCK_SIZE);
-        let use_q5_k = quantization.as_deref() == Some("q5_k")
-            && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q4_K_BLOCK_SIZE);
-        let use_q6_k = quantization.as_deref() == Some("q6_k")
-            && is_quantizable_linear(output_name)
-            && values
-                .len()
-                .is_multiple_of(quantinfer_core::Q4_K_BLOCK_SIZE);
-        let mut descriptor = if use_q8 {
-            TensorStorageDescriptor::quantized(
-                DType::Q8_0,
-                QuantizationScheme::Q8_0,
-                Shape::from(shape.clone()),
-                quantinfer_core::Q8_0_BLOCK_SIZE,
-            )
-        } else if use_q4 {
-            TensorStorageDescriptor::quantized(
-                DType::Q4_0,
-                QuantizationScheme::Q4_0,
-                Shape::from(shape.clone()),
-                quantinfer_core::Q4_0_BLOCK_SIZE,
-            )
-        } else if use_q4_k {
-            TensorStorageDescriptor::quantized(
-                DType::Q4_K,
-                QuantizationScheme::Q4_K,
-                Shape::from(shape.clone()),
-                quantinfer_core::Q4_K_BLOCK_SIZE,
-            )
-        } else if use_q5_k {
-            TensorStorageDescriptor::quantized(
-                DType::Q5_K,
-                QuantizationScheme::Q5_K,
-                Shape::from(shape.clone()),
-                quantinfer_core::Q4_K_BLOCK_SIZE,
-            )
-        } else if use_q6_k {
-            TensorStorageDescriptor::quantized(
-                DType::Q6_K,
-                QuantizationScheme::Q6_K,
-                Shape::from(shape.clone()),
-                quantinfer_core::Q4_K_BLOCK_SIZE,
-            )
-        } else {
-            TensorStorageDescriptor::floating(DType::F32, Shape::from(shape.clone()))
+        let assignment = mixed_precision
+            .as_ref()
+            .and_then(|plan| plan.scheme_for(output_name));
+        let requested_scheme = assignment.unwrap_or(quantization);
+        let block_size = match requested_scheme {
+            QuantizationScheme::None => 1,
+            QuantizationScheme::Q8_0 => quantinfer_core::Q8_0_BLOCK_SIZE,
+            QuantizationScheme::Q4_0 => quantinfer_core::Q4_0_BLOCK_SIZE,
+            QuantizationScheme::Q4_K | QuantizationScheme::Q5_K | QuantizationScheme::Q6_K => {
+                quantinfer_core::Q4_K_BLOCK_SIZE
+            }
+            QuantizationScheme::Mixed => {
+                unreachable!("mixed precision must select a tensor scheme")
+            }
+        };
+        let is_projection = is_quantizable_linear(output_name);
+        let can_use_scheme = is_projection && quantizable_width.is_multiple_of(block_size);
+        if assignment.is_some() && !can_use_scheme {
+            return Err(format!(
+                "mixed precision assignment for {output_name} requires a projection aligned to {block_size} elements"
+            ));
         }
-        .map_err(|error| format!("cannot describe tensor {name}: {error}"))?;
+        let scheme = if can_use_scheme {
+            requested_scheme
+        } else {
+            QuantizationScheme::None
+        };
+        if mixed_precision.is_some() && is_projection && !projection_schemes.contains(&scheme) {
+            projection_schemes.push(scheme);
+        }
+        let provider: &dyn QuantizationProvider = match scheme {
+            QuantizationScheme::None => &FloatProvider,
+            QuantizationScheme::Q8_0 => q8_provider,
+            QuantizationScheme::Q4_0 => &NativeQ4_0Provider,
+            QuantizationScheme::Q4_K => &NativeQ4KProvider,
+            QuantizationScheme::Q5_K => &NativeQ5KProvider,
+            QuantizationScheme::Q6_K => &NativeQ6KProvider,
+            QuantizationScheme::Mixed => {
+                unreachable!("mixed precision must select a tensor scheme")
+            }
+        };
+        let mut descriptor = provider
+            .storage_descriptor(Shape::from(shape.clone()))
+            .map_err(|error| format!("cannot describe tensor {name}: {error}"))?;
         if ggml_layout && shape.len() == 2 {
             if output_name == "token_embd.weight" {
                 descriptor.logical_shape = Shape::from(vec![shape[1], shape[0]]);
             } else {
                 descriptor.physical_layout = GGML_OUTPUT_ROWS_LAYOUT.to_owned();
-                if use_q8 || use_q4 {
+                if scheme != QuantizationScheme::None {
                     descriptor.quantization_axis = QuantizationAxis::Axis(0);
                 }
             }
@@ -296,63 +288,52 @@ fn run() -> Result<(), String> {
             descriptor,
             checksum_sha256: None,
         });
-        let write_result = if use_q8 {
-            let tensor = Tensor::from_f32(shape.clone(), values)
+        let write_result = if scheme == QuantizationScheme::None {
+            spool.append(|writer| writer.add_f32_tensor(output_name, shape, &values))
+        } else {
+            let tensor = Tensor::from_f32(shape, values)
                 .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = q8_provider
+            let quantized = provider
                 .quantize(&tensor)
                 .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            let QuantizedData::Q8_0(quantized) = quantized else {
+            if quantized.scheme() != scheme {
                 return Err(format!(
-                    "Q8_0 provider returned a different scheme for {name}"
+                    "{} provider returned a different scheme for {name}",
+                    scheme.name()
                 ));
-            };
+            }
             spool.append(|writer| {
-                writer.add_q8_0_tensor(output_name, &quantized);
+                match &quantized {
+                    QuantizedData::Q8_0(data) => writer.add_q8_0_tensor(output_name, data),
+                    QuantizedData::Q4_0(data) => writer.add_q4_0_tensor(output_name, data),
+                    QuantizedData::Q4_K(data) => writer.add_q4_k_tensor(output_name, data),
+                    QuantizedData::Q5_K(data) => writer.add_q5_k_tensor(output_name, data),
+                    QuantizedData::Q6_K(data) => writer.add_q6_k_tensor(output_name, data),
+                    QuantizedData::Float(_) => unreachable!("provider scheme was checked"),
+                }
                 Ok(())
             })
-        } else if use_q4 {
-            let tensor = Tensor::from_f32(shape.clone(), values)
-                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = quantize_q4_0(&tensor)
-                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            spool.append(|writer| {
-                writer.add_q4_0_tensor(output_name, &quantized);
-                Ok(())
-            })
-        } else if use_q4_k {
-            let tensor = Tensor::from_f32(shape.clone(), values)
-                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = quantize_q4_k(&tensor)
-                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            spool.append(|writer| {
-                writer.add_q4_k_tensor(output_name, &quantized);
-                Ok(())
-            })
-        } else if use_q5_k {
-            let tensor = Tensor::from_f32(shape.clone(), values)
-                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = quantize_q5_k(&tensor)
-                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            spool.append(|writer| {
-                writer.add_q5_k_tensor(output_name, &quantized);
-                Ok(())
-            })
-        } else if use_q6_k {
-            let tensor = Tensor::from_f32(shape.clone(), values)
-                .map_err(|error| format!("cannot build tensor {name}: {error}"))?;
-            let quantized = quantize_q6_k(&tensor)
-                .map_err(|error| format!("cannot quantize tensor {name}: {error}"))?;
-            spool.append(|writer| {
-                writer.add_q6_k_tensor(output_name, &quantized);
-                Ok(())
-            })
-        } else {
-            spool.append(|writer| writer.add_f32_tensor(output_name, shape, &values))
         };
         write_result.map_err(|error| format!("cannot add tensor {name}: {error}"))?;
     }
     model.validate_required_tensors(&written_names)?;
+    if let Some(plan) = &mixed_precision {
+        if let Some(unknown) = plan
+            .assignments()
+            .keys()
+            .find(|name| !written_names.contains(*name))
+        {
+            return Err(format!(
+                "mixed precision assignment names unknown tensor {unknown}"
+            ));
+        }
+        if projection_schemes.len() < 2 {
+            return Err(
+                "mixed precision requires at least two schemes across the projection weights"
+                    .to_owned(),
+            );
+        }
+    }
     #[cfg(unix)]
     let output = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o666))
@@ -390,13 +371,10 @@ fn run() -> Result<(), String> {
     if let (Some(manifest_path), Some(checksum)) = (manifest_path, checksum) {
         let mut manifest = ModelManifest::new(model.architecture(), model.architecture());
         manifest.source_format = "safetensors-to-gguf".to_owned();
-        manifest.quantization = match quantization.as_deref() {
-            Some("q8_0") => QuantizationScheme::Q8_0,
-            Some("q4_0") => QuantizationScheme::Q4_0,
-            Some("q4_k") => QuantizationScheme::Q4_K,
-            Some("q5_k") => QuantizationScheme::Q5_K,
-            Some("q6_k") => QuantizationScheme::Q6_K,
-            _ => QuantizationScheme::None,
+        manifest.quantization = if mixed_precision.is_some() {
+            QuantizationScheme::Mixed
+        } else {
+            quantization
         };
         manifest.tensors = manifest_tensors;
         manifest.execution_variants.push(ExecutionVariant {
@@ -441,6 +419,38 @@ fn q8_provider(use_ggml: bool) -> Result<&'static dyn QuantizationProvider, Stri
     {
         Err("--ggml requires a converter built with the ggml feature".to_owned())
     }
+}
+
+fn parse_quantization(value: &str) -> Result<QuantizationScheme, String> {
+    match value {
+        "f32" => Ok(QuantizationScheme::None),
+        "q8_0" => Ok(QuantizationScheme::Q8_0),
+        "q4_0" => Ok(QuantizationScheme::Q4_0),
+        "q4_k" => Ok(QuantizationScheme::Q4_K),
+        "q5_k" => Ok(QuantizationScheme::Q5_K),
+        "q6_k" => Ok(QuantizationScheme::Q6_K),
+        _ => Err(format!(
+            "unsupported quantization {value}; use f32, q8_0, q4_0, q4_k, q5_k, or q6_k"
+        )),
+    }
+}
+
+fn load_mixed_precision(path: &Path) -> Result<MixedPrecisionPlan, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let assignments: BTreeMap<String, String> =
+        serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "cannot parse mixed precision plan {}: {error}",
+                path.display()
+            )
+        })?;
+    let mut plan = MixedPrecisionPlan::default();
+    for (name, scheme) in assignments {
+        let scheme = parse_quantization(&scheme).map_err(|error| format!("{name}: {error}"))?;
+        plan.assign(name, scheme);
+    }
+    Ok(plan)
 }
 
 enum WeightSource {
@@ -1020,7 +1030,7 @@ fn is_quantizable_linear(name: &str) -> bool {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize q8_0|q4_0|q4_k|q5_k|q6_k] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]"
     );
 }
 

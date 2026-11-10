@@ -51,6 +51,20 @@ fn resolve_backend_impl(
         }
     }
     let mut plan = resolver.resolve(&request)?;
+    let mixed = manifest.is_some_and(|manifest| manifest.quantization == QuantizationScheme::Mixed);
+    let mut mixed_plans = if mixed {
+        vec![plan.clone()]
+    } else {
+        Vec::new()
+    };
+    let mut projection_schemes = usize::from(
+        mixed
+            && reader.tensors().iter().any(|tensor| {
+                tensor.name.starts_with("blk.")
+                    && tensor.shape.len() == 2
+                    && matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
+            }),
+    );
 
     let mut checked = Vec::new();
     for tensor in reader.tensors() {
@@ -82,7 +96,10 @@ fn resolve_backend_impl(
                 "model tensors require incompatible CPU providers".to_owned(),
             ));
         }
-        if manifest.is_some_and(|manifest| {
+        if mixed {
+            mixed_plans.push(quantized_plan);
+            projection_schemes += 1;
+        } else if manifest.is_some_and(|manifest| {
             manifest.quantization == scheme
                 || (profile.is_some() && manifest.quantization == QuantizationScheme::None)
         }) {
@@ -91,6 +108,11 @@ fn resolve_backend_impl(
     }
 
     if let Some(manifest) = manifest {
+        if mixed && projection_schemes < 2 {
+            return Err(RuntimeError::InvalidInput(
+                "mixed precision package requires multiple projection tensor schemes".to_owned(),
+            ));
+        }
         if !manifest.execution_variants.is_empty()
             && !manifest.execution_variants.iter().any(|variant| {
                 variant.runtime_provider == plan.provider_name
@@ -104,7 +126,11 @@ fn resolve_backend_impl(
             )));
         }
         if let Some(profile) = profile {
-            profile.bind(manifest, &plan)?;
+            if mixed {
+                profile.bind_mixed(manifest, &mixed_plans)?;
+            } else {
+                profile.bind(manifest, &plan)?;
+            }
         }
     }
     match plan.provider_name.as_str() {

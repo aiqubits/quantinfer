@@ -115,6 +115,35 @@ jobs:
           fi
           grep -F 'checksum mismatch for shard model-00002-of-00002.safetensors' error.log
           test ! -e rejected.gguf
+      - name: Verify a mixed precision package and its inference profile
+        shell: bash
+        run: |
+          cargo build --release --locked -p quantinfer-cli
+          mkdir -p mixed/profiles
+          jq -n '{"blk.0.attn_q.weight":"q8_0", "blk.0.attn_k.weight":"q5_k",
+            "blk.0.attn_v.weight":"q6_k", "blk.0.ffn_gate.weight":"q4_k",
+            "blk.0.ffn_down.weight":"f32"}' > mixed-plan.json
+          target/release/quantinfer-convert --config config.json --weights model.safetensors \
+            --tokenizer tokenizer.json --quantize q4_0 --mixed-precision mixed-plan.json \
+            --output mixed/model.gguf --manifest mixed/manifest.json
+          target/release/quantinfer-cli inspect-gguf --input mixed --json > mixed-inventory.json
+          jq -e '.metadata["quantinfer.quantization.variant"] == "mixed"' mixed-inventory.json
+          jq -e '[.tensors[] | {key:.name, value:.dtype}] | from_entries |
+            .["blk.0.attn_q.weight"] == "Q8_0" and .["blk.0.attn_k.weight"] == "Q5_K" and
+            .["blk.0.attn_v.weight"] == "Q6_K" and .["blk.0.ffn_gate.weight"] == "Q4_K" and
+            .["blk.0.ffn_down.weight"] == "F32" and .["blk.0.ffn_up.weight"] == "Q4_0"' mixed-inventory.json
+          jq -e '.quantization == "Mixed" and .execution_variants[0].quantization == "Mixed"' mixed/manifest.json
+          jq -n '{model_variant:"cpu-scalar", quantization_variant:"mixed", runtime_provider:"cpu-scalar",
+            kernel_provider:"cpu-scalar", context_length:64, thread_count:2,
+            memory_budget_bytes:2147483648}' > mixed/profiles/default.json
+          profile_sha=$(sha256sum mixed/profiles/default.json | cut -d ' ' -f 1)
+          jq --arg sha "$profile_sha" '.checksums["profiles/default.json"] = $sha' \
+            mixed/manifest.json > mixed/manifest.tmp
+          mv mixed/manifest.tmp mixed/manifest.json
+          generate=(target/release/quantinfer-cli generate --prompt 'The capital of France is' --max-new-tokens 6)
+          "${generate[@]}" --input mixed/model.gguf --max-sequence-length 64 | grep '^generated_tokens=' > direct.txt
+          "${generate[@]}" --input mixed --inference-profile default | grep '^generated_tokens=' > profiled.txt
+          diff -u direct.txt profiled.txt
       - name: Record SmolLM2 F32 benchmark
         run: |
           cargo build --release --locked -p quantinfer-cli

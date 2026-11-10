@@ -107,3 +107,17 @@ The profile supplies the context length, CPU thread count and optional
 memory budget. Use it in place of `--max-sequence-length` and
 `--memory-budget-bytes`. The quality threshold and performance baseline are
 optional reference values. `--profile` still reports generation timings.
+
+## Mixed precision conversion
+
+Supply `--mixed-precision PLAN.json` with per-tensor overrides keyed by the
+canonical GGUF projection name. For example, `{"blk.0.attn_q.weight":"q8_0"}`
+with `--quantize q4_0` stores the first query projection in Q8_0 and other
+eligible projections in Q4_0. The default is F32 when `--quantize` is omitted.
+Explicit assignments must name existing, block-aligned projections. The plan
+must result in at least two projection schemes.
+
+Mixed models use the QuantInfer layout. The model manifest records `Mixed`
+for the variant and the actual dtype and scheme for each tensor. Select
+`"quantization_variant": "mixed"` in its inference profile. The runtime
+resolves the kernels for each scheme and validates them against the profile.

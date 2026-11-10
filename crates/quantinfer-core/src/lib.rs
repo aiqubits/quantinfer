@@ -386,6 +386,22 @@ pub enum QuantizationScheme {
     Q4_K,
     Q5_K,
     Q6_K,
+    /// A model-level variant that combines different tensor schemes.
+    Mixed,
+}
+
+impl QuantizationScheme {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "f32",
+            Self::Q8_0 => "q8_0",
+            Self::Q4_0 => "q4_0",
+            Self::Q4_K => "q4_k",
+            Self::Q5_K => "q5_k",
+            Self::Q6_K => "q6_k",
+            Self::Mixed => "mixed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,7 +503,7 @@ impl TensorStorageDescriptor {
                 QuantizationScheme::Q4_K => "k_quant".to_owned(),
                 QuantizationScheme::Q5_K => "k_quant".to_owned(),
                 QuantizationScheme::Q6_K => "k_quant".to_owned(),
-                QuantizationScheme::None => "none".to_owned(),
+                QuantizationScheme::None | QuantizationScheme::Mixed => "none".to_owned(),
             },
             backend_requirements: Vec::new(),
         };
