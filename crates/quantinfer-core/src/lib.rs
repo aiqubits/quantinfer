@@ -491,6 +491,11 @@ impl TensorStorageDescriptor {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if self.logical_shape.dims().contains(&0) {
+            return Err(CoreError::InvalidShape(
+                "storage descriptor dimensions must be greater than zero".to_owned(),
+            ));
+        }
         let valid = match (self.storage_type, self.dtype, self.quantization) {
             (StorageType::F32, DType::F32, QuantizationScheme::None)
             | (StorageType::F16, DType::F16, QuantizationScheme::None)
