@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+simd = ["dep:quantinfer-backend-cpu-simd"]
+
 [dependencies]
 quantinfer-core = { workspace = true }
 quantinfer-kernel = { workspace = true }
+quantinfer-backend-cpu-simd = { path = "../cpu-simd", version = "0.1.0", optional = true }

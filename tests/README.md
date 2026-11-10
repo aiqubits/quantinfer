@@ -121,3 +121,11 @@ Mixed models use the QuantInfer layout. The model manifest records `Mixed`
 for the variant and the actual dtype and scheme for each tensor. Select
 `"quantization_variant": "mixed"` in its inference profile. The runtime
 resolves the kernels for each scheme and validates them against the profile.
+
+## Optional CPU SIMD
+
+Build the CLI with `cargo build --release -p quantinfer-cli --features cpu-simd`
+to enable runtime-selected AVX-512, AVX2 or AArch64 NEON for F32 matrix
+multiplication. The CPU backend falls back to scalar on other hardware. The
+SIMD tests compare unaligned slices, tail columns and threaded matrix products
+against the scalar reference. The CI matrix exercises x86-64 and AArch64.

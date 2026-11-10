@@ -7,6 +7,7 @@ license.workspace = true
 [features]
 default = ["cpu"]
 cpu = ["dep:quantinfer-backend-cpu"]
+cpu-simd = ["cpu", "quantinfer-backend-cpu/simd"]
 wgpu = ["dep:quantinfer-backend-wgpu"]
 cuda = ["dep:quantinfer-backend-cuda"]
 metal = ["dep:quantinfer-backend-metal"]

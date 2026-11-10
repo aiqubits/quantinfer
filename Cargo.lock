@@ -248,9 +248,14 @@ dependencies = [
 name = "quantinfer-backend-cpu"
 version = "0.1.0"
 dependencies = [
+ "quantinfer-backend-cpu-simd",
  "quantinfer-core",
  "quantinfer-kernel",
 ]
+
+[[package]]
+name = "quantinfer-backend-cpu-simd"
+version = "0.1.0"
 
 [[package]]
 name = "quantinfer-backend-cuda"

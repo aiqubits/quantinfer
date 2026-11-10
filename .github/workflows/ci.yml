@@ -17,3 +17,23 @@ jobs:
       - run: cargo test --workspace
       - run: cargo run -p quantinfer-xtask -- bench
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  cpu-simd:
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compare optional SIMD kernels with the scalar reference
+        shell: bash
+        run: |
+          cargo test --release --locked -p quantinfer-backend-cpu -p quantinfer-backend-cpu-simd \
+            --features quantinfer-backend-cpu/simd -- --nocapture | tee simd.log
+          if [[ "$RUNNER_ARCH" == ARM64 ]]; then
+            grep -Fx 'verified Neon' simd.log
+          else
+            grep -Fx 'verified Avx2' simd.log
+          fi
+      - run: cargo check --locked -p quantinfer-cli --features cpu-simd

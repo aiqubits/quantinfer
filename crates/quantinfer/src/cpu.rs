@@ -136,7 +136,7 @@ fn resolve_backend_impl(
     match plan.provider_name.as_str() {
         "cpu-scalar" => Ok(CpuScalar::with_config(CpuRuntimeConfig {
             threads: profile.map_or(1, |profile| profile.thread_count),
-            ..CpuScalar::new().config()
+            ..CpuRuntimeConfig::default()
         })),
         provider => Err(RuntimeError::InvalidInput(format!(
             "CPU kernel factory is unavailable for provider {provider}"

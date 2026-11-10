@@ -18,20 +18,26 @@ pub enum CpuIsa {
 
 impl CpuIsa {
     pub fn detect() -> Self {
-        #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
-        {
-            return CpuIsa::Neon;
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            if is_x86_feature_detected!("avx512f") {
-                return CpuIsa::Avx512;
-            }
-            if is_x86_feature_detected!("avx2") {
-                return CpuIsa::Avx2;
+        #[cfg(feature = "simd")]
+        for isa in [Self::Avx512, Self::Avx2, Self::Neon] {
+            if isa.scaled_add().is_some() {
+                return isa;
             }
         }
-        CpuIsa::Scalar
+        Self::Scalar
+    }
+
+    #[cfg(feature = "simd")]
+    fn scaled_add(self) -> Option<quantinfer_backend_cpu_simd::ScaledAdd> {
+        use quantinfer_backend_cpu_simd::{ScaledAdd, SimdIsa};
+
+        let isa = match self {
+            Self::Scalar => return None,
+            Self::Avx2 => SimdIsa::Avx2,
+            Self::Avx512 => SimdIsa::Avx512,
+            Self::Neon => SimdIsa::Neon,
+        };
+        ScaledAdd::for_isa(isa)
     }
 }
 
@@ -116,6 +122,26 @@ impl CpuScalar {
     where
         F: Fn(usize) -> Result<f32> + Sync + Send,
     {
+        self.matmul_rows_accumulate(lhs_values, rows, inner, columns, |output, index, left| {
+            let rhs_offset = index * columns;
+            for (column, result) in output.iter_mut().enumerate() {
+                *result += left * value(rhs_offset + column)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn matmul_rows_accumulate<F>(
+        &self,
+        lhs_values: &[f32],
+        rows: usize,
+        inner: usize,
+        columns: usize,
+        accumulate: F,
+    ) -> Result<Vec<f32>>
+    where
+        F: Fn(&mut [f32], usize, f32) -> Result<()> + Sync,
+    {
         if columns == 0 {
             return Err(KernelError::InvalidInput(
                 "matmul output must have at least one column".to_owned(),
@@ -127,10 +153,7 @@ impl CpuScalar {
                 .zip(output.chunks_exact_mut(columns))
             {
                 for (index, &left) in lhs_row.iter().enumerate() {
-                    let rhs_offset = index * columns;
-                    for (column, result) in output_row.iter_mut().enumerate() {
-                        *result += left * value(rhs_offset + column)?;
-                    }
+                    accumulate(output_row, index, left)?;
                 }
             }
             Ok(())
@@ -174,6 +197,20 @@ impl CpuScalar {
         inner: usize,
         columns: usize,
     ) -> Result<Vec<f32>> {
+        #[cfg(feature = "simd")]
+        if let Some(kernel) = self.config.isa.scaled_add() {
+            return self.matmul_rows_accumulate(
+                lhs_values,
+                rows,
+                inner,
+                columns,
+                |output, index, left| {
+                    let start = index * columns;
+                    kernel.apply(output, &rhs_values[start..start + columns], left);
+                    Ok(())
+                },
+            );
+        }
         self.matmul_rows_with(lhs_values, rows, inner, columns, |index| {
             Ok(rhs_values[index])
         })
@@ -695,6 +732,36 @@ mod tests {
         .matmul(&lhs, &rhs)
         .unwrap();
         assert_eq!(threaded.as_f32().unwrap(), scalar.as_f32().unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "simd")]
+    fn f32_matmul_dispatch_matches_scalar_with_threads_and_tail_columns() {
+        let lhs = Tensor::from_f32(
+            vec![5, 7],
+            (0..35).map(|index| index as f32 / 9.0 - 2.0).collect(),
+        )
+        .unwrap();
+        let rhs = Tensor::from_f32(
+            vec![7, 37],
+            (0..259).map(|index| index as f32 / 13.0 - 8.0).collect(),
+        )
+        .unwrap();
+        let scalar = CpuScalar::new().matmul(&lhs, &rhs).unwrap();
+        for isa in [CpuIsa::Avx2, CpuIsa::Avx512, CpuIsa::Neon] {
+            let actual = CpuScalar::with_config(CpuRuntimeConfig {
+                isa,
+                threads: 3,
+                ..CpuRuntimeConfig::default()
+            })
+            .matmul(&lhs, &rhs)
+            .unwrap();
+            assert_eq!(
+                actual.as_f32().unwrap(),
+                scalar.as_f32().unwrap(),
+                "{isa:?}"
+            );
+        }
     }
 
     #[test]
