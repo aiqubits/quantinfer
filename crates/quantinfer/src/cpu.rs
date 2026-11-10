@@ -12,6 +12,10 @@ use quantinfer_runtime::{
     ExecutionRequest, ExecutionResolver, InferenceProfile, Operation, Result, RuntimeError,
 };
 
+mod model;
+
+pub use model::{load_gguf_tokenizer, model_architecture, CpuModel, ModelSource};
+
 /// Select a CPU kernel that supports the weight types recorded in a GGUF.
 pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) -> Result<CpuScalar> {
     resolve_backend_impl(reader, manifest, None)

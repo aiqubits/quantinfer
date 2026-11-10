@@ -1,0 +1,266 @@
+//! Shared CPU model and artifact loading.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use quantinfer_core::Tensor;
+use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
+use quantinfer_runtime::{
+    DecoderModel, InferenceProfile, KvCache, LlamaModel, Qwen3Model, Result, RuntimeError,
+};
+use quantinfer_tokenizer::GgufBpeTokenizer;
+
+use super::{resolve_backend, resolve_profiled_backend, CpuScalar};
+
+pub enum CpuModel {
+    Qwen3(Qwen3Model<CpuScalar>),
+    Llama(LlamaModel<CpuScalar>),
+}
+
+impl CpuModel {
+    pub fn from_gguf(
+        reader: &GgufReader,
+        manifest: Option<&ModelManifest>,
+        profile: Option<&InferenceProfile>,
+    ) -> Result<Self> {
+        let architecture = model_architecture(reader, manifest)?;
+        let backend = if let Some(profile) = profile {
+            let manifest = manifest.ok_or_else(|| {
+                RuntimeError::InvalidInput("inference profiles require a model manifest".to_owned())
+            })?;
+            resolve_profiled_backend(reader, manifest, profile)
+        } else {
+            resolve_backend(reader, manifest)
+        }
+        .map_err(|error| {
+            RuntimeError::InvalidInput(format!("cannot resolve CPU execution provider: {error}"))
+        })?;
+        match architecture {
+            "qwen3" => Qwen3Model::from_gguf(backend, reader)
+                .map(Self::Qwen3)
+                .map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot load Qwen3 model: {error}"))
+                }),
+            "llama" => LlamaModel::from_gguf(backend, reader)
+                .map(Self::Llama)
+                .map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot load Llama model: {error}"))
+                }),
+            other => Err(RuntimeError::InvalidInput(format!(
+                "unsupported GGUF architecture {other}"
+            ))),
+        }
+    }
+
+    pub fn vocab_size(&self) -> usize {
+        match self {
+            Self::Qwen3(model) => model.config.vocab_size,
+            Self::Llama(model) => model.config.vocab_size,
+        }
+    }
+
+    pub fn max_position_embeddings(&self) -> usize {
+        match self {
+            Self::Qwen3(model) => model.config.max_position_embeddings,
+            Self::Llama(model) => model.config.max_position_embeddings,
+        }
+    }
+
+    pub fn new_cache(&self, context_length: usize) -> Result<KvCache> {
+        if context_length > self.max_position_embeddings() {
+            return Err(RuntimeError::InvalidInput(
+                "requested context exceeds model capacity".to_owned(),
+            ));
+        }
+        let (layers, heads, head_dim) = match self {
+            Self::Qwen3(model) => (
+                model.config.num_hidden_layers,
+                model.config.num_key_value_heads,
+                model.config.effective_head_dim(),
+            ),
+            Self::Llama(model) => (
+                model.config.num_hidden_layers,
+                model.config.num_key_value_heads(),
+                model.config.effective_head_dim(),
+            ),
+        };
+        KvCache::new(layers, context_length, heads, head_dim)
+    }
+}
+
+impl DecoderModel for CpuModel {
+    fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
+        match self {
+            Self::Qwen3(model) => model.forward(token_ids, cache),
+            Self::Llama(model) => model.forward(token_ids, cache),
+        }
+    }
+}
+
+pub fn model_architecture<'a>(
+    reader: &'a GgufReader,
+    manifest: Option<&'a ModelManifest>,
+) -> Result<&'a str> {
+    let gguf_architecture = match reader.metadata().get("general.architecture") {
+        Some(GgufValue::String(value)) => Some(value.as_str()),
+        Some(_) => {
+            return Err(RuntimeError::InvalidInput(
+                "GGUF general.architecture must be a string".to_owned(),
+            ))
+        }
+        None => None,
+    };
+    match manifest {
+        Some(manifest) => {
+            if gguf_architecture.is_some_and(|architecture| architecture != manifest.architecture) {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "model package architecture {} disagrees with the GGUF",
+                    manifest.architecture
+                )));
+            }
+            Ok(&manifest.architecture)
+        }
+        None => Ok(gguf_architecture.unwrap_or("qwen3")),
+    }
+}
+
+pub enum ModelSource {
+    Package(Box<ModelPackage>),
+    Gguf(PathBuf),
+}
+
+impl ModelSource {
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if path.is_dir() {
+            ModelPackage::open(path)
+                .map(|package| Self::Package(Box::new(package)))
+                .map_err(|error| {
+                    RuntimeError::InvalidInput(format!(
+                        "cannot open model package {}: {error}",
+                        path.display()
+                    ))
+                })
+        } else {
+            Ok(Self::Gguf(path.to_path_buf()))
+        }
+    }
+
+    pub fn package(&self) -> Option<&ModelPackage> {
+        match self {
+            Self::Package(package) => Some(package),
+            Self::Gguf(_) => None,
+        }
+    }
+
+    pub fn open_reader(&self, budget: Option<usize>) -> Result<GgufReader> {
+        match self {
+            Self::Package(package) => {
+                let model_name = package
+                    .manifest
+                    .checksums
+                    .keys()
+                    .find(|name| name.ends_with(".gguf"))
+                    .map(String::as_str)
+                    .or_else(|| {
+                        package
+                            .root()
+                            .join("model.gguf")
+                            .exists()
+                            .then_some("model.gguf")
+                    })
+                    .ok_or_else(|| {
+                        RuntimeError::InvalidInput(
+                            "model package manifest does not identify a GGUF file".to_owned(),
+                        )
+                    })?;
+                check_file_budget(&package.root().join(model_name), budget)?;
+                let bytes = package.read_verified(model_name).map_err(|error| {
+                    RuntimeError::InvalidInput(format!(
+                        "cannot verify model package tensor file: {error}"
+                    ))
+                })?;
+                GgufReader::open(bytes).map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot parse packaged GGUF: {error}"))
+                })
+            }
+            Self::Gguf(path) => {
+                check_file_budget(path, budget)?;
+                let bytes = fs::read(path).map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
+                })?;
+                GgufReader::open(bytes).map_err(|error| {
+                    RuntimeError::InvalidInput(format!("cannot parse GGUF: {error}"))
+                })
+            }
+        }
+    }
+}
+
+fn check_file_budget(path: &Path, budget: Option<usize>) -> Result<()> {
+    if let Some(budget) = budget {
+        let file_size = fs::metadata(path)
+            .map_err(|error| {
+                RuntimeError::InvalidInput(format!("cannot stat {}: {error}", path.display()))
+            })?
+            .len();
+        if file_size > budget as u64 {
+            return Err(RuntimeError::InvalidInput(format!(
+                "memory budget check failed: GGUF file is {file_size} bytes, budget is {budget}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub fn load_gguf_tokenizer(reader: &GgufReader) -> Result<GgufBpeTokenizer> {
+    let tokens = metadata_string_array(reader, "tokenizer.ggml.tokens")?;
+    let merges = metadata_string_array_or_empty(reader, "tokenizer.ggml.merges")?;
+    let bos_token_id = metadata_usize(reader, "tokenizer.ggml.bos_token_id")?;
+    let eos_token_id = metadata_usize(reader, "tokenizer.ggml.eos_token_id")?;
+    GgufBpeTokenizer::new(tokens, &merges, bos_token_id, eos_token_id).map_err(|error| {
+        RuntimeError::InvalidInput(format!("cannot build GGUF tokenizer: {error}"))
+    })
+}
+
+fn metadata_string_array(reader: &GgufReader, key: &str) -> Result<Vec<String>> {
+    let value = reader.metadata().get(key).ok_or_else(|| {
+        RuntimeError::InvalidInput(format!("GGUF is missing tokenizer metadata {key}"))
+    })?;
+    let invalid =
+        || RuntimeError::InvalidInput(format!("GGUF metadata {key} must be an array of strings"));
+    match value {
+        GgufValue::Array(values) => values
+            .iter()
+            .map(|value| match value {
+                GgufValue::String(value) => Ok(value.clone()),
+                _ => Err(invalid()),
+            })
+            .collect(),
+        _ => Err(invalid()),
+    }
+}
+
+fn metadata_string_array_or_empty(reader: &GgufReader, key: &str) -> Result<Vec<String>> {
+    if reader.metadata().contains_key(key) {
+        metadata_string_array(reader, key)
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
+    let Some(value) = reader.metadata().get(key) else {
+        return Ok(None);
+    };
+    let overflow = |_| RuntimeError::InvalidInput(format!("GGUF metadata {key} overflows usize"));
+    match value {
+        GgufValue::U32(value) => Ok(Some(*value as usize)),
+        GgufValue::U64(value) => usize::try_from(*value).map(Some).map_err(overflow),
+        GgufValue::I32(value) if *value >= 0 => Ok(Some(*value as usize)),
+        GgufValue::I64(value) if *value >= 0 => usize::try_from(*value).map(Some).map_err(overflow),
+        _ => Err(RuntimeError::InvalidInput(format!(
+            "GGUF metadata {key} must be an unsigned integer"
+        ))),
+    }
+}
