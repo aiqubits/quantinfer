@@ -6,3 +6,9 @@ license.workspace = true
 
 [dependencies]
 quantinfer = { workspace = true }
+wasmtime = { version = "50.0.0", default-features = false, features = ["std"], optional = true }
+wasmtime-wasi-nn = { version = "50.0.0", default-features = false, optional = true }
+
+[features]
+wasmtime-host = ["dep:wasmtime", "dep:wasmtime-wasi-nn"]
+conformance = ["wasmtime-host", "wasmtime/cranelift", "wasmtime/wat"]

@@ -38,6 +38,7 @@ on:
       - "bindings/python/**"
       - "bindings/wasm/**"
       - "targets/wasm/**"
+      - "targets/wasi-nn/**"
       - "benches/**"
       - "tools/quantinfer-convert/**"
       - "model-zoo/manifests/**"
@@ -236,6 +237,12 @@ jobs:
             --max-new-tokens 8 --max-sequence-length 64 | sed -n 's/^generated_tokens=//p')
           node bindings/wasm/tests/smoke.cjs "$RUNNER_TEMP/wasm/quantinfer_wasm.js" \
             smollm2-q4_0.qif tests/golden/smollm2-135m-f32.json "$expected"
+      - name: Run a WASI-NN guest against the native SmolLM2 runtime
+        env:
+          QUANTINFER_WASI_NN_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
+        run: |
+          cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
+            --features conformance --test host -- --include-ignored
       - uses: actions/upload-artifact@v4
         if: always()
         with:
