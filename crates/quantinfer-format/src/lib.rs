@@ -7,9 +7,9 @@ use std::fmt;
 
 use half::{bf16, f16};
 use quantinfer_core::{
-    Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
-    QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE,
-    Q8_0_BLOCK_SIZE,
+    Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
+    QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K, Tensor, Q4_0_BLOCK_SIZE,
+    Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 
 pub type Result<T> = std::result::Result<T, FormatError>;
@@ -283,6 +283,22 @@ impl GgufWriter {
             name: name.into(),
             shape: tensor.shape().dims().to_vec(),
             dtype: GgmlType::Q5_K,
+            data,
+        });
+    }
+
+    pub fn add_q6_k_tensor(&mut self, name: impl Into<String>, tensor: &QuantizedTensorQ6K) {
+        let mut data = Vec::with_capacity(tensor.blocks().len() * 210);
+        for block in tensor.blocks() {
+            data.extend_from_slice(&half::f16::from_f32(block.scale).to_le_bytes());
+            data.extend(block.scales.iter().map(|value| *value as u8));
+            data.extend_from_slice(&block.low_bits);
+            data.extend_from_slice(&block.high_bits);
+        }
+        self.tensors.push(PendingTensor {
+            name: name.into(),
+            shape: tensor.shape().dims().to_vec(),
+            dtype: GgmlType::Q6_K,
             data,
         });
     }
@@ -678,6 +694,41 @@ impl GgufReader {
             });
         }
         Ok(QuantizedTensorQ5K::from_blocks(info.shape.clone(), blocks)?)
+    }
+
+    pub fn tensor_q6_k(&self, name: &str) -> Result<QuantizedTensorQ6K> {
+        let info = self.tensor_info(name)?;
+        if info.dtype != GgmlType::Q6_K {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} has type {:?}, expected Q6_K",
+                info.dtype
+            )));
+        }
+        let bytes = self.tensor_bytes(name)?;
+        if !bytes.len().is_multiple_of(210) {
+            return Err(FormatError::Invalid(format!(
+                "GGUF Q6_K tensor {name} has an invalid byte length"
+            )));
+        }
+        let mut blocks = Vec::with_capacity(bytes.len() / 210);
+        for chunk in bytes.as_chunks::<210>().0 {
+            let scale = f16::from_le_bytes(chunk[..2].try_into().unwrap()).to_f32();
+            let mut scales = [0_i8; 16];
+            for (index, value) in scales.iter_mut().enumerate() {
+                *value = chunk[2 + index] as i8;
+            }
+            let mut low_bits = [0_u8; 128];
+            low_bits.copy_from_slice(&chunk[18..146]);
+            let mut high_bits = [0_u8; 64];
+            high_bits.copy_from_slice(&chunk[146..]);
+            blocks.push(Q6KBlock {
+                scale,
+                scales,
+                low_bits,
+                high_bits,
+            });
+        }
+        Ok(QuantizedTensorQ6K::from_blocks(info.shape.clone(), blocks)?)
     }
 }
 

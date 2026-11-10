@@ -3,8 +3,8 @@
 #![forbid(unsafe_code)]
 
 use quantinfer_core::{
-    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, Shape, Tensor,
-    Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K,
+    Shape, Tensor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
@@ -124,6 +124,24 @@ impl CpuScalar {
         Ok(block.scale * f32::from(scales[subblock]) * f32::from(q)
             - block.min_scale * f32::from(mins[subblock]))
     }
+
+    fn quantized_value_q6_k(&self, tensor: &QuantizedTensorQ6K, index: usize) -> Result<f32> {
+        let block = tensor
+            .blocks()
+            .get(index / Q4_K_BLOCK_SIZE)
+            .ok_or_else(|| KernelError::InvalidInput("Q6_K index is out of bounds".to_owned()))?;
+        let local = index % Q4_K_BLOCK_SIZE;
+        let ip = local / 128;
+        let within = local % 128;
+        let chunk = within / 32;
+        let il = within % 32;
+        let packed = block.low_bits[ip * 64 + if chunk.is_multiple_of(2) { il } else { 32 + il }];
+        let low = if chunk < 2 { packed & 0xf } else { packed >> 4 };
+        let high = block.high_bits[ip * 32 + il];
+        let q = low | (((high >> (chunk * 2)) & 3) << 4);
+        let subblock = local / 16;
+        Ok(block.scale * f32::from(block.scales[subblock]) * (i32::from(q) - 32) as f32)
+    }
 }
 
 impl KernelBackend for CpuScalar {
@@ -240,6 +258,30 @@ impl KernelBackend for CpuScalar {
                 for inner in 0..k {
                     sum += lhs_values[row * k + inner]
                         * self.quantized_value_q5_k(rhs, inner * n + column)?;
+                }
+                output[row * n + column] = sum;
+            }
+        }
+        Ok(Tensor::from_f32(vec![m, n], output)?)
+    }
+
+    fn matmul_q6_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ6K) -> Result<Tensor> {
+        let (m, k) = self.expect_matrix(lhs, "lhs")?;
+        let rhs_shape = rhs.shape().dims();
+        if rhs_shape.len() != 2 || rhs_shape[0] != k {
+            return Err(KernelError::InvalidInput(
+                "Q6_K rhs must be a rank-2 matrix with a matching inner dimension".to_owned(),
+            ));
+        }
+        let n = rhs_shape[1];
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let mut output = vec![0.0; m * n];
+        for row in 0..m {
+            for column in 0..n {
+                let mut sum = 0.0;
+                for inner in 0..k {
+                    sum += lhs_values[row * k + inner]
+                        * self.quantized_value_q6_k(rhs, inner * n + column)?;
                 }
                 output[row * n + column] = sum;
             }

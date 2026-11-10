@@ -1,5 +1,6 @@
 use quantinfer_core::{
-    DType, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, Shape, Tensor,
+    DType, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K,
+    QuantizedTensorQ6K, Shape, Tensor,
 };
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
@@ -15,6 +16,7 @@ pub enum LinearWeight {
     Q4_0(QuantizedTensor4),
     Q4_K(QuantizedTensorQ4K),
     Q5_K(QuantizedTensorQ5K),
+    Q6_K(QuantizedTensorQ6K),
 }
 
 impl LinearWeight {
@@ -25,6 +27,7 @@ impl LinearWeight {
             Self::Q4_0(tensor) => tensor.shape(),
             Self::Q4_K(tensor) => tensor.shape(),
             Self::Q5_K(tensor) => tensor.shape(),
+            Self::Q6_K(tensor) => tensor.shape(),
         }
     }
 
@@ -35,6 +38,7 @@ impl LinearWeight {
             Self::Q4_0(_) => DType::Q4_0,
             Self::Q4_K(_) => DType::Q4_K,
             Self::Q5_K(_) => DType::Q5_K,
+            Self::Q6_K(_) => DType::Q6_K,
         }
     }
 
@@ -45,6 +49,7 @@ impl LinearWeight {
             Self::Q4_0(weight) => Ok(backend.matmul_q4_0(input, weight)?),
             Self::Q4_K(weight) => Ok(backend.matmul_q4_k(input, weight)?),
             Self::Q5_K(weight) => Ok(backend.matmul_q5_k(input, weight)?),
+            Self::Q6_K(weight) => Ok(backend.matmul_q6_k(input, weight)?),
         }
     }
 }
@@ -353,9 +358,7 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
         GgmlType::Q8_0 => Ok(LinearWeight::Q8_0(reader.tensor_q8_0(name)?)),
         GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
         GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
-        GgmlType::Q6_K => Err(RuntimeError::InvalidInput(format!(
-            "GGUF tensor {name} uses an unsupported K-quant runtime type"
-        ))),
+        GgmlType::Q6_K => Ok(LinearWeight::Q6_K(reader.tensor_q6_k(name)?)),
         GgmlType::Q5_K => Ok(LinearWeight::Q5_K(reader.tensor_q5_k(name)?)),
     }
 }

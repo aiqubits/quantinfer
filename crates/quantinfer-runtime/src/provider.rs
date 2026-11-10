@@ -231,6 +231,7 @@ impl Default for CpuScalarProvider {
                 base(DType::Q4_0, QuantizationScheme::Q4_0, 32),
                 base(DType::Q4_K, QuantizationScheme::Q4_K, 256),
                 base(DType::Q5_K, QuantizationScheme::Q5_K, 256),
+                base(DType::Q6_K, QuantizationScheme::Q6_K, 256),
             ],
         }
     }

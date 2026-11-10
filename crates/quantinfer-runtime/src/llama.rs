@@ -289,9 +289,7 @@ fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
         GgmlType::Q4_0 => Ok(LinearWeight::Q4_0(reader.tensor_q4_0(name)?)),
         GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
         GgmlType::Q5_K => Ok(LinearWeight::Q5_K(reader.tensor_q5_k(name)?)),
-        GgmlType::Q6_K => Err(RuntimeError::InvalidInput(format!(
-            "GGUF tensor {name} uses an unsupported K-quant runtime type"
-        ))),
+        GgmlType::Q6_K => Ok(LinearWeight::Q6_K(reader.tensor_q6_k(name)?)),
     }
 }
 
