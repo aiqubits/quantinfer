@@ -12,7 +12,7 @@ use quantinfer_quant::{
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
 use crate::qwen3::{add, load_linear, transpose_matrix, LinearWeight};
-use crate::{DecodeBatchItem, KvCache, Result, RuntimeError};
+use crate::{DecodeBatchItem, KvCache, LoraAdapter, LoraProjection, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
 pub struct LlamaLayerWeights {
@@ -186,6 +186,7 @@ pub struct LlamaModel<B> {
     pub layers: Vec<LlamaLayerWeights>,
     pub final_norm: Tensor,
     pub lm_head: Tensor,
+    lora_head: Option<LoraProjection>,
 }
 
 impl<B: KernelBackend> LlamaModel<B> {
@@ -232,7 +233,28 @@ impl<B: KernelBackend> LlamaModel<B> {
             layers,
             final_norm,
             lm_head,
+            lora_head: None,
         })
+    }
+
+    /// Attach low-rank weights before populating a KV cache for the adapted model.
+    pub fn attach_lora(&mut self, adapter: LoraAdapter) -> Result<()> {
+        let mut projections = self
+            .layers
+            .iter_mut()
+            .map(|layer| {
+                [
+                    &mut layer.q_proj,
+                    &mut layer.k_proj,
+                    &mut layer.v_proj,
+                    &mut layer.o_proj,
+                    &mut layer.gate_proj,
+                    &mut layer.up_proj,
+                    &mut layer.down_proj,
+                ]
+            })
+            .collect::<Vec<_>>();
+        adapter.install(&mut projections, &self.lm_head, &mut self.lora_head)
     }
 
     pub fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
@@ -321,7 +343,11 @@ impl<B: KernelBackend> LlamaModel<B> {
         let hidden = self
             .backend
             .rms_norm(hidden, &self.final_norm, self.config.rms_norm_eps)?;
-        Ok(self.backend.matmul(&hidden, &self.lm_head)?)
+        let logits = self.backend.matmul(&hidden, &self.lm_head)?;
+        match &self.lora_head {
+            Some(adapter) => adapter.add_to(&self.backend, &hidden, logits),
+            None => Ok(logits),
+        }
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {

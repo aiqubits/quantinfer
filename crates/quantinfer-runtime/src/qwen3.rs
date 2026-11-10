@@ -8,7 +8,7 @@ use quantinfer_model::{ModelSpec, Qwen3Adapter, Qwen3Config, TensorRole};
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
-use crate::{DecodeBatchItem, KvCache, Result, RuntimeError};
+use crate::{DecodeBatchItem, KvCache, LoraAdapter, LoraProjection, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
 #[allow(non_camel_case_types)]
@@ -21,6 +21,10 @@ pub enum LinearWeight {
     Q6_K(QuantizedTensorQ6K),
     Q8_0OutputRows(QuantizedTensor),
     Q4_0OutputRows(QuantizedTensor4),
+    Lora {
+        base: Box<LinearWeight>,
+        projection: LoraProjection,
+    },
 }
 
 impl LinearWeight {
@@ -32,6 +36,7 @@ impl LinearWeight {
             Self::Q4_K(tensor) => tensor.shape(),
             Self::Q5_K(tensor) => tensor.shape(),
             Self::Q6_K(tensor) => tensor.shape(),
+            Self::Lora { base, .. } => base.shape(),
         }
     }
 
@@ -43,6 +48,7 @@ impl LinearWeight {
             Self::Q4_K(_) => DType::Q4_K,
             Self::Q5_K(_) => DType::Q5_K,
             Self::Q6_K(_) => DType::Q6_K,
+            Self::Lora { base, .. } => base.dtype(),
         }
     }
 
@@ -56,6 +62,9 @@ impl LinearWeight {
             Self::Q6_K(weight) => Ok(backend.matmul_q6_k(input, weight)?),
             Self::Q8_0OutputRows(weight) => Ok(backend.matmul_q8_0_output_rows(input, weight)?),
             Self::Q4_0OutputRows(weight) => Ok(backend.matmul_q4_0_output_rows(input, weight)?),
+            Self::Lora { base, projection } => {
+                projection.add_to(backend, input, base.matmul(backend, input)?)
+            }
         }
     }
 }
@@ -248,6 +257,7 @@ pub struct Qwen3Model<B> {
     pub layers: Vec<Qwen3LayerWeights>,
     pub final_norm: Tensor,
     pub lm_head: Tensor,
+    lora_head: Option<LoraProjection>,
 }
 
 impl<B: KernelBackend> Qwen3Model<B> {
@@ -294,7 +304,28 @@ impl<B: KernelBackend> Qwen3Model<B> {
             layers,
             final_norm,
             lm_head,
+            lora_head: None,
         })
+    }
+
+    /// Attach low-rank weights before populating a KV cache for the adapted model.
+    pub fn attach_lora(&mut self, adapter: LoraAdapter) -> Result<()> {
+        let mut projections = self
+            .layers
+            .iter_mut()
+            .map(|layer| {
+                [
+                    &mut layer.q_proj,
+                    &mut layer.k_proj,
+                    &mut layer.v_proj,
+                    &mut layer.o_proj,
+                    &mut layer.gate_proj,
+                    &mut layer.up_proj,
+                    &mut layer.down_proj,
+                ]
+            })
+            .collect::<Vec<_>>();
+        adapter.install(&mut projections, &self.lm_head, &mut self.lora_head)
     }
 
     pub fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
@@ -383,7 +414,11 @@ impl<B: KernelBackend> Qwen3Model<B> {
         let hidden = self
             .backend
             .rms_norm(hidden, &self.final_norm, self.config.rms_norm_eps)?;
-        Ok(self.backend.matmul(&hidden, &self.lm_head)?)
+        let logits = self.backend.matmul(&hidden, &self.lm_head)?;
+        match &self.lora_head {
+            Some(adapter) => adapter.add_to(&self.backend, &hidden, logits),
+            None => Ok(logits),
+        }
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {

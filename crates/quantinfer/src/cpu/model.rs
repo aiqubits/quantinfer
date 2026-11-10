@@ -7,8 +7,8 @@ use quantinfer_core::Tensor;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_runtime::{
-    DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, ProjectionObserver,
-    Qwen3Model, Result, RuntimeError,
+    DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, LoraAdapter,
+    ProjectionObserver, Qwen3Model, Result, RuntimeError,
 };
 use quantinfer_tokenizer::GgufBpeTokenizer;
 
@@ -95,6 +95,13 @@ impl<B: KernelBackend> DenseModel<B> {
         match self {
             Self::Qwen3(model) => model.observe_projections(token_ids, cache, observer),
             Self::Llama(model) => model.observe_projections(token_ids, cache, observer),
+        }
+    }
+
+    pub fn attach_lora(&mut self, adapter: LoraAdapter) -> Result<()> {
+        match self {
+            Self::Qwen3(model) => model.attach_lora(adapter),
+            Self::Llama(model) => model.attach_lora(adapter),
         }
     }
 

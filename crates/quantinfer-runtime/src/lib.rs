@@ -5,6 +5,7 @@
 mod batch;
 mod calibration;
 pub mod llama;
+mod lora;
 pub mod profile;
 pub mod provider;
 pub mod qwen3;
@@ -14,6 +15,7 @@ pub mod session;
 pub use batch::DecodeBatchItem;
 pub use calibration::ProjectionObserver;
 pub use llama::{LlamaLayerWeights, LlamaModel};
+pub use lora::{LoraAdapter, LoraProjection};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
 pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
