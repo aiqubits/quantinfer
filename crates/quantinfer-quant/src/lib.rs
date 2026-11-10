@@ -13,6 +13,10 @@ use quantinfer_core::{
 
 pub type Result<T> = std::result::Result<T, QuantizationError>;
 
+mod imatrix;
+
+pub use imatrix::ImatrixQ4_0Provider;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CalibrationDataset {
     samples: Vec<Tensor>,

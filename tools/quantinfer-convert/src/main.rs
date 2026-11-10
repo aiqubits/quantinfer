@@ -10,14 +10,14 @@ use quantinfer_core::{
     QuantizationAxis, QuantizationScheme, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::{
-    qif::import_gguf, sha256_reader, ExecutionVariant, GgufReader, GgufSpool, GgufValue,
-    GgufWriter, ModelManifest, SafeTensorFileReader, SafeTensorShards, TensorManifest,
+    qif::import_gguf, sha256_hex, sha256_reader, ExecutionVariant, GgufReader, GgufSpool,
+    GgufValue, GgufWriter, ModelManifest, SafeTensorFileReader, SafeTensorShards, TensorManifest,
 };
 use quantinfer_model::llama::ggml_qk_channel;
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
 use quantinfer_quant::{
-    FloatProvider, MixedPrecisionPlan, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
-    NativeQ6KProvider, NativeQ8_0Provider, QuantizationProvider, QuantizedData,
+    FloatProvider, ImatrixQ4_0Provider, MixedPrecisionPlan, NativeQ4KProvider, NativeQ4_0Provider,
+    NativeQ5KProvider, NativeQ6KProvider, NativeQ8_0Provider, QuantizationProvider, QuantizedData,
 };
 use serde_json::Value;
 
@@ -86,6 +86,14 @@ fn run() -> Result<(), String> {
             "--mixed-precision requires the QuantInfer layout and native quantizers".to_owned(),
         );
     }
+    let imatrix_path = arguments
+        .iter()
+        .any(|argument| argument == "--imatrix")
+        .then(|| required_path(&arguments, "--imatrix"))
+        .transpose()?;
+    if imatrix_path.is_some() && (!ggml_layout || quantization != QuantizationScheme::Q4_0) {
+        return Err("--imatrix requires --gguf-layout ggml and --quantize q4_0".to_owned());
+    }
     let q8_provider = q8_provider(use_ggml)?;
 
     let config_json = fs::read_to_string(&config_path)
@@ -124,6 +132,20 @@ fn run() -> Result<(), String> {
 
     let mut writer = GgufWriter::new();
     model.write_metadata(&mut writer, ggml_file_type)?;
+    let mut imatrix = if let Some(path) = imatrix_path {
+        let bytes =
+            fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        writer.insert_metadata(
+            "quantinfer.quantization.imatrix_sha256",
+            GgufValue::String(sha256_hex(&bytes)),
+        );
+        Some(
+            load_imatrix(bytes)
+                .map_err(|error| format!("cannot parse imatrix {}: {error}", path.display()))?,
+        )
+    } else {
+        None
+    };
     if mixed_precision.is_some() {
         writer.insert_metadata(
             "quantinfer.quantization.variant",
@@ -265,10 +287,26 @@ fn run() -> Result<(), String> {
         if mixed_precision.is_some() && is_projection && !projection_schemes.contains(&scheme) {
             projection_schemes.push(scheme);
         }
+        let importance =
+            if let (Some(weights), QuantizationScheme::Q4_0) = (&mut imatrix, scheme) {
+                Some(weights.remove(output_name).ok_or_else(|| {
+                    format!("imatrix has no input channel weights for {output_name}")
+                })?)
+            } else {
+                None
+            };
+        let calibrated = importance
+            .as_deref()
+            .map(ImatrixQ4_0Provider::new)
+            .transpose()
+            .map_err(|error| format!("invalid imatrix weights for {output_name}: {error}"))?;
         let provider: &dyn QuantizationProvider = match scheme {
             QuantizationScheme::None => &FloatProvider,
             QuantizationScheme::Q8_0 => q8_provider,
-            QuantizationScheme::Q4_0 => &NativeQ4_0Provider,
+            QuantizationScheme::Q4_0 => match &calibrated {
+                Some(provider) => provider,
+                None => &NativeQ4_0Provider,
+            },
             QuantizationScheme::Q4_K => &NativeQ4KProvider,
             QuantizationScheme::Q5_K => &NativeQ5KProvider,
             QuantizationScheme::Q6_K => &NativeQ6KProvider,
@@ -323,6 +361,9 @@ fn run() -> Result<(), String> {
         write_result.map_err(|error| format!("cannot add tensor {name}: {error}"))?;
     }
     model.validate_required_tensors(&written_names)?;
+    if let Some(name) = imatrix.as_ref().and_then(|weights| weights.keys().next()) {
+        return Err(format!("imatrix contains an unused tensor {name}"));
+    }
     if let Some(plan) = &mixed_precision {
         if let Some(unknown) = plan
             .assignments()
@@ -1034,6 +1075,53 @@ fn is_quantizable_linear(name: &str) -> bool {
     .any(|suffix| name.ends_with(suffix))
 }
 
+fn load_imatrix(bytes: Vec<u8>) -> Result<BTreeMap<String, Vec<f32>>, String> {
+    if !bytes.starts_with(b"GGUF") {
+        return serde_json::from_slice(&bytes).map_err(|error| error.to_string());
+    }
+    let reader = GgufReader::open(bytes).map_err(|error| error.to_string())?;
+    if !matches!(reader.metadata().get("general.type"), Some(GgufValue::String(kind)) if kind == "imatrix")
+    {
+        return Err("GGUF artifact does not declare imatrix data".to_owned());
+    }
+    let mut weights = BTreeMap::new();
+    for tensor in reader.tensors() {
+        let Some(name) = tensor.name.strip_suffix(".in_sum2") else {
+            continue;
+        };
+        if !name.starts_with("blk.") || !is_quantizable_linear(name) {
+            continue;
+        }
+        if !matches!(tensor.shape.as_slice(), [_] | [_, 1]) {
+            return Err(format!("imatrix {name} must contain one dense input row"));
+        }
+        let counts = reader
+            .tensor_f32(&format!("{name}.counts"))
+            .map_err(|error| error.to_string())?;
+        let count = match counts.as_f32().map_err(|error| error.to_string())? {
+            [count] if count.is_finite() && *count > 0.0 => *count,
+            _ => {
+                return Err(format!(
+                    "imatrix {name} must contain one positive observation count"
+                ))
+            }
+        };
+        let sums = reader
+            .tensor_f32(&tensor.name)
+            .map_err(|error| error.to_string())?;
+        let means = sums
+            .as_f32()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .map(|sum| sum / count)
+            .collect();
+        if weights.insert(name.to_owned(), means).is_some() {
+            return Err(format!("imatrix contains duplicate projections for {name}"));
+        }
+    }
+    Ok(weights)
+}
+
 fn convert_qif(arguments: &[String]) -> Result<(), String> {
     let input = required_path(arguments, "--input")?;
     let output = required_path(arguments, "--output")?;
@@ -1062,7 +1150,7 @@ fn convert_qif(arguments: &[String]) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
     );
 }
 
@@ -1070,7 +1158,22 @@ fn print_help() {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::{load_tokenizer_metadata, ConversionModel};
+    use super::{load_imatrix, load_tokenizer_metadata, ConversionModel, GgufValue, GgufWriter};
+
+    #[test]
+    fn reads_dense_llama_imatrix_and_normalizes_observations() {
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata("general.type", GgufValue::String("imatrix".to_owned()));
+        writer
+            .add_f32_tensor("blk.0.attn_q.weight.in_sum2", vec![2, 1], &[4.0, 12.0])
+            .unwrap();
+        writer
+            .add_f32_tensor("blk.0.attn_q.weight.counts", vec![1], &[4.0])
+            .unwrap();
+        let weights = load_imatrix(writer.finish().unwrap()).unwrap();
+        assert_eq!(weights["blk.0.attn_q.weight"], [1.0, 3.0]);
+        assert!(load_imatrix(GgufWriter::new().finish().unwrap()).is_err());
+    }
 
     #[test]
     #[cfg(feature = "ggml")]

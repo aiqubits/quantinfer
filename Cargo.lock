@@ -1294,6 +1294,7 @@ dependencies = [
 name = "quantinfer-quant"
 version = "0.1.0"
 dependencies = [
+ "half",
  "quantinfer-core",
  "quantinfer-format",
  "quantinfer-kernel",
