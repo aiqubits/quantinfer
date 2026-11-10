@@ -213,7 +213,10 @@ impl ModelSource {
                                 .to_owned(),
                         )
                     })?;
-                check_file_budget(&package.root().join(model_name), budget)?;
+                let model_path = package
+                    .artifact_path(model_name)
+                    .map_err(|error| RuntimeError::InvalidInput(error.to_string()))?;
+                check_file_budget(&model_path, budget)?;
                 let bytes = package.read_verified(model_name).map_err(|error| {
                     RuntimeError::InvalidInput(format!(
                         "cannot verify model package tensor file: {error}"

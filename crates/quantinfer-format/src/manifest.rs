@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use quantinfer_core::{QuantizationScheme, TensorStorageDescriptor};
 use serde::{Deserialize, Serialize};
@@ -131,17 +131,14 @@ impl ModelManifest {
     }
 
     pub fn verify_checksum(&self, path: &str, bytes: &[u8]) -> Result<()> {
-        let expected = self
-            .checksums
+        verify_digest(path, self.expected_checksum(path)?, &sha256_hex(bytes))
+    }
+
+    fn expected_checksum(&self, path: &str) -> Result<&str> {
+        self.checksums
             .get(path)
-            .ok_or_else(|| FormatError::Invalid(format!("manifest has no checksum for {path}")))?;
-        let actual = sha256_hex(bytes);
-        if expected != &actual {
-            return Err(FormatError::Invalid(format!(
-                "checksum mismatch for {path}: expected {expected}, got {actual}"
-            )));
-        }
-        Ok(())
+            .map(String::as_str)
+            .ok_or_else(|| FormatError::Invalid(format!("manifest has no checksum for {path}")))
     }
 
     pub fn checksums_sha256(&self) -> String {
@@ -175,13 +172,63 @@ impl ModelPackage {
         &self.root
     }
 
+    /// Resolve a package-relative artifact name.
+    pub fn artifact_path(&self, relative_path: &str) -> Result<PathBuf> {
+        let path = Path::new(relative_path);
+        let components = path.components();
+        if !components
+            .clone()
+            .any(|part| matches!(part, Component::Normal(_)))
+            || components.clone().any(|part| {
+                matches!(
+                    part,
+                    Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                )
+            })
+        {
+            return Err(FormatError::Invalid(format!(
+                "invalid package artifact path {relative_path}"
+            )));
+        }
+        Ok(self.root.join(path))
+    }
+
     pub fn read_verified(&self, relative_path: &str) -> Result<Vec<u8>> {
-        let path = self.root.join(relative_path);
+        let path = self.artifact_path(relative_path)?;
+        let expected = self.manifest.expected_checksum(relative_path)?;
         let bytes = fs::read(&path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
-        self.manifest.verify_checksum(relative_path, &bytes)?;
+        verify_digest(relative_path, expected, &sha256_hex(&bytes))?;
         Ok(bytes)
     }
+
+    /// Verify every declared file by streaming its SHA-256 digest.
+    pub fn verify_all(&self) -> Result<usize> {
+        if self.manifest.checksums.is_empty() {
+            return Err(FormatError::Invalid(
+                "package manifest declares no artifact checksums".to_owned(),
+            ));
+        }
+        for (name, expected) in &self.manifest.checksums {
+            let path = self.artifact_path(name)?;
+            let actual = fs::File::open(&path)
+                .and_then(|mut file| sha256_reader(&mut file))
+                .map_err(|error| {
+                    FormatError::Io(format!("cannot hash {}: {error}", path.display()))
+                })?;
+            verify_digest(name, expected, &actual)?;
+        }
+        Ok(self.manifest.checksums.len())
+    }
+}
+
+fn verify_digest(path: &str, expected: &str, actual: &str) -> Result<()> {
+    if expected != actual {
+        return Err(FormatError::Invalid(format!(
+            "checksum mismatch for {path}: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -224,11 +271,23 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let model_bytes = b"fixture-gguf";
         std::fs::write(root.join("model.gguf"), model_bytes).unwrap();
+        std::fs::create_dir_all(root.join("profiles")).unwrap();
+        let profile_path = root.join("profiles/default.json");
+        std::fs::write(&profile_path, b"fixture-profile").unwrap();
         let mut manifest = ModelManifest::new("fixture", "qwen3");
         manifest.insert_checksum("model.gguf", model_bytes);
+        manifest.insert_checksum("profiles/default.json", b"fixture-profile");
         std::fs::write(root.join("manifest.json"), manifest.to_json().unwrap()).unwrap();
         let package = ModelPackage::open(&root).unwrap();
         assert_eq!(package.read_verified("model.gguf").unwrap(), model_bytes);
+        assert_eq!(package.verify_all().unwrap(), 2);
+        assert!(package.read_verified("../model.gguf").is_err());
+        std::fs::write(&profile_path, b"changed-profile").unwrap();
+        assert!(package
+            .verify_all()
+            .unwrap_err()
+            .to_string()
+            .contains("checksum mismatch for profiles/default.json"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

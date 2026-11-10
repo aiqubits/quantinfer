@@ -146,6 +146,10 @@ jobs:
           jq --arg sha "$profile_sha" '.checksums["profiles/default.json"] = $sha' \
             mixed/manifest.json > mixed/manifest.tmp
           mv mixed/manifest.tmp mixed/manifest.json
+          target/release/quantinfer-cli verify-package --input mixed --json \
+            | jq -e '.verified_artifacts == 2 and .manifest.quantization == "Mixed"'
+          target/release/quantinfer-cli list-profiles --input mixed --json \
+            | jq -e '.default.quantization_variant == "mixed" and .default.context_length == 64'
           generate=(target/release/quantinfer-cli generate --prompt 'The capital of France is' --max-new-tokens 6)
           "${generate[@]}" --input mixed/model.gguf --max-sequence-length 64 | grep '^generated_tokens=' > direct.txt
           "${generate[@]}" --input mixed --inference-profile default | grep '^generated_tokens=' > profiled.txt

@@ -205,6 +205,15 @@ impl InferenceProfile {
         self.bind_variant(manifest, plan.capability.quantization)
     }
 
+    /// Check the declared package variant without loading model weights.
+    pub fn declared_variant<'a>(
+        &self,
+        manifest: &'a ModelManifest,
+    ) -> Result<&'a ExecutionVariant> {
+        self.validate()?;
+        self.bind_variant(manifest, manifest.quantization)
+    }
+
     /// Bind one model variant to every kernel plan selected for its tensor schemes.
     pub fn bind_mixed<'a>(
         &self,

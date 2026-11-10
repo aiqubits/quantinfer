@@ -1,5 +1,6 @@
 //! QuantInfer command-line entry point.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -73,8 +74,67 @@ fn run() -> Result<(), String> {
                 );
             }
         }
+        Some("verify-package") => verify_package(&arguments[1..])?,
+        Some("list-profiles") => list_profiles(&arguments[1..])?,
         Some("generate") => generate(&arguments[1..])?,
         Some(command) => return Err(format!("unknown command {command}; use --help")),
+    }
+    Ok(())
+}
+
+fn open_package(arguments: &[String]) -> Result<ModelPackage, String> {
+    let path = option_value(arguments, "--input")?
+        .ok_or_else(|| "provide a model package directory with --input".to_owned())?;
+    ModelPackage::open(path).map_err(|error| error.to_string())
+}
+
+fn verify_package(arguments: &[String]) -> Result<(), String> {
+    let package = open_package(arguments)?;
+    let verified = package.verify_all().map_err(|error| error.to_string())?;
+    if has_flag(arguments, "--json") {
+        println!(
+            "{}",
+            serde_json::json!({ "manifest": package.manifest, "verified_artifacts": verified })
+        );
+    } else {
+        println!("model_id={}", package.manifest.model_id);
+        println!("architecture={}", package.manifest.architecture);
+        println!("quantization={}", package.manifest.quantization.name());
+        println!("verified_artifacts={verified}");
+    }
+    Ok(())
+}
+
+fn list_profiles(arguments: &[String]) -> Result<(), String> {
+    let package = open_package(arguments)?;
+    let profiles = package
+        .manifest
+        .checksums
+        .keys()
+        .filter_map(|path| path.strip_prefix("profiles/")?.strip_suffix(".json"))
+        .map(|name| {
+            let profile = load_inference_profile(Some(&package), name)?;
+            profile
+                .declared_variant(&package.manifest)
+                .map_err(|error| format!("invalid profile {name}: {error}"))?;
+            Ok((name, profile))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    if has_flag(arguments, "--json") {
+        println!(
+            "{}",
+            serde_json::to_string(&profiles).map_err(|error| error.to_string())?
+        );
+    } else {
+        for (name, profile) in profiles {
+            println!(
+                "{name} variant={} quantization={} context={} threads={}",
+                profile.model_variant,
+                profile.quantization_variant,
+                profile.context_length,
+                profile.thread_count
+            );
+        }
     }
     Ok(())
 }
@@ -451,7 +511,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 
