@@ -184,6 +184,23 @@ jobs:
               "ggml-$variant" "$model" > "smollm2-$variant-benchmark.txt"
           done
           python3 benches/check-regressions.py smollm2-q8_0-benchmark.txt smollm2-q4_0-benchmark.txt
+      - name: Collect real activations and quantize SmolLM2 with imatrix
+        shell: bash
+        run: |
+          printf '%s\n' '"The capital of France is"' \
+            '{"text":"Explain how plants turn light into energy."}' \
+            '"A short story about a train crossing the mountains."' > prompts.jsonl
+          target/release/quantinfer-cli collect-imatrix --input smollm2-f32.gguf \
+            --dataset prompts.jsonl --output imatrix.json --max-sequence-length 64
+          jq -e 'length == 210 and (."blk.0.attn_q.weight" | length) == 576 and
+            (."blk.0.ffn_down.weight" | length) == 1536 and
+            ."blk.0.attn_q.weight" == ."blk.0.attn_k.weight"' imatrix.json
+          target/release/quantinfer-convert --config config.json --weights model.safetensors \
+            --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm --quantize q4_0 \
+            --imatrix imatrix.json --output smollm2-imatrix-q4_0.gguf
+          target/release/quantinfer-cli generate --input smollm2-imatrix-q4_0.gguf \
+            --prompt 'The capital of France is' --max-new-tokens 8 --max-sequence-length 64 \
+            | grep -Fx 'generated_tokens=[260, 3575, 282, 260, 1798, 30, 657, 314]'
       - name: Transcode SmolLM2 Q4_0 to QIF and verify inference
         shell: bash
         run: |

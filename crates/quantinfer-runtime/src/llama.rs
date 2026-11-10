@@ -10,6 +10,7 @@ use quantinfer_quant::{
 };
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
+use crate::calibration::{ProjectionObserver, ProjectionTrace};
 use crate::qwen3::{add, load_linear, transpose_matrix, LinearWeight};
 use crate::{DecodeBatchItem, KvCache, Result, RuntimeError};
 
@@ -112,13 +113,21 @@ impl LlamaLayerWeights {
         backend: &B,
         config: &LlamaConfig,
         hidden: &Tensor,
-        layer_index: usize,
+        mut trace: ProjectionTrace<'_, '_>,
         attention: &DenseAttention,
         batch: &mut [DecodeBatchItem<'_>],
     ) -> Result<Tensor> {
         let sequence_length = hidden.shape().dims()[0];
         let residual = hidden.clone();
         let normalized = backend.rms_norm(hidden, &self.input_layernorm, config.rms_norm_eps)?;
+        trace.record(
+            &[
+                TensorRole::QueryProjection,
+                TensorRole::KeyProjection,
+                TensorRole::ValueProjection,
+            ],
+            &normalized,
+        )?;
         let query = self
             .q_proj
             .matmul(backend, &normalized)?
@@ -144,11 +153,12 @@ impl LlamaLayerWeights {
                 config.effective_head_dim(),
             ]))?;
         let attended = attention
-            .apply(backend, &query, &key, &value, layer_index, batch)?
+            .apply(backend, &query, &key, &value, trace.layer, batch)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.query_projection_size(),
             ]))?;
+        trace.record(&[TensorRole::OutputProjection], &attended)?;
         let projected = self.o_proj.matmul(backend, &attended)?;
         let residual = add(&residual, &projected)?;
         let normalized = backend.rms_norm(
@@ -156,9 +166,14 @@ impl LlamaLayerWeights {
             &self.post_attention_layernorm,
             config.rms_norm_eps,
         )?;
+        trace.record(
+            &[TensorRole::GateProjection, TensorRole::UpProjection],
+            &normalized,
+        )?;
         let gate = self.gate_proj.matmul(backend, &normalized)?;
         let up = self.up_proj.matmul(backend, &normalized)?;
         let feed_forward = backend.silu_mul(&gate, &up)?;
+        trace.record(&[TensorRole::DownProjection], &feed_forward)?;
         let feed_forward = self.down_proj.matmul(backend, &feed_forward)?;
         add(&residual, &feed_forward)
     }
@@ -221,6 +236,27 @@ impl<B: KernelBackend> LlamaModel<B> {
     }
 
     pub fn forward(&self, token_ids: &[usize], cache: &mut KvCache) -> Result<Tensor> {
+        let hidden = self.forward_sequence(token_ids, cache, None)?;
+        self.project_logits(&hidden)
+    }
+
+    /// Observe layer projection inputs while advancing the supplied KV cache.
+    pub fn observe_projections(
+        &self,
+        token_ids: &[usize],
+        cache: &mut KvCache,
+        observer: &mut dyn ProjectionObserver,
+    ) -> Result<()> {
+        self.forward_sequence(token_ids, cache, Some(observer))
+            .map(drop)
+    }
+
+    fn forward_sequence(
+        &self,
+        token_ids: &[usize],
+        cache: &mut KvCache,
+        observer: Option<&mut dyn ProjectionObserver>,
+    ) -> Result<Tensor> {
         if token_ids.is_empty() {
             return Err(RuntimeError::InvalidInput(
                 "Llama forward requires at least one token".to_owned(),
@@ -235,8 +271,7 @@ impl<B: KernelBackend> LlamaModel<B> {
             tokens: token_ids,
             cache,
         }];
-        let hidden = self.forward_hidden(token_ids, &mut request)?;
-        self.project_logits(&hidden)
+        self.forward_hidden(token_ids, &mut request, observer)
     }
 
     pub fn forward_batch(&self, batch: &mut [DecodeBatchItem<'_>]) -> Vec<Result<Tensor>> {
@@ -248,7 +283,7 @@ impl<B: KernelBackend> LlamaModel<B> {
             head_dim: self.config.effective_head_dim(),
         };
         limits.run(batch, |tokens, requests| {
-            let hidden = self.forward_hidden(tokens, requests)?;
+            let hidden = self.forward_hidden(tokens, requests, None)?;
             self.project_logits(&last_hidden_rows(&hidden, requests)?)
         })
     }
@@ -257,6 +292,7 @@ impl<B: KernelBackend> LlamaModel<B> {
         &self,
         token_ids: &[usize],
         batch: &mut [DecodeBatchItem<'_>],
+        mut observer: Option<&mut dyn ProjectionObserver>,
     ) -> Result<Tensor> {
         let attention = DenseAttention {
             query_heads: self.config.num_attention_heads,
@@ -270,7 +306,10 @@ impl<B: KernelBackend> LlamaModel<B> {
                 &self.backend,
                 &self.config,
                 &hidden,
-                index,
+                ProjectionTrace {
+                    layer: index,
+                    observer: &mut observer,
+                },
                 &attention,
                 batch,
             )?;

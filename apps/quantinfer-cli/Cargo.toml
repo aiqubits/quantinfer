@@ -16,3 +16,4 @@ quantinfer-format = { workspace = true }
 quantinfer-runtime = { workspace = true }
 quantinfer-tokenizer = { workspace = true }
 serde_json.workspace = true
+tempfile = "3"

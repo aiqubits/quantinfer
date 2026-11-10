@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod batch;
+mod calibration;
 pub mod llama;
 pub mod profile;
 pub mod provider;
@@ -11,6 +12,7 @@ pub mod scheduler;
 pub mod session;
 
 pub use batch::DecodeBatchItem;
+pub use calibration::ProjectionObserver;
 pub use llama::{LlamaLayerWeights, LlamaModel};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;

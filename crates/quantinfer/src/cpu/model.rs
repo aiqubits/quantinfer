@@ -7,8 +7,8 @@ use quantinfer_core::Tensor;
 use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_runtime::{
-    DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, Qwen3Model, Result,
-    RuntimeError,
+    DecodeBatchItem, DecoderModel, InferenceProfile, KvCache, LlamaModel, ProjectionObserver,
+    Qwen3Model, Result, RuntimeError,
 };
 use quantinfer_tokenizer::GgufBpeTokenizer;
 
@@ -83,6 +83,18 @@ impl<B: KernelBackend> DenseModel<B> {
         match self {
             Self::Qwen3(model) => model.config.max_position_embeddings,
             Self::Llama(model) => model.config.max_position_embeddings,
+        }
+    }
+
+    pub fn observe_projections(
+        &self,
+        token_ids: &[usize],
+        cache: &mut KvCache,
+        observer: &mut dyn ProjectionObserver,
+    ) -> Result<()> {
+        match self {
+            Self::Qwen3(model) => model.observe_projections(token_ids, cache, observer),
+            Self::Llama(model) => model.observe_projections(token_ids, cache, observer),
         }
     }
 

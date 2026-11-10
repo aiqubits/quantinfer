@@ -1,5 +1,23 @@
 # Quantization
 
+## Collect calibration weights
+
+Run the model on representative prompts to measure each input channel's
+mean squared activation. Put one JSON string or one object with a
+`text` string on each line of the dataset.
+
+```sh
+quantinfer collect-imatrix --input model-f32.gguf --dataset prompts.jsonl \
+  --output imatrix.json --max-sequence-length 512
+```
+
+Collection supports Qwen3 and Llama, with an embedded tokenizer and
+GGUF, QIF or a verified package as input. It starts a fresh KV cache
+for each prompt and records attention and feed-forward projection inputs.
+Each token contributes one observation. The default context limit is
+512 tokens or the model limit if it is smaller. The collector rejects
+oversized prompts and writes the output only after all samples succeed.
+
 ## Importance-weighted Q4_0
 
 For a Llama checkpoint exported with GGML output rows, supply
@@ -7,7 +25,7 @@ For a Llama checkpoint exported with GGML output rows, supply
 Use a GGUF calibration artifact from
 [llama-imatrix](https://github.com/ggml-org/llama.cpp/tree/master/tools/imatrix).
 
-The converter also accepts a JSON file with `--imatrix CHANNEL_WEIGHTS.json`.
+Pass the collector's output to the converter with `--imatrix imatrix.json`.
 The JSON maps each quantized projection name, such as
 `blk.0.attn_q.weight`, to an array of input-channel weights. Use the mean
 square of each input activation over the calibration samples. Each array

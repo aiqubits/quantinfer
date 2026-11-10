@@ -1911,6 +1911,7 @@ dependencies = [
  "quantinfer-runtime",
  "quantinfer-tokenizer",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

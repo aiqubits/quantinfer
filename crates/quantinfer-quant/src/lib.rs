@@ -54,18 +54,27 @@ impl CalibrationDataset {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImatrixStatistics {
     count: usize,
-    sum_abs: Vec<f32>,
-    sum_square: Vec<f32>,
+    sum_abs: Vec<f64>,
+    sum_square: Vec<f64>,
 }
 
 impl ImatrixStatistics {
+    pub fn new(channels: usize) -> Result<Self> {
+        if channels == 0 {
+            return Err(QuantizationError::InvalidInput(
+                "imatrix statistics require at least one channel".to_owned(),
+            ));
+        }
+        Ok(Self {
+            count: 0,
+            sum_abs: vec![0.0; channels],
+            sum_square: vec![0.0; channels],
+        })
+    }
+
     pub fn from_dataset(dataset: &CalibrationDataset) -> Result<Self> {
         let elements = dataset.samples()[0].shape().num_elements();
-        let mut statistics = Self {
-            count: 0,
-            sum_abs: vec![0.0; elements],
-            sum_square: vec![0.0; elements],
-        };
+        let mut statistics = Self::new(elements)?;
         for sample in dataset.samples() {
             statistics.observe(sample)?;
         }
@@ -79,11 +88,38 @@ impl ImatrixStatistics {
                 "calibration sample shape does not match imatrix statistics".to_owned(),
             ));
         }
-        for (index, value) in values.iter().copied().enumerate() {
-            self.sum_abs[index] += value.abs();
-            self.sum_square[index] += value * value;
+        self.accumulate(values, 1)
+    }
+
+    /// Count each token row as one observation of the input channels.
+    pub fn observe_rows(&mut self, sample: &Tensor) -> Result<()> {
+        match sample.shape().dims() {
+            &[rows, channels] if channels == self.sum_abs.len() => {
+                self.accumulate(sample.as_f32()?, rows)
+            }
+            _ => Err(QuantizationError::InvalidInput(
+                "imatrix activations must have shape [tokens, channels]".to_owned(),
+            )),
         }
-        self.count += 1;
+    }
+
+    fn accumulate(&mut self, values: &[f32], rows: usize) -> Result<()> {
+        let count = self.count.checked_add(rows).ok_or_else(|| {
+            QuantizationError::InvalidInput("imatrix observation count overflows usize".to_owned())
+        })?;
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(QuantizationError::InvalidInput(
+                "imatrix activations must be finite".to_owned(),
+            ));
+        }
+        for row in values.chunks_exact(self.sum_abs.len()) {
+            for (index, &value) in row.iter().enumerate() {
+                let value = f64::from(value);
+                self.sum_abs[index] += value.abs();
+                self.sum_square[index] += value * value;
+            }
+        }
+        self.count = count;
         Ok(())
     }
 
@@ -92,18 +128,18 @@ impl ImatrixStatistics {
     }
 
     pub fn mean_abs(&self) -> Vec<f32> {
-        let denominator = self.count.max(1) as f32;
+        let denominator = self.count.max(1) as f64;
         self.sum_abs
             .iter()
-            .map(|value| value / denominator)
+            .map(|value| (value / denominator) as f32)
             .collect()
     }
 
     pub fn mean_square(&self) -> Vec<f32> {
-        let denominator = self.count.max(1) as f32;
+        let denominator = self.count.max(1) as f64;
         self.sum_square
             .iter()
-            .map(|value| value / denominator)
+            .map(|value| (value / denominator) as f32)
             .collect()
     }
 }
@@ -964,6 +1000,22 @@ mod tests {
         );
         assert_eq!(restored.shape(), input.shape());
         assert_eq!(provider.export_layout(), "ggml_q4_0");
+    }
+
+    #[test]
+    fn weights_imatrix_by_token_rows_across_different_prompt_lengths() {
+        let mut stats = ImatrixStatistics::new(2).unwrap();
+        let first = Tensor::from_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let second = Tensor::from_f32(vec![1, 2], vec![5.0, 6.0]).unwrap();
+        stats.observe_rows(&first).unwrap();
+        stats.observe_rows(&second).unwrap();
+        assert_eq!(stats.count(), 3);
+        assert_eq!(stats.mean_abs(), [3.0, 4.0]);
+        assert_eq!(stats.mean_square(), [35.0 / 3.0, 56.0 / 3.0]);
+        let invalid = Tensor::from_f32(vec![1, 2], vec![0.0, f32::NAN]).unwrap();
+        let previous = stats.clone();
+        assert!(stats.observe_rows(&invalid).is_err());
+        assert_eq!(stats, previous);
     }
 
     #[test]
