@@ -213,18 +213,15 @@ impl Qwen3LayerWeights {
         let query = backend.apply_rope(&query, &cos, &sin)?;
         let key = backend.apply_rope(&key, &cos, &sin)?;
         cache.append(layer_index, &key, &value)?;
-        let key_values = cache.key_values(layer_index)?;
-        let value_values = cache.value_values(layer_index)?;
-        let key_tokens = cache.sequence_length(layer_index)?;
         let attended = gqa_attention(
             &query,
-            key_values,
-            value_values,
-            key_tokens,
+            cache,
+            layer_index,
             config.num_attention_heads,
             config.num_key_value_heads,
             config.effective_head_dim(),
             start_position,
+            backend.reuse_workspace(),
         )?;
         let attended = attended.reshape(Shape::from(vec![
             sequence_length,
@@ -584,14 +581,21 @@ pub(crate) fn rope_tables(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gqa_attention(
     query: &Tensor,
-    key_values: &[f32],
-    value_values: &[f32],
-    key_tokens: usize,
+    cache: &mut KvCache,
+    layer_index: usize,
     query_heads: usize,
     key_value_heads: usize,
     head_dim: usize,
     start_position: usize,
+    reuse_workspace: bool,
 ) -> Result<Tensor> {
+    let layer = cache
+        .layers
+        .get(layer_index)
+        .ok_or_else(|| RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned()))?;
+    let key_values = &layer.keys;
+    let value_values = &layer.values;
+    let key_tokens = layer.sequence_length;
     let query_dims = query.shape().dims();
     if query_dims.len() != 3
         || query_dims[1] != query_heads
@@ -616,12 +620,25 @@ pub(crate) fn gqa_attention(
     let group_size = query_heads / key_value_heads;
     let scale = (head_dim as f32).sqrt().recip();
     let mut output = vec![0.0; query_tokens * query_heads * head_dim];
+    let mut local_scores = Vec::new();
+    let scores = if reuse_workspace {
+        &mut cache.attention_scores
+    } else {
+        &mut local_scores
+    };
+    scores.clear();
+    if scores.capacity() < key_tokens {
+        let target = key_tokens
+            .max(scores.capacity().saturating_mul(2))
+            .min(cache.max_sequence_length);
+        scores.reserve_exact(target);
+    }
     for token in 0..query_tokens {
         let last_key = start_position + token;
         for query_head in 0..query_heads {
             let kv_head = query_head / group_size;
             let query_start = (token * query_heads + query_head) * head_dim;
-            let mut scores = Vec::with_capacity(last_key + 1);
+            scores.clear();
             for key_token in 0..=last_key {
                 let key_start = (key_token * key_value_heads + kv_head) * head_dim;
                 let score = query_values[query_start..query_start + head_dim]
@@ -658,7 +675,7 @@ pub(crate) fn gqa_attention(
 mod tests {
     use super::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
     use crate::{generate_qwen3_stream, GenerationConfig, KvCache, StreamControl};
-    use quantinfer_backend_cpu::CpuScalar;
+    use quantinfer_backend_cpu::{CpuRuntimeConfig, CpuScalar};
     use quantinfer_core::{DType, Tensor};
     use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
     use quantinfer_model::Qwen3Config;
@@ -757,6 +774,42 @@ mod tests {
         let decode = model.forward(&[3], &mut cache).unwrap();
         assert_eq!(decode.shape().dims(), &[1, config.vocab_size]);
         assert_eq!(cache.sequence_length(0).unwrap(), 3);
+    }
+
+    #[test]
+    fn attention_workspace_reuse_matches_fresh_scores() {
+        let mut config = config();
+        config.num_hidden_layers = 2;
+        let model = |workspace_reuse| {
+            Qwen3Model::new(
+                config.clone(),
+                CpuScalar::with_config(CpuRuntimeConfig {
+                    workspace_reuse,
+                    ..CpuScalar::new().config()
+                }),
+                filled(vec![config.vocab_size, config.hidden_size], 0.01),
+                vec![layer(), layer()],
+                filled(vec![config.hidden_size], 1.0),
+                filled(vec![config.hidden_size, config.vocab_size], 0.01),
+            )
+            .unwrap()
+        };
+        let reused = model(true);
+        let fresh = model(false);
+        let mut reused_cache = KvCache::new(2, config.max_position_embeddings, 1, 4).unwrap();
+        let mut fresh_cache = reused_cache.clone();
+        for prompt in [&[1, 2][..], &[3][..], &[4][..]] {
+            assert_eq!(
+                reused.forward(prompt, &mut reused_cache).unwrap(),
+                fresh.forward(prompt, &mut fresh_cache).unwrap()
+            );
+        }
+        assert_eq!(fresh_cache.attention_scores.capacity(), 0);
+        assert!(reused_cache.attention_scores.capacity() >= 4);
+        let scratch = reused_cache.attention_scores.as_ptr();
+        reused_cache.clear();
+        reused.forward(&[1, 2], &mut reused_cache).unwrap();
+        assert_eq!(reused_cache.attention_scores.as_ptr(), scratch);
     }
 
     #[test]

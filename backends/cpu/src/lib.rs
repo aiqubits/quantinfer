@@ -365,6 +365,10 @@ impl CpuScalar {
 }
 
 impl KernelBackend for CpuScalar {
+    fn reuse_workspace(&self) -> bool {
+        self.config.workspace_reuse
+    }
+
     fn matmul_q8_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor> {
         self.matmul_output_rows(
             lhs,

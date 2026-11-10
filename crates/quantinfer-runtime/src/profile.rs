@@ -57,8 +57,17 @@ impl MemoryPlan {
             .ok_or_else(|| {
                 RuntimeError::InvalidInput("attention width overflows usize".to_owned())
             })?;
-        plan.temporary_workspace_bytes =
-            allocation(model.intermediate_size, 4)?.max(allocation(projection_width, 8)?);
+        let attention_scores_bytes = maximum_context_length
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("attention scratch size overflows usize".to_owned())
+            })?;
+        plan.temporary_workspace_bytes = allocation(model.intermediate_size, 4)?
+            .max(allocation(projection_width, 8)?)
+            .checked_add(attention_scores_bytes)
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("workspace size overflows usize".to_owned())
+            })?;
         plan.output_logits_bytes = allocation(model.vocabulary.size, 1)?;
         Ok(plan)
     }
@@ -303,6 +312,7 @@ mod tests {
         assert_eq!(plan.weight_bytes, 4096);
         assert_eq!(plan.output_logits_bytes, 5 * 64 * 4);
         assert_eq!(plan.kv_cache_bytes, 2 * 16 * 2 * 4 * 2 * 4);
+        assert_eq!(plan.temporary_workspace_bytes, 5 * 32 * 4 * 4 + 16 * 4);
         assert!(MemoryPlan::for_dense_prefill(&model, 4096, 16, 17).is_err());
     }
 

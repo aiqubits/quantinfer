@@ -112,10 +112,11 @@ struct LayerKvCache {
     sequence_length: usize,
 }
 
-/// Per-layer KV storage for single-sequence Prefill and Decode.
+/// Per-layer KV storage and attention scratch space for single-sequence inference.
 #[derive(Debug, Clone)]
 pub struct KvCache {
     layers: Vec<LayerKvCache>,
+    attention_scores: Vec<f32>,
     max_sequence_length: usize,
     num_key_value_heads: usize,
     head_dim: usize,
@@ -148,6 +149,7 @@ impl KvCache {
                     sequence_length: 0,
                 })
                 .collect(),
+            attention_scores: Vec::new(),
             max_sequence_length,
             num_key_value_heads,
             head_dim,
@@ -232,6 +234,7 @@ impl KvCache {
     }
 
     pub fn clear(&mut self) {
+        self.attention_scores.clear();
         for layer in &mut self.layers {
             layer.keys.clear();
             layer.values.clear();

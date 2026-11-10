@@ -39,6 +39,11 @@ impl From<CoreError> for KernelError {
 
 /// The minimal operator contract required by the first native CPU runtime.
 pub trait KernelBackend {
+    /// Keep temporary buffers across calls within one sequence.
+    fn reuse_workspace(&self) -> bool {
+        false
+    }
+
     fn matmul(&self, lhs: &Tensor, rhs: &Tensor) -> Result<Tensor>;
 
     fn matmul_q8_0(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor>;

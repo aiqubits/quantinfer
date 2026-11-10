@@ -153,13 +153,13 @@ impl LlamaLayerWeights {
         cache.append(layer_index, &key, &value)?;
         let attended = gqa_attention(
             &query,
-            cache.key_values(layer_index)?,
-            cache.value_values(layer_index)?,
-            cache.sequence_length(layer_index)?,
+            cache,
+            layer_index,
             config.num_attention_heads,
             config.num_key_value_heads(),
             config.effective_head_dim(),
             start_position,
+            backend.reuse_workspace(),
         )?
         .reshape(Shape::from(vec![
             sequence_length,

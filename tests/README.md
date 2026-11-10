@@ -129,3 +129,7 @@ to enable runtime-selected AVX-512, AVX2 or AArch64 NEON for F32 matrix
 multiplication. The CPU backend falls back to scalar on other hardware. The
 SIMD tests compare unaligned slices, tail columns and threaded matrix products
 against the scalar reference. The CI matrix exercises x86-64 and AArch64.
+
+Qwen3 and Llama reuse one attention score buffer across layers and decode
+steps when CPU workspace reuse is enabled. Its capacity is bounded by the
+configured context length and included in the memory plan.
