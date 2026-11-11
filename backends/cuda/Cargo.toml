@@ -7,3 +7,16 @@ license.workspace = true
 [dependencies]
 quantinfer-core = { workspace = true }
 quantinfer-kernel = { workspace = true }
+quantinfer-backend-cpu = { workspace = true, optional = true }
+quantinfer-gpu-common = { workspace = true, optional = true }
+quantinfer-runtime = { workspace = true, optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+cudarc = { version = "0.19.10", default-features = false, features = ["std", "driver", "nvrtc", "dynamic-loading", "cuda-12080"], optional = true }
+
+[features]
+native = ["dep:cudarc", "dep:quantinfer-backend-cpu", "dep:quantinfer-gpu-common", "dep:quantinfer-runtime"]
+
+[dev-dependencies]
+quantinfer-quant.workspace = true
+quantinfer-test-support.workspace = true

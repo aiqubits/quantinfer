@@ -1,15 +1,14 @@
-use std::borrow::Cow;
-use std::collections::BTreeSet;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_core::{
-    DType, Device, QuantizationScheme, QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K,
-    QuantizedTensorQ5K, QuantizedTensorQ6K, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
+    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K,
+    Tensor,
 };
+use quantinfer_gpu_common::{projection_capabilities, ProjectionWeights};
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
-use quantinfer_runtime::{KernelCapability, Operation, RuntimeProvider};
+use quantinfer_runtime::{KernelCapability, RuntimeProvider};
 
 const TILE: u32 = 8;
 const GPU_TIMEOUT: Duration = Duration::from_secs(30);
@@ -78,7 +77,7 @@ impl WgpuBackend {
             queue,
             pipeline,
             adapter_info,
-            capabilities: capabilities(),
+            capabilities: projection_capabilities(),
             cpu: CpuScalar::new(),
         })
     }
@@ -87,7 +86,12 @@ impl WgpuBackend {
         &self.adapter_info
     }
 
-    fn multiply(&self, lhs: &Tensor, rhs: Weights<'_>, output_rows: bool) -> Result<Tensor> {
+    fn multiply(
+        &self,
+        lhs: &Tensor,
+        rhs: ProjectionWeights<'_>,
+        output_rows: bool,
+    ) -> Result<Tensor> {
         let &[rows, inner] = lhs.shape().dims() else {
             return Err(invalid("left matrix must have rank 2"));
         };
@@ -127,7 +131,7 @@ impl WgpuBackend {
         let column_limit = limits
             .max_compute_workgroups_per_dimension
             .saturating_mul(TILE);
-        if let Weights::F32(right) = &rhs {
+        if let ProjectionWeights::F32(right) = &rhs {
             let elements = u32::try_from(limit / 4).unwrap_or(u32::MAX);
             let width = column_limit
                 .min(elements / matrix[0])
@@ -312,23 +316,23 @@ impl KernelBackend for WgpuBackend {
     }
 
     fn matmul(&self, lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
-        self.multiply(lhs, Weights::F32(rhs), false)
+        self.multiply(lhs, ProjectionWeights::F32(rhs), false)
     }
 
     fn matmul_q8_0(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor> {
-        self.multiply(lhs, Weights::Q8(rhs), false)
+        self.multiply(lhs, ProjectionWeights::Q8(rhs), false)
     }
 
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
-        self.multiply(lhs, Weights::Q4(rhs), false)
+        self.multiply(lhs, ProjectionWeights::Q4(rhs), false)
     }
 
     fn matmul_q8_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor> {
-        self.multiply(lhs, Weights::Q8(rhs), true)
+        self.multiply(lhs, ProjectionWeights::Q8(rhs), true)
     }
 
     fn matmul_q4_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
-        self.multiply(lhs, Weights::Q4(rhs), true)
+        self.multiply(lhs, ProjectionWeights::Q4(rhs), true)
     }
 
     fn matmul_q4_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor> {
@@ -366,106 +370,6 @@ impl KernelBackend for WgpuBackend {
     fn embedding(&self, table: &Tensor, token_ids: &[usize]) -> Result<Tensor> {
         self.cpu.embedding(table, token_ids)
     }
-}
-
-enum Weights<'a> {
-    F32(&'a Tensor),
-    Q4(&'a QuantizedTensor4),
-    Q8(&'a QuantizedTensor),
-}
-
-impl<'a> Weights<'a> {
-    fn shape(&self) -> &Shape {
-        match self {
-            Self::F32(tensor) => tensor.shape(),
-            Self::Q4(tensor) => tensor.shape(),
-            Self::Q8(tensor) => tensor.shape(),
-        }
-    }
-
-    fn encoding(&self) -> u32 {
-        match self {
-            Self::F32(_) => 0,
-            Self::Q4(_) => 1,
-            Self::Q8(_) => 2,
-        }
-    }
-
-    fn byte_len(&self) -> Result<u64> {
-        let (count, bytes) = match self {
-            Self::F32(tensor) => (tensor.as_f32()?.len(), 4),
-            Self::Q4(tensor) => (tensor.blocks().len(), 20),
-            Self::Q8(tensor) => (tensor.blocks().len(), 36),
-        };
-        Ok((count as u64) * bytes)
-    }
-
-    fn bytes(self) -> Result<Cow<'a, [u8]>> {
-        match self {
-            Self::F32(tensor) => Ok(Cow::Borrowed(bytemuck::cast_slice(tensor.as_f32()?))),
-            Self::Q4(tensor) => {
-                let mut bytes = Vec::with_capacity(tensor.blocks().len() * 20);
-                for block in tensor.blocks() {
-                    if block.values.iter().any(|&code| code > 15) {
-                        return Err(invalid("Q4_0 codes must fit in four bits"));
-                    }
-                    bytes.extend_from_slice(&block.scale.to_le_bytes());
-                    bytes.extend(
-                        block
-                            .values
-                            .as_chunks::<2>()
-                            .0
-                            .iter()
-                            .map(|[low, high]| low | (high << 4)),
-                    );
-                }
-                Ok(Cow::Owned(bytes))
-            }
-            Self::Q8(tensor) => {
-                let mut bytes = Vec::with_capacity(tensor.blocks().len() * 36);
-                for block in tensor.blocks() {
-                    bytes.extend_from_slice(&block.scale.to_le_bytes());
-                    bytes.extend(block.values.map(|code| code as u8));
-                }
-                Ok(Cow::Owned(bytes))
-            }
-        }
-    }
-}
-
-fn capabilities() -> Vec<KernelCapability> {
-    let capability = |dtype, quantization, layout: &str, operation, alignment| KernelCapability {
-        device: Device::Gpu,
-        dtype,
-        quantization,
-        tensor_layout: layout.to_owned(),
-        supported_operations: BTreeSet::from([operation]),
-        alignment,
-        head_dimension: None,
-        maximum_sequence_length: None,
-    };
-    let mut capabilities = vec![capability(
-        DType::F32,
-        QuantizationScheme::None,
-        "row_major",
-        Operation::Matmul,
-        1,
-    )];
-    for (dtype, scheme) in [
-        (DType::Q4_0, QuantizationScheme::Q4_0),
-        (DType::Q8_0, QuantizationScheme::Q8_0),
-    ] {
-        for layout in ["row_major", GGML_OUTPUT_ROWS_LAYOUT] {
-            capabilities.push(capability(
-                dtype,
-                scheme,
-                layout,
-                Operation::QuantizedMatmul,
-                32,
-            ));
-        }
-    }
-    capabilities
 }
 
 fn shader_size(dimension: usize) -> Result<u32> {

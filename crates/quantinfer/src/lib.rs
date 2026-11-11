@@ -7,6 +7,8 @@ pub mod cpu;
 
 #[cfg(feature = "candle")]
 pub use quantinfer_adapter_candle as candle;
+#[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
+pub use quantinfer_backend_cuda as cuda;
 #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 pub use quantinfer_backend_wgpu as wgpu;
 pub use quantinfer_core as core;

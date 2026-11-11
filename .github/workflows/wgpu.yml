@@ -7,6 +7,7 @@ on:
     paths:
       - "apps/quantinfer-cli/**"
       - "backends/wgpu/**"
+      - "backends/gpu-common/**"
       - "backends/cpu/**"
       - "crates/quantinfer-core/**"
       - "crates/quantinfer-format/**"

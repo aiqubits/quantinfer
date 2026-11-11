@@ -73,7 +73,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -571,6 +571,15 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "cudarc"
+version = "0.19.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7359bf1de037ddada72729c3acec9b040f3468400c6e9e740b01ba0cd2e89562"
+dependencies = [
+ "libloading 0.9.0",
 ]
 
 [[package]]
@@ -1274,6 +1283,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "libloading"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
+
+[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1872,8 +1891,14 @@ version = "0.1.0"
 name = "quantinfer-backend-cuda"
 version = "0.1.0"
 dependencies = [
+ "cudarc",
+ "quantinfer-backend-cpu",
  "quantinfer-core",
+ "quantinfer-gpu-common",
  "quantinfer-kernel",
+ "quantinfer-quant",
+ "quantinfer-runtime",
+ "quantinfer-test-support",
 ]
 
 [[package]]
@@ -1901,6 +1926,7 @@ dependencies = [
  "quantinfer-backend-cpu",
  "quantinfer-core",
  "quantinfer-format",
+ "quantinfer-gpu-common",
  "quantinfer-kernel",
  "quantinfer-runtime",
  "wgpu",
@@ -1956,6 +1982,16 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "quantinfer-gpu-common"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quantinfer-core",
+ "quantinfer-kernel",
+ "quantinfer-runtime",
 ]
 
 [[package]]
@@ -3317,7 +3353,7 @@ dependencies = [
  "gpu-allocator",
  "hashbrown 0.17.1",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",

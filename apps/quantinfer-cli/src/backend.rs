@@ -10,6 +10,8 @@ pub enum Backend {
     Cpu,
     #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
     Wgpu,
+    #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
+    Cuda,
 }
 
 impl Backend {
@@ -29,7 +31,20 @@ impl Backend {
                     )
                 }
             }
-            name => Err(format!("unknown --backend {name}; use cpu or wgpu")),
+            "cuda" => {
+                #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
+                {
+                    Ok(Self::Cuda)
+                }
+                #[cfg(not(all(
+                    feature = "cuda",
+                    any(target_os = "linux", target_os = "windows")
+                )))]
+                {
+                    Err("CUDA generation requires a Linux or Windows CLI built with --features cuda".to_owned())
+                }
+            }
+            name => Err(format!("unknown --backend {name}; use cpu, wgpu, or cuda")),
         }
     }
 
@@ -44,28 +59,35 @@ impl Backend {
                 .map(|model| Box::new(model) as Box<dyn Generator>)
                 .map_err(|error| error.to_string()),
             #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
-            Self::Wgpu => load_wgpu(reader, manifest),
+            Self::Wgpu => load_gpu(reader, manifest, || {
+                quantinfer::wgpu::WgpuBackend::open(false)
+            }),
+            #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
+            Self::Cuda => load_gpu(reader, manifest, || quantinfer::cuda::CudaBackend::open(0)),
         }
     }
 }
 
-#[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
-fn load_wgpu(
+#[cfg(any(
+    all(feature = "wgpu", not(target_arch = "wasm32")),
+    all(feature = "cuda", any(target_os = "linux", target_os = "windows"))
+))]
+fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     reader: &GgufReader,
     manifest: Option<&ModelManifest>,
+    open: impl FnOnce() -> quantinfer::kernel::Result<B>,
 ) -> Result<Box<dyn Generator>, String> {
     use quantinfer::cpu::model_architecture;
-    use quantinfer::wgpu::WgpuBackend;
     use quantinfer_core::{DType, Device, QuantizationScheme, GGML_OUTPUT_ROWS_LAYOUT};
     use quantinfer_format::GgmlType;
-    use quantinfer_runtime::{ExecutionRequest, Operation, RuntimeProvider};
+    use quantinfer_runtime::{ExecutionRequest, Operation};
 
     let manifest = manifest.or(reader.embedded_manifest());
     let architecture = model_architecture(reader, manifest).map_err(|error| error.to_string())?;
     let ggml = reader
         .uses_ggml_output_rows(architecture)
         .map_err(|error| error.to_string())?;
-    let backend = WgpuBackend::open(false).map_err(|error| error.to_string())?;
+    let backend = open().map_err(|error| error.to_string())?;
     let request = ExecutionRequest {
         device: Device::Gpu,
         tensor_layout: "row_major".to_owned(),
@@ -85,15 +107,18 @@ fn load_wgpu(
             })
         {
             return Err(format!(
-                "model package {} has no WGPU execution variant",
-                manifest.model_id
+                "model package {} has no {} execution variant",
+                manifest.model_id, plan.provider_name
             ));
         }
         if manifest.tensors.iter().any(|tensor| {
             let layout = tensor.descriptor.physical_layout.as_str();
             layout != "row_major" && !(ggml && layout == GGML_OUTPUT_ROWS_LAYOUT)
         }) {
-            return Err("model package declares an unsupported WGPU tensor layout".to_owned());
+            return Err(format!(
+                "model package declares an unsupported {} tensor layout",
+                plan.provider_name
+            ));
         }
     }
     for (kind, dtype, quantization) in [

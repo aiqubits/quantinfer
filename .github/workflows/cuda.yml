@@ -1,0 +1,68 @@
+name: CUDA Conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_gpu:
+        description: Run on the configured CUDA runner
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "backends/cuda/**"
+      - "apps/quantinfer-cli/**"
+      - "crates/quantinfer/**"
+      - "backends/gpu-common/**"
+      - "backends/cpu/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-kernel/**"
+      - "crates/quantinfer-quant/**"
+      - "crates/quantinfer-runtime/**"
+      - "crates/quantinfer-test-support/**"
+      - "Cargo.lock"
+      - ".github/workflows/cuda.yml"
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check CUDA host code and compile the kernel to PTX
+        run: |
+          python -m pip install --no-deps --target "$RUNNER_TEMP/nvrtc" 'nvidia-cuda-nvrtc-cu12==12.8.93'
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/nvrtc/nvidia/cuda_nvrtc/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          cargo clippy --locked -p quantinfer-backend-cuda --features native --all-targets -- -D warnings
+          cargo clippy --locked -p quantinfer-cli --features cuda --all-targets -- -D warnings
+          cargo test --locked -p quantinfer-backend-cuda --features native --lib \
+            compiles_matmul_to_ptx -- --ignored
+          cargo test --locked -p quantinfer-backend-cuda --features native --lib \
+            reports_missing_driver -- --ignored
+
+  native-gpu:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_gpu && vars.QUANTINFER_CUDA_RUNNER != '' }}
+    runs-on: [self-hosted, '${{ vars.QUANTINFER_CUDA_RUNNER }}']
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Compare native CUDA projections with CPU
+        run: |
+          cargo test --release --locked -p quantinfer-backend-cuda --features native \
+            --test native -- --ignored --nocapture
+      - name: Generate with CUDA from a verified SmolLM2 checkpoint
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          curl --fail --location --retry 3 --output smollm2-f16.gguf \
+            "$(jq -r '.external_f16_gguf.url' "$manifest")"
+          printf '%s  smollm2-f16.gguf\n' "$(jq -r '.external_f16_gguf.sha256' "$manifest")" | sha256sum --check
+          cargo run --release --locked -p quantinfer-cli --features cuda -- generate \
+            --backend cuda --input smollm2-f16.gguf --prompt 'The capital of France is' \
+            --max-new-tokens 3 --max-sequence-length 64 | grep -Fx 'generated_tokens=[260, 3575, 282]'
