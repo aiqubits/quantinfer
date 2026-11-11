@@ -48,3 +48,12 @@ SafeTensors (`qweight`, `qzeros`, `scales`, and optional `g_idx`) into a
 validated F32 matrix. It handles the interleaved AWQ bit order, grouped
 scales, symmetric checkpoints without zero tensors, and direct zero-point
 fixtures without changing the source's quantization values.
+
+## LLM Compressor
+
+`quantinfer-adapter-llm-compressor` reads the compressed-tensors WNA16
+SafeTensors layout (`weight_packed`, `weight_scale`, optional
+`weight_zero_point`, and `weight_shape`) and dequantizes it into a validated
+F32 matrix. It checks the packed input axis, output-packed zero points, group
+scales, optional group indices, and symmetric checkpoints before exposing the
+tensor to a runtime.

@@ -1874,6 +1874,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantinfer-adapter-llm-compressor"
+version = "0.1.0"
+dependencies = [
+ "quantinfer-core",
+ "quantinfer-format",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quantinfer-adapter-lora"
 version = "0.1.0"
 dependencies = [

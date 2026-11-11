@@ -13,6 +13,8 @@ pub enum SafeTensorDType {
     BF16,
     I32,
     U32,
+    I64,
+    U64,
 }
 
 impl SafeTensorDType {
@@ -23,6 +25,8 @@ impl SafeTensorDType {
             "BF16" => Ok(Self::BF16),
             "I32" => Ok(Self::I32),
             "U32" => Ok(Self::U32),
+            "I64" => Ok(Self::I64),
+            "U64" => Ok(Self::U64),
             _ => Err(FormatError::Invalid(format!(
                 "unsupported SafeTensors dtype {value}"
             ))),
@@ -34,6 +38,7 @@ impl SafeTensorDType {
             Self::F32 => 4,
             Self::F16 | Self::BF16 => 2,
             Self::I32 | Self::U32 => 4,
+            Self::I64 | Self::U64 => 8,
         }
     }
 }
@@ -135,6 +140,14 @@ impl SafeTensorFile {
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
         decode_tensor_u32(info, self.tensor_bytes(name)?, name)
+    }
+
+    pub fn tensor_u64(&self, name: &str) -> Result<Vec<u64>> {
+        let info = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
+        decode_tensor_u64(info, self.tensor_bytes(name)?, name)
     }
 }
 
@@ -252,6 +265,35 @@ impl SafeTensorFileReader {
         })?;
         decode_tensor_u32(info, &bytes, name)
     }
+
+    pub fn tensor_u64(&self, name: &str) -> Result<Vec<u64>> {
+        let path = &self.path;
+        let info = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
+        let byte_start = self
+            .data_start
+            .checked_add(info.data_offsets.0)
+            .ok_or_else(|| {
+                FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
+            })?;
+        let byte_length = info.data_offsets.1 - info.data_offsets.0;
+        let mut file = File::open(path)
+            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
+        file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
+            |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
+        )?))
+        .map_err(|error| FormatError::Io(format!("cannot seek {}: {error}", path.display())))?;
+        let mut bytes = vec![0_u8; byte_length];
+        file.read_exact(&mut bytes).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot read tensor {name} from {}: {error}",
+                path.display()
+            ))
+        })?;
+        decode_tensor_u64(info, &bytes, name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -350,6 +392,11 @@ impl SafeTensorShards {
         self.shards[shard].tensor_u32(name)
     }
 
+    pub fn tensor_u64(&self, name: &str) -> Result<Vec<u64>> {
+        let shard = self.tensor_shard(name)?;
+        self.shards[shard].tensor_u64(name)
+    }
+
     pub fn verify_shard_checksum(&self, shard: &str, expected_sha256: &str) -> Result<()> {
         let parent = self.index_path.parent().unwrap_or_else(|| Path::new("."));
         let mut file = File::open(parent.join(shard))
@@ -400,7 +447,10 @@ fn decode_tensor_f32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<
             .iter()
             .map(|chunk| bf16::from_le_bytes(*chunk).to_f32())
             .collect(),
-        SafeTensorDType::I32 | SafeTensorDType::U32 => {
+        SafeTensorDType::I32
+        | SafeTensorDType::U32
+        | SafeTensorDType::I64
+        | SafeTensorDType::U64 => {
             return Err(FormatError::Invalid(format!(
                 "tensor {name} has integer dtype {:?}, expected a floating dtype",
                 info.dtype
@@ -424,6 +474,25 @@ fn decode_tensor_u32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<
             .collect()),
         dtype => Err(FormatError::Invalid(format!(
             "tensor {name} has dtype {dtype:?}, expected I32 or U32"
+        ))),
+    }
+}
+
+fn decode_tensor_u64(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<Vec<u64>> {
+    if !bytes.len().is_multiple_of(info.dtype.element_size()) {
+        return Err(FormatError::Invalid(format!(
+            "tensor {name} has a non-aligned byte length"
+        )));
+    }
+    match info.dtype {
+        SafeTensorDType::I64 | SafeTensorDType::U64 => Ok(bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|chunk| u64::from_le_bytes(*chunk))
+            .collect()),
+        dtype => Err(FormatError::Invalid(format!(
+            "tensor {name} has dtype {dtype:?}, expected I64 or U64"
         ))),
     }
 }
@@ -563,16 +632,23 @@ mod tests {
 
     #[test]
     fn reads_signed_and_unsigned_packed_integer_tensors() {
-        let header = br#"{"signed":{"dtype":"I32","shape":[1],"data_offsets":[0,4]},"unsigned":{"dtype":"U32","shape":[1],"data_offsets":[4,8]}}"#;
+        let header = br#"{"signed":{"dtype":"I32","shape":[1],"data_offsets":[0,4]},"unsigned":{"dtype":"U32","shape":[1],"data_offsets":[4,8]},"signed64":{"dtype":"I64","shape":[1],"data_offsets":[8,16]},"unsigned64":{"dtype":"U64","shape":[1],"data_offsets":[16,24]}}"#;
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
         bytes.extend_from_slice(header);
         bytes.extend_from_slice(&u32::MAX.to_le_bytes());
         bytes.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0x1234_5678_9abc_def0_u64.to_le_bytes());
         let file = SafeTensorFile::open(bytes).unwrap();
         assert_eq!(file.tensors()["signed"].dtype, SafeTensorDType::I32);
         assert_eq!(file.tensor_u32("signed").unwrap(), vec![u32::MAX]);
         assert_eq!(file.tensor_u32("unsigned").unwrap(), vec![0x1234_5678]);
+        assert_eq!(file.tensor_u64("signed64").unwrap(), vec![u64::MAX]);
+        assert_eq!(
+            file.tensor_u64("unsigned64").unwrap(),
+            vec![0x1234_5678_9abc_def0]
+        );
         assert!(file.tensor_f32("signed").is_err());
     }
 
