@@ -67,6 +67,7 @@ mod native {
     #[cfg(test)]
     mod tests {
         use super::MetalBackend;
+        use quantinfer_runtime::RuntimeProvider;
 
         #[test]
         #[ignore = "requires an Apple Metal adapter"]
