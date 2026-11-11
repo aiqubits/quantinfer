@@ -33,6 +33,7 @@ on:
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
       - "adapters/lora/**"
+      - "adapters/gptq/**"
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
       - "bindings/c/**"

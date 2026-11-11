@@ -31,3 +31,12 @@ same base checkpoint used for training. When an LM head adapter leaves the
 base weights frozen, export with `save_embedding_layers=False` to save only
 the A/B factors. Generation with `--lora` currently requires a configuration
 without a CPU memory budget.
+
+## GPTQ
+
+`quantinfer-adapter-gptq` decodes standard GPTQ SafeTensors linear weights
+(`qweight`, `qzeros`, `scales`, and optional `g_idx`) into a validated F32
+matrix. It supports 2-, 4-, and 8-bit 32-bit-word packing, grouped scales,
+the standard packed-output zero-point orientation, and transposed/direct
+zero-point variants. One-file and indexed sharded SafeTensors sources are
+accepted; the importer does not silently re-quantize decoded values.
