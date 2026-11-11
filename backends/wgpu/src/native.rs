@@ -102,6 +102,10 @@ impl WgpuBackend {
         &self.adapter_info
     }
 
+    pub fn adapter_name(&self) -> &str {
+        &self.adapter_info.name
+    }
+
     fn multiply(
         &self,
         lhs: &Tensor,

@@ -21,8 +21,8 @@ mod native {
             WgpuBackend::open_metal().map(Self)
         }
 
-        pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
-            self.0.adapter_info()
+        pub fn adapter_name(&self) -> &str {
+            self.0.adapter_name()
         }
     }
 
@@ -72,7 +72,7 @@ mod native {
         #[ignore = "requires an Apple Metal adapter"]
         fn opens_metal_adapter() {
             let backend = MetalBackend::open().unwrap();
-            assert!(!backend.adapter_info().name.is_empty());
+            assert!(!backend.adapter_name().is_empty());
             assert_eq!(backend.name(), "metal");
         }
     }
