@@ -1948,7 +1948,9 @@ dependencies = [
 name = "quantinfer-backend-kleidiai"
 version = "0.1.0"
 dependencies = [
+ "quantinfer-backend-cpu",
  "quantinfer-core",
+ "quantinfer-kernel",
  "quantinfer-runtime",
 ]
 
@@ -1974,7 +1976,9 @@ dependencies = [
 name = "quantinfer-backend-tmac"
 version = "0.1.0"
 dependencies = [
+ "quantinfer-backend-cpu",
  "quantinfer-core",
+ "quantinfer-kernel",
  "quantinfer-runtime",
 ]
 
