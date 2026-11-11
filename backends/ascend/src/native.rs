@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::c_void;
 use std::path::PathBuf;
 
 use libloading::{Library, Symbol};
@@ -26,6 +27,17 @@ impl RuntimeProvider for AscendProvider {
 pub struct AscendRuntime {
     library: Library,
     op_library: Option<Library>,
+    matmul_get_workspace: Option<
+        unsafe extern "C" fn(
+            *const c_void,
+            *const c_void,
+            *mut c_void,
+            i8,
+            *mut u64,
+            *mut *mut c_void,
+        ) -> i32,
+    >,
+    matmul_execute: Option<unsafe extern "C" fn(*mut c_void, u64, *mut c_void, *mut c_void) -> i32>,
     device_count: u32,
     library_path: PathBuf,
 }
@@ -38,6 +50,9 @@ pub enum AscendRuntimeError {
     NoDevices,
     OperatorLibraryUnavailable(String),
     MatmulAbiUnavailable(String),
+    MatmulWorkspace(i32),
+    MatmulExecution(i32),
+    InvalidMatmulPlan,
 }
 
 impl std::fmt::Display for AscendRuntimeError {
@@ -51,6 +66,11 @@ impl std::fmt::Display for AscendRuntimeError {
             Self::NoDevices => formatter.write_str("CANN reports no Ascend devices"),
             Self::OperatorLibraryUnavailable(message) => formatter.write_str(message),
             Self::MatmulAbiUnavailable(message) => formatter.write_str(message),
+            Self::MatmulWorkspace(code) => {
+                write!(formatter, "aclnnMmGetWorkspaceSize failed with code {code}")
+            }
+            Self::MatmulExecution(code) => write!(formatter, "aclnnMm failed with code {code}"),
+            Self::InvalidMatmulPlan => formatter.write_str("ACLNN returned an invalid MatMul plan"),
         }
     }
 }
@@ -87,6 +107,8 @@ impl AscendRuntime {
         Ok(Self {
             library,
             op_library: None,
+            matmul_get_workspace: None,
+            matmul_execute: None,
             device_count: count,
             library_path: path,
         })
@@ -112,34 +134,78 @@ impl AscendRuntime {
                 path.display()
             ))
         })?;
-        // SAFETY: the symbol type matches the documented ACLNN C ABI and is only probed here.
-        unsafe {
-            library.get::<unsafe extern "C" fn(
-                *const std::ffi::c_void,
-                *const std::ffi::c_void,
-                *mut std::ffi::c_void,
-                i8,
-                *mut u64,
-                *mut *mut std::ffi::c_void,
-            ) -> i32>(b"aclnnMmGetWorkspaceSize\0")
-        }
-        .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
-        // SAFETY: the symbol type matches the documented ACLNN second-phase ABI and is only probed.
-        unsafe {
-            library.get::<unsafe extern "C" fn(
-                *mut std::ffi::c_void,
-                u64,
-                *mut std::ffi::c_void,
-                *mut std::ffi::c_void,
-            ) -> i32>(b"aclnnMm\0")
-        }
-        .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
+        type GetWorkspace = unsafe extern "C" fn(
+            *const std::ffi::c_void,
+            *const std::ffi::c_void,
+            *mut std::ffi::c_void,
+            i8,
+            *mut u64,
+            *mut *mut std::ffi::c_void,
+        ) -> i32;
+        // SAFETY: the symbol type matches the documented ACLNN C ABI.
+        let get_workspace: GetWorkspace = *unsafe { library.get(b"aclnnMmGetWorkspaceSize\0") }
+            .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
+        type Execute = unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            u64,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+        ) -> i32;
+        // SAFETY: the symbol type matches the documented ACLNN second-phase ABI.
+        let execute: Execute = *unsafe { library.get(b"aclnnMm\0") }
+            .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
         self.op_library = Some(library);
+        self.matmul_get_workspace = Some(get_workspace);
+        self.matmul_execute = Some(execute);
         Ok(())
     }
 
     pub fn has_float_matmul_abi(&self) -> bool {
         self.op_library.is_some()
+            && self.matmul_get_workspace.is_some()
+            && self.matmul_execute.is_some()
+    }
+
+    /// Prepare an ACLNN MatMul by running its first (workspace-size) phase.
+    ///
+    /// The tensor pointers are opaque handles created by CANN's ACL tensor API. The
+    /// returned plan owns the executor handle and must be executed before the
+    /// runtime is dropped.
+    pub fn prepare_float_matmul<'runtime>(
+        &'runtime self,
+        lhs: *const c_void,
+        rhs: *const c_void,
+        output: *mut c_void,
+        cube_math_type: i8,
+    ) -> Result<AscendMatmulPlan<'runtime>, AscendRuntimeError> {
+        let get_workspace = self
+            .matmul_get_workspace
+            .ok_or(AscendRuntimeError::InvalidMatmulPlan)?;
+        let mut workspace_bytes = 0_u64;
+        let mut executor = std::ptr::null_mut();
+        // SAFETY: callers provide live ACL tensor handles and writable output
+        // storage for the workspace size and executor returned by CANN.
+        let code = unsafe {
+            get_workspace(
+                lhs,
+                rhs,
+                output,
+                cube_math_type,
+                &mut workspace_bytes,
+                &mut executor,
+            )
+        };
+        if code != 0 {
+            return Err(AscendRuntimeError::MatmulWorkspace(code));
+        }
+        if executor.is_null() {
+            return Err(AscendRuntimeError::InvalidMatmulPlan);
+        }
+        Ok(AscendMatmulPlan {
+            runtime: self,
+            workspace_bytes,
+            executor,
+        })
     }
 
     /// Build the NPU execution plan provider after the ACLNN ABI has been verified.
@@ -157,6 +223,45 @@ impl AscendRuntime {
                 maximum_sequence_length: None,
             }],
         })
+    }
+}
+
+/// An ACLNN MatMul executor returned by `aclnnMmGetWorkspaceSize`.
+pub struct AscendMatmulPlan<'runtime> {
+    runtime: &'runtime AscendRuntime,
+    workspace_bytes: u64,
+    executor: *mut c_void,
+}
+
+impl AscendMatmulPlan<'_> {
+    pub fn workspace_bytes(&self) -> u64 {
+        self.workspace_bytes
+    }
+
+    /// Execute the prepared MatMul on an ACL runtime stream.
+    ///
+    /// `workspace` must point to at least `workspace_bytes()` bytes allocated by
+    /// the caller. A null pointer is accepted when CANN reports a zero-sized
+    /// workspace. `stream` is the ACL stream handle for the target device.
+    pub fn execute(
+        &self,
+        workspace: *mut c_void,
+        stream: *mut c_void,
+    ) -> Result<(), AscendRuntimeError> {
+        if self.workspace_bytes != 0 && workspace.is_null() {
+            return Err(AscendRuntimeError::InvalidMatmulPlan);
+        }
+        let execute = self
+            .runtime
+            .matmul_execute
+            .ok_or(AscendRuntimeError::InvalidMatmulPlan)?;
+        // SAFETY: the executor was created by CANN for this runtime and the
+        // workspace/stream handles are validated by the CANN operator.
+        let code = unsafe { execute(workspace, self.workspace_bytes, self.executor, stream) };
+        if code != 0 {
+            return Err(AscendRuntimeError::MatmulExecution(code));
+        }
+        Ok(())
     }
 }
 
