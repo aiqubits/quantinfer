@@ -1835,6 +1835,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantinfer-adapter-autoround"
+version = "0.1.0"
+dependencies = [
+ "quantinfer-adapter-gptq",
+ "quantinfer-core",
+ "quantinfer-format",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quantinfer-adapter-awq"
 version = "0.1.0"
 dependencies = [

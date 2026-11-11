@@ -57,3 +57,11 @@ SafeTensors layout (`weight_packed`, `weight_scale`, optional
 F32 matrix. It checks the packed input axis, output-packed zero points, group
 scales, optional group indices, and symmetric checkpoints before exposing the
 tensor to a runtime.
+
+## AutoRound
+
+`quantinfer-adapter-autoround` parses AutoRound's quantization metadata
+aliases and reuses the GPTQ-compatible packed tensor decoder for
+`qweight/qzeros/scales` matrices. It accepts one-file and indexed sharded
+SafeTensors sources while validating the quantization method, bit width,
+group size, and zero-point convention.

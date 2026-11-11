@@ -48,5 +48,6 @@ quantinfer-adapter-lora = { path = "adapters/lora", version = "0.1.0" }
 quantinfer-adapter-gptq = { path = "adapters/gptq", version = "0.1.0" }
 quantinfer-adapter-awq = { path = "adapters/awq", version = "0.1.0" }
 quantinfer-adapter-llm-compressor = { path = "adapters/llm-compressor", version = "0.1.0" }
+quantinfer-adapter-autoround = { path = "adapters/autoround", version = "0.1.0" }
 quantinfer-target-wasm = { path = "targets/wasm", version = "0.1.0" }
 quantinfer-target-wasi-nn = { path = "targets/wasi-nn", version = "0.1.0" }

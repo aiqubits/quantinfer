@@ -36,6 +36,7 @@ on:
       - "adapters/gptq/**"
       - "adapters/awq/**"
       - "adapters/llm-compressor/**"
+      - "adapters/autoround/**"
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
       - "bindings/c/**"

@@ -1,0 +1,13 @@
+[package]
+name = "quantinfer-adapter-autoround"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quantinfer-adapter-gptq.workspace = true
+quantinfer-core.workspace = true
+quantinfer-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
