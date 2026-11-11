@@ -87,3 +87,4 @@ query visible devices. Matrix operators still require the CANN operator ABI
 integration before an Ascend execution provider can be selected.
 `load_float_matmul_abi()` checks the ACLNN two-phase MatMul symbols in the
 operator library configured by `ASCEND_OP_LIBRARY`.
+The runtime capability model exposes Ascend devices as `Device::Npu`.

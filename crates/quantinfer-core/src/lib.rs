@@ -147,6 +147,8 @@ pub enum Device {
     Cpu,
     /// An accelerator selected by a runtime provider.
     Gpu,
+    /// A neural processing unit selected by a runtime provider.
+    Npu,
 }
 
 #[derive(Debug, Clone, PartialEq)]
