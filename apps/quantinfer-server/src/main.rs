@@ -260,6 +260,8 @@ const STUDIO_HTML: &str = r##"<!doctype html>
     button { cursor: pointer; margin-top: .8rem; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8882; padding: .7rem; border-radius: .4rem; }
     code { font-size: .9em; }
+    .sample { display: grid; grid-template-columns: 7rem 1fr 6rem; gap: .5rem; align-items: center; margin: .4rem 0; }
+    .bar { height: .7rem; border-radius: .35rem; background: #4c6ef5; min-width: 2px; }
   </style>
 </head>
 <body>
@@ -289,12 +291,28 @@ const STUDIO_HTML: &str = r##"<!doctype html>
     <section>
       <h2>Benchmark counters</h2>
       <pre id="metrics">loading…</pre>
+      <h3>Live generation samples</h3>
+      <div id="benchmarks">Run a generation request to collect a sample.</div>
       <p>For reproducible latency and memory measurements, use the pinned
         <code>quantinfer-xtask bench</code> command.</p>
     </section>
   </div>
   <script>
     const $ = (id) => document.getElementById(id);
+    const samples = [];
+    function renderBenchmarks() {
+      if (!samples.length) {
+        $('benchmarks').textContent = 'Run a generation request to collect a sample.';
+        return;
+      }
+      const peak = Math.max(...samples.map((sample) => sample.elapsed));
+      $('benchmarks').innerHTML = samples.map((sample) => {
+        const width = Math.max(2, Math.round(sample.elapsed / peak * 100));
+        return `<div class="sample"><span>${sample.elapsed.toFixed(1)} ms</span>` +
+          `<span class="bar" style="width:${width}%" title="${sample.rate.toFixed(2)} tokens/s"></span>` +
+          `<span>${sample.rate.toFixed(2)} tok/s</span></div>`;
+      }).join('');
+    }
     async function refresh() {
       const [health, models, metrics] = await Promise.all([
         fetch('/healthz'), fetch('/v1/models'), fetch('/metrics')
@@ -311,12 +329,20 @@ const STUDIO_HTML: &str = r##"<!doctype html>
       const model = $('model').value;
       if (!model) { $('result').textContent = 'Load a model before generating.'; return; }
       $('result').textContent = 'running…';
+      const started = performance.now();
       const response = await fetch('/v1/generate', {
         method: 'POST', headers: {'content-type': 'application/json'},
         body: JSON.stringify({model, prompt: $('prompt').value,
           max_new_tokens: Number($('max-tokens').value) || 32})
       });
       const body = await response.json();
+      const elapsed = performance.now() - started;
+      if (response.ok) {
+        const tokenCount = Array.isArray(body.tokens) ? body.tokens.length : 0;
+        samples.unshift({elapsed, rate: tokenCount / Math.max(elapsed / 1000, 0.001)});
+        samples.splice(5);
+        renderBenchmarks();
+      }
       $('result').textContent = response.ok ? (body.text || JSON.stringify(body, null, 2))
         : (body.error || JSON.stringify(body, null, 2));
     });
@@ -590,5 +616,7 @@ mod tests {
         assert!(STUDIO_HTML.contains("/v1/models"));
         assert!(STUDIO_HTML.contains("/v1/generate"));
         assert!(STUDIO_HTML.contains("/metrics"));
+        assert!(STUDIO_HTML.contains("Live generation samples"));
+        assert!(STUDIO_HTML.contains("tokens/s"));
     }
 }
