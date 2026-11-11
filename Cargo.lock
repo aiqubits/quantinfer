@@ -1945,6 +1945,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quantinfer-backend-kleidiai"
+version = "0.1.0"
+dependencies = [
+ "quantinfer-core",
+ "quantinfer-runtime",
+]
+
+[[package]]
 name = "quantinfer-backend-metal"
 version = "0.1.0"
 dependencies = [
@@ -1960,6 +1968,14 @@ version = "0.1.0"
 dependencies = [
  "quantinfer-core",
  "quantinfer-kernel",
+]
+
+[[package]]
+name = "quantinfer-backend-tmac"
+version = "0.1.0"
+dependencies = [
+ "quantinfer-core",
+ "quantinfer-runtime",
 ]
 
 [[package]]
