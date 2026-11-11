@@ -62,6 +62,10 @@ def check(binary, model, golden, adapter=None):
         assert json.loads(request(base, "/healthz")) == {"status": "ok"}
         models = json.loads(request(base, "/v1/models"))["data"]
         assert [entry["id"] for entry in models] == ["primary", "secondary"]
+        studio = request(base, "/studio")
+        assert "QuantInfer Studio" in studio
+        assert "/v1/generate" in studio
+        assert "Live generation samples" in studio
         common = {"prompt": prompt, "max_new_tokens": len(expected)}
         for stream_model in ("secondary", "primary"):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
