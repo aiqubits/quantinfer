@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use quantinfer::runtime::{DecodeEvent, DecodeSession, DecodeStopReason, GenerationConfig};
@@ -177,6 +177,7 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         .route("/v1/models", get(list_models))
         .route("/v1/generate", post(generate))
         .route("/metrics", get(metrics_response))
+        .route("/studio", get(studio))
         .fallback(|| async { error_response((StatusCode::NOT_FOUND, "not_found".to_owned())) })
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state);
@@ -231,6 +232,98 @@ async fn metrics_response(State(state): State<Arc<AppState>>) -> impl IntoRespon
     );
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4")], body)
 }
+
+/// Serve a dependency-free local dashboard for model registry and inference
+/// smoke tests. The page deliberately uses the public HTTP endpoints so it is
+/// also useful as a small integration example for clients.
+async fn studio() -> Html<&'static str> {
+    Html(STUDIO_HTML)
+}
+
+const STUDIO_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuantInfer Studio</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.45 system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 1050px; padding: 2rem; }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    h1 { margin: 0; }
+    .status { color: #087f5b; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+    section { border: 1px solid #8886; border-radius: .7rem; padding: 1rem; }
+    label { display: block; margin: .6rem 0 .2rem; }
+    textarea, input, select, button { box-sizing: border-box; font: inherit; width: 100%; padding: .5rem; }
+    textarea { min-height: 8rem; resize: vertical; }
+    button { cursor: pointer; margin-top: .8rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8882; padding: .7rem; border-radius: .4rem; }
+    code { font-size: .9em; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>QuantInfer Studio</h1>
+    <span id="health" class="status">checking service…</span>
+  </header>
+  <p>Inspect the live model registry, run a generation smoke test, and view
+     runtime counters without installing a separate frontend.</p>
+  <div class="grid">
+    <section>
+      <h2>Model registry</h2>
+      <p id="models">loading…</p>
+      <button id="refresh" type="button">Refresh</button>
+    </section>
+    <section>
+      <h2>Generation</h2>
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="Write a prompt or use token IDs below"></textarea>
+      <label for="max-tokens">Max new tokens</label>
+      <input id="max-tokens" type="number" min="1" max="4096" value="32">
+      <button id="generate" type="button">Generate</button>
+      <pre id="result">No request yet.</pre>
+    </section>
+    <section>
+      <h2>Benchmark counters</h2>
+      <pre id="metrics">loading…</pre>
+      <p>For reproducible latency and memory measurements, use the pinned
+        <code>quantinfer-xtask bench</code> command.</p>
+    </section>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    async function refresh() {
+      const [health, models, metrics] = await Promise.all([
+        fetch('/healthz'), fetch('/v1/models'), fetch('/metrics')
+      ]);
+      $('health').textContent = health.ok ? 'service healthy' : 'service unavailable';
+      const payload = await models.json();
+      const entries = payload.data || [];
+      $('models').textContent = entries.length ? entries.map((m) => m.id).join(', ') : 'No models loaded';
+      $('model').replaceChildren(...entries.map((m) => new Option(m.id, m.id)));
+      $('metrics').textContent = await metrics.text();
+    }
+    $('refresh').addEventListener('click', () => refresh().catch((e) => $('health').textContent = e));
+    $('generate').addEventListener('click', async () => {
+      const model = $('model').value;
+      if (!model) { $('result').textContent = 'Load a model before generating.'; return; }
+      $('result').textContent = 'running…';
+      const response = await fetch('/v1/generate', {
+        method: 'POST', headers: {'content-type': 'application/json'},
+        body: JSON.stringify({model, prompt: $('prompt').value,
+          max_new_tokens: Number($('max-tokens').value) || 32})
+      });
+      const body = await response.json();
+      $('result').textContent = response.ok ? (body.text || JSON.stringify(body, null, 2))
+        : (body.error || JSON.stringify(body, null, 2));
+    });
+    refresh().catch((e) => $('health').textContent = e);
+  </script>
+</body>
+</html>"##;
 
 #[derive(Deserialize)]
 struct GenerateRequest {
@@ -474,7 +567,7 @@ fn sse_event(event: DecodeEvent) -> Event {
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{Settings, STUDIO_HTML};
 
     #[test]
     fn parses_multiple_models_and_rejects_invalid_limits() {
@@ -490,5 +583,12 @@ mod tests {
         assert_eq!(settings.models.len(), 2);
         assert_eq!(settings.maximum_requests, 4);
         assert!(Settings::parse(["--max-requests", "0"].into_iter().map(str::to_owned)).is_err());
+    }
+
+    #[test]
+    fn studio_page_uses_public_runtime_endpoints() {
+        assert!(STUDIO_HTML.contains("/v1/models"));
+        assert!(STUDIO_HTML.contains("/v1/generate"));
+        assert!(STUDIO_HTML.contains("/metrics"));
     }
 }
