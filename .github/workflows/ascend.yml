@@ -1,0 +1,29 @@
+name: Ascend CANN Probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backends/ascend/**"
+      - "Cargo.lock"
+      - ".github/workflows/ascend.yml"
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked -p quantinfer-backend-ascend --features native
+
+  native:
+    if: ${{ github.event_name == 'workflow_dispatch' && vars.QUANTINFER_ASCEND_RUNNER != '' }}
+    runs-on: [self-hosted, '${{ vars.QUANTINFER_ASCEND_RUNNER }}']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Probe CANN ACL runtime
+        env:
+          ASCEND_ACL_LIBRARY: ${{ vars.ASCEND_ACL_LIBRARY }}
+        run: cargo test --locked -p quantinfer-backend-ascend --features native -- --ignored

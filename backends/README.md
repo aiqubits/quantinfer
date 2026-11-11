@@ -77,3 +77,11 @@ cargo run --release --locked -p quantinfer-cli --features metal -- generate \
   --backend metal --input model.gguf --prompt "The capital of France is" \
   --max-new-tokens 8 --max-sequence-length 64
 ```
+
+## Ascend CANN
+
+The optional Ascend crate now probes the CANN ACL runtime without adding a
+vendor dependency to the workspace. Set `ASCEND_ACL_LIBRARY` to the ACL
+shared library path and call `AscendRuntime::open()` to initialize CANN and
+query visible devices. Matrix operators still require the CANN operator ABI
+integration before an Ascend execution provider can be selected.

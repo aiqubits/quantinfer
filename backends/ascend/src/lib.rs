@@ -1,3 +1,9 @@
-//! quantinfer-backend-ascend public API.
+//! Optional Ascend CANN runtime probe.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(feature = "native")]
+mod native;
+
+#[cfg(feature = "native")]
+pub use native::{AscendRuntime, AscendRuntimeError};
