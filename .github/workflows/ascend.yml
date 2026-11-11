@@ -26,4 +26,5 @@ jobs:
       - name: Probe CANN ACL runtime
         env:
           ASCEND_ACL_LIBRARY: ${{ vars.ASCEND_ACL_LIBRARY }}
+          ASCEND_OP_LIBRARY: ${{ vars.ASCEND_OP_LIBRARY }}
         run: cargo test --locked -p quantinfer-backend-ascend --features native -- --ignored

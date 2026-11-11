@@ -6,6 +6,7 @@ use libloading::{Library, Symbol};
 /// Operator execution is added after the ACL tensor and operator ABI is wired.
 pub struct AscendRuntime {
     library: Library,
+    op_library: Option<Library>,
     device_count: u32,
     library_path: PathBuf,
 }
@@ -16,6 +17,8 @@ pub enum AscendRuntimeError {
     Initialization(i32),
     DeviceQuery(i32),
     NoDevices,
+    OperatorLibraryUnavailable(String),
+    MatmulAbiUnavailable(String),
 }
 
 impl std::fmt::Display for AscendRuntimeError {
@@ -27,6 +30,8 @@ impl std::fmt::Display for AscendRuntimeError {
                 write!(formatter, "aclrtGetDeviceCount failed with code {code}")
             }
             Self::NoDevices => formatter.write_str("CANN reports no Ascend devices"),
+            Self::OperatorLibraryUnavailable(message) => formatter.write_str(message),
+            Self::MatmulAbiUnavailable(message) => formatter.write_str(message),
         }
     }
 }
@@ -62,6 +67,7 @@ impl AscendRuntime {
         }
         Ok(Self {
             library,
+            op_library: None,
             device_count: count,
             library_path: path,
         })
@@ -73,6 +79,48 @@ impl AscendRuntime {
 
     pub fn library_path(&self) -> &std::path::Path {
         &self.library_path
+    }
+
+    /// Load the ACLNN operator library and verify the two-phase float MatMul ABI.
+    pub fn load_float_matmul_abi(&mut self) -> Result<(), AscendRuntimeError> {
+        let path = std::env::var_os("ASCEND_OP_LIBRARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("libopapi.so"));
+        // SAFETY: the library is retained by `self` while symbol lookups are used.
+        let library = unsafe { Library::new(&path) }.map_err(|error| {
+            AscendRuntimeError::OperatorLibraryUnavailable(format!(
+                "cannot load CANN operator library {}: {error}",
+                path.display()
+            ))
+        })?;
+        // SAFETY: the symbol type matches the documented ACLNN C ABI and is only probed here.
+        unsafe {
+            library.get::<unsafe extern "C" fn(
+                *const std::ffi::c_void,
+                *const std::ffi::c_void,
+                *mut std::ffi::c_void,
+                i8,
+                *mut u64,
+                *mut *mut std::ffi::c_void,
+            ) -> i32>(b"aclnnMmGetWorkspaceSize\0")
+        }
+        .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
+        // SAFETY: the symbol type matches the documented ACLNN second-phase ABI and is only probed.
+        unsafe {
+            library.get::<unsafe extern "C" fn(
+                *mut std::ffi::c_void,
+                u64,
+                *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+            ) -> i32>(b"aclnnMm\0")
+        }
+        .map_err(|error| AscendRuntimeError::MatmulAbiUnavailable(error.to_string()))?;
+        self.op_library = Some(library);
+        Ok(())
+    }
+
+    pub fn has_float_matmul_abi(&self) -> bool {
+        self.op_library.is_some()
     }
 }
 
@@ -119,5 +167,12 @@ mod tests {
             result,
             Err(AscendRuntimeError::LibraryUnavailable(_))
         ));
+    }
+
+    #[test]
+    fn operator_library_is_not_assumed_when_acl_is_missing() {
+        std::env::set_var("ASCEND_ACL_LIBRARY", "/missing/libascendcl.so");
+        std::env::set_var("ASCEND_OP_LIBRARY", "/missing/libopapi.so");
+        assert!(AscendRuntime::open().is_err());
     }
 }
