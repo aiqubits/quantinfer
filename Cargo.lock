@@ -1964,6 +1964,7 @@ dependencies = [
  "quantinfer-format",
  "quantinfer-model",
  "quantinfer-quant",
+ "serde",
  "serde_json",
  "tempfile",
 ]

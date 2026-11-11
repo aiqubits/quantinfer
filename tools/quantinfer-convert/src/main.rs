@@ -64,6 +64,18 @@ fn run() -> Result<(), String> {
         .any(|argument| argument == "--mixed-precision")
         .then(|| load_mixed_precision(&required_path(&arguments, "--mixed-precision")?))
         .transpose()?;
+    let mixed_precision_policy = arguments
+        .iter()
+        .any(|argument| argument == "--mixed-precision-policy")
+        .then(|| {
+            load_mixed_precision_policy(&required_path(&arguments, "--mixed-precision-policy")?)
+        })
+        .transpose()?;
+    if mixed_precision.is_some() && mixed_precision_policy.is_some() {
+        return Err(
+            "--mixed-precision and --mixed-precision-policy are mutually exclusive".to_owned(),
+        );
+    }
     let ggml_layout = match optional_value(&arguments, "--gguf-layout").as_deref() {
         None if arguments.iter().any(|argument| argument == "--gguf-layout") => {
             return Err("--gguf-layout requires quantinfer or ggml".to_owned());
@@ -81,7 +93,8 @@ fn run() -> Result<(), String> {
     if use_ggml && quantization != QuantizationScheme::Q8_0 {
         return Err("--ggml requires --quantize q8_0".to_owned());
     }
-    if mixed_precision.is_some() && (ggml_layout || use_ggml) {
+    if (mixed_precision.is_some() || mixed_precision_policy.is_some()) && (ggml_layout || use_ggml)
+    {
         return Err(
             "--mixed-precision requires the QuantInfer layout and native quantizers".to_owned(),
         );
@@ -141,7 +154,7 @@ fn run() -> Result<(), String> {
     } else {
         None
     };
-    if mixed_precision.is_some() {
+    if mixed_precision.is_some() || mixed_precision_policy.is_some() {
         writer.insert_metadata(
             "quantinfer.quantization.variant",
             GgufValue::String(QuantizationScheme::Mixed.name().to_owned()),
@@ -252,9 +265,15 @@ fn run() -> Result<(), String> {
         } else {
             values.len()
         };
+        let is_projection = is_quantizable_linear(output_name);
         let assignment = mixed_precision
             .as_ref()
-            .and_then(|plan| plan.scheme_for(output_name));
+            .and_then(|plan| plan.scheme_for(output_name))
+            .or_else(|| {
+                mixed_precision_policy
+                    .as_ref()
+                    .and_then(|policy| policy.scheme_for(output_name))
+            });
         let requested_scheme = assignment.unwrap_or(quantization);
         let block_size = match requested_scheme {
             QuantizationScheme::None => 1,
@@ -267,7 +286,6 @@ fn run() -> Result<(), String> {
                 unreachable!("mixed precision must select a tensor scheme")
             }
         };
-        let is_projection = is_quantizable_linear(output_name);
         let can_use_scheme = is_projection && quantizable_width.is_multiple_of(block_size);
         if assignment.is_some() && !can_use_scheme {
             return Err(format!(
@@ -279,7 +297,10 @@ fn run() -> Result<(), String> {
         } else {
             QuantizationScheme::None
         };
-        if mixed_precision.is_some() && is_projection && !projection_schemes.contains(&scheme) {
+        if (mixed_precision.is_some() || mixed_precision_policy.is_some())
+            && is_projection
+            && !projection_schemes.contains(&scheme)
+        {
             projection_schemes.push(scheme);
         }
         let importance =
@@ -493,6 +514,70 @@ fn load_mixed_precision(path: &Path) -> Result<MixedPrecisionPlan, String> {
         plan.assign(name, scheme);
     }
     Ok(plan)
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MixedPrecisionPolicyFile {
+    default: String,
+    attention: String,
+    feed_forward: String,
+    #[serde(default = "default_true")]
+    preserve_output: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+struct MixedPrecisionPolicy {
+    default: QuantizationScheme,
+    attention: QuantizationScheme,
+    feed_forward: QuantizationScheme,
+    preserve_output: bool,
+}
+
+impl MixedPrecisionPolicy {
+    fn scheme_for(&self, name: &str) -> Option<QuantizationScheme> {
+        if self.preserve_output && matches!(name, "token_embd.weight" | "output.weight") {
+            return None;
+        }
+        if name.ends_with("attn_q.weight")
+            || name.ends_with("attn_k.weight")
+            || name.ends_with("attn_v.weight")
+            || name.ends_with("attn_output.weight")
+        {
+            Some(self.attention)
+        } else if name.ends_with("ffn_gate.weight")
+            || name.ends_with("ffn_up.weight")
+            || name.ends_with("ffn_down.weight")
+        {
+            Some(self.feed_forward)
+        } else if is_quantizable_linear(name) {
+            Some(self.default)
+        } else {
+            None
+        }
+    }
+}
+
+fn load_mixed_precision_policy(path: &Path) -> Result<MixedPrecisionPolicy, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let policy: MixedPrecisionPolicyFile = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "cannot parse mixed precision policy {}: {error}",
+            path.display()
+        )
+    })?;
+    let parse = |name: &str, value: &str| {
+        parse_quantization(value).map_err(|error| format!("mixed precision {name}: {error}"))
+    };
+    Ok(MixedPrecisionPolicy {
+        default: parse("default", &policy.default)?,
+        attention: parse("attention", &policy.attention)?,
+        feed_forward: parse("feed_forward", &policy.feed_forward)?,
+        preserve_output: policy.preserve_output,
+    })
 }
 
 enum WeightSource {
@@ -1146,7 +1231,7 @@ fn convert_qif(arguments: &[String]) -> Result<(), String> {
 
 fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json|--mixed-precision-policy POLICY.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
     );
 }
 

@@ -44,3 +44,27 @@ The converter evaluates several clipping points for each Q4_0 block and
 keeps the scale with the smallest weighted reconstruction error. It
 records the SHA-256 of the calibration input in the GGUF metadata. The
 result uses the standard packed Q4_0 format.
+
+## Automatic mixed-precision policy
+
+Use a policy when attention projections need more precision than feed-forward
+projections. The policy applies by canonical projection suffix and preserves
+embeddings and the output head by default.
+
+```json
+{
+  "default": "q4_k",
+  "attention": "q8_0",
+  "feed_forward": "q4_k",
+  "preserve_output": true
+}
+```
+
+```sh
+quantinfer-convert --config config.json --weights model.safetensors \
+  --quantize q4_k --mixed-precision-policy policy.json --output model-mixed.gguf
+```
+
+The policy and explicit `--mixed-precision` plans are mutually exclusive.
+The converter validates block alignment and records the resulting tensor
+schemes in the model manifest.
