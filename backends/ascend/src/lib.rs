@@ -6,4 +6,4 @@
 mod native;
 
 #[cfg(feature = "native")]
-pub use native::{AscendRuntime, AscendRuntimeError};
+pub use native::{AscendProvider, AscendRuntime, AscendRuntimeError};

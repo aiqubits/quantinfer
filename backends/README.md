@@ -88,3 +88,6 @@ integration before an Ascend execution provider can be selected.
 `load_float_matmul_abi()` checks the ACLNN two-phase MatMul symbols in the
 operator library configured by `ASCEND_OP_LIBRARY`.
 The runtime capability model exposes Ascend devices as `Device::Npu`.
+After the ABI check, `AscendRuntime::execution_provider()` supplies the
+F32 MatMul plan to the shared runtime registry. Tensor creation and operator
+submission remain the next device-side step.

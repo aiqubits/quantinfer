@@ -1873,6 +1873,7 @@ dependencies = [
  "libloading 0.9.0",
  "quantinfer-core",
  "quantinfer-kernel",
+ "quantinfer-runtime",
 ]
 
 [[package]]

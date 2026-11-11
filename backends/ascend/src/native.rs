@@ -1,6 +1,25 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use libloading::{Library, Symbol};
+use quantinfer_core::{DType, Device, QuantizationScheme};
+use quantinfer_runtime::{KernelCapability, Operation, RuntimeProvider};
+
+/// Runtime planning capabilities exposed after ACLNN MatMul symbols are found.
+#[derive(Debug, Clone)]
+pub struct AscendProvider {
+    capabilities: Vec<KernelCapability>,
+}
+
+impl RuntimeProvider for AscendProvider {
+    fn name(&self) -> &str {
+        "ascend"
+    }
+
+    fn capabilities(&self) -> &[KernelCapability] {
+        &self.capabilities
+    }
+}
 
 /// CANN runtime handle used to verify that an Ascend device is available.
 /// Operator execution is added after the ACL tensor and operator ABI is wired.
@@ -121,6 +140,23 @@ impl AscendRuntime {
 
     pub fn has_float_matmul_abi(&self) -> bool {
         self.op_library.is_some()
+    }
+
+    /// Build the NPU execution plan provider after the ACLNN ABI has been verified.
+    pub fn execution_provider(&self) -> Option<AscendProvider> {
+        self.op_library.as_ref()?;
+        Some(AscendProvider {
+            capabilities: vec![KernelCapability {
+                device: Device::Npu,
+                dtype: DType::F32,
+                quantization: QuantizationScheme::None,
+                tensor_layout: "row_major".to_owned(),
+                supported_operations: BTreeSet::from([Operation::Matmul]),
+                alignment: 1,
+                head_dimension: None,
+                maximum_sequence_length: None,
+            }],
+        })
     }
 }
 

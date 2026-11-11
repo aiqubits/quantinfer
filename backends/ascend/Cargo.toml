@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 quantinfer-core = { workspace = true }
 quantinfer-kernel = { workspace = true }
+quantinfer-runtime = { workspace = true }
 
 [features]
 native = ["dep:libloading"]
