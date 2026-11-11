@@ -34,6 +34,7 @@ on:
       - "backends/cpu/**"
       - "adapters/lora/**"
       - "adapters/gptq/**"
+      - "adapters/awq/**"
       - "apps/quantinfer-cli/**"
       - "apps/quantinfer-server/**"
       - "bindings/c/**"

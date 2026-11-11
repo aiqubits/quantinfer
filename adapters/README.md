@@ -40,3 +40,11 @@ matrix. It supports 2-, 4-, and 8-bit 32-bit-word packing, grouped scales,
 the standard packed-output zero-point orientation, and transposed/direct
 zero-point variants. One-file and indexed sharded SafeTensors sources are
 accepted; the importer does not silently re-quantize decoded values.
+
+## AWQ
+
+`quantinfer-adapter-awq` decodes AutoAWQ's four-bit output-packed
+SafeTensors (`qweight`, `qzeros`, `scales`, and optional `g_idx`) into a
+validated F32 matrix. It handles the interleaved AWQ bit order, grouped
+scales, symmetric checkpoints without zero tensors, and direct zero-point
+fixtures without changing the source's quantization values.

@@ -46,5 +46,6 @@ quantinfer-backend-mock = { path = "backends/mock", version = "0.1.0" }
 quantinfer-adapter-candle = { path = "adapters/candle", version = "0.1.0" }
 quantinfer-adapter-lora = { path = "adapters/lora", version = "0.1.0" }
 quantinfer-adapter-gptq = { path = "adapters/gptq", version = "0.1.0" }
+quantinfer-adapter-awq = { path = "adapters/awq", version = "0.1.0" }
 quantinfer-target-wasm = { path = "targets/wasm", version = "0.1.0" }
 quantinfer-target-wasi-nn = { path = "targets/wasi-nn", version = "0.1.0" }
