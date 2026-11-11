@@ -1,0 +1,32 @@
+name: Metal Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backends/metal/**"
+      - "backends/wgpu/**"
+      - "backends/gpu-common/**"
+      - "apps/quantinfer-cli/**"
+      - "crates/quantinfer/**"
+      - "crates/quantinfer-core/**"
+      - "crates/quantinfer-kernel/**"
+      - "crates/quantinfer-runtime/**"
+      - "Cargo.lock"
+      - ".github/workflows/metal.yml"
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Check Metal provider and CLI integration
+        run: |
+          cargo check --locked -p quantinfer-backend-metal --features native
+          cargo clippy --locked -p quantinfer-cli --features metal --all-targets -- -D warnings
+          cargo test --locked -p quantinfer-backend-metal --features native

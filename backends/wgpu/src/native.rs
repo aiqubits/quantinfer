@@ -27,6 +27,14 @@ pub struct WgpuBackend {
 impl WgpuBackend {
     /// Request a native adapter. Enable the fallback adapter for software Vulkan tests.
     pub fn open(force_fallback_adapter: bool) -> Result<Self> {
+        Self::open_with_backends(force_fallback_adapter, wgpu::Backends::all())
+    }
+
+    /// Request an adapter from a specific native API, such as Metal.
+    pub fn open_with_backends(
+        force_fallback_adapter: bool,
+        backends: wgpu::Backends,
+    ) -> Result<Self> {
         if cfg!(target_endian = "big") {
             return Err(unavailable(
                 "packed shader storage requires a little-endian host",
@@ -35,7 +43,10 @@ impl WgpuBackend {
         if wgpu::Instance::enabled_backend_features().is_empty() {
             return Err(unavailable("this target has no compiled native adapter"));
         }
-        let instance = wgpu::Instance::default();
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends,
+            ..wgpu::InstanceDescriptor::new_without_display_handle()
+        });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter,
@@ -80,6 +91,11 @@ impl WgpuBackend {
             capabilities: projection_capabilities(),
             cpu: CpuScalar::new(),
         })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn open_metal() -> Result<Self> {
+        Self::open_with_backends(false, wgpu::Backends::METAL)
     }
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {

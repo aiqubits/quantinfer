@@ -10,14 +10,14 @@
 | --- | --- |
 | 模型 | Qwen3-0.6B Dense |
 | 设备 | CPU Scalar |
-| 输入权重 | 单个 SafeTensors 文件 |
+| 输入权重 | 单个或索引描述的 SafeTensors 分片 |
 | GGUF 浮点类型 | F32、F16、BF16，加载时转为 F32 |
 | 量化 | Q8_0，量化线性投影层 |
 | 生成 | 单序列 Prefill、Decode、KV Cache、EOS、temperature、seed |
 | tokenizer | tokenizer.json 的 BPE vocab 和 merges |
 | 服务 | CLI 单次生成 |
 
-Qwen3 MoE、sliding-window、custom RoPE scaling、GPU 后端、分片 SafeTensors、HTTP 服务和多请求调度不在当前支持范围内。
+Qwen3 MoE、sliding-window、custom RoPE scaling 和多请求调度不在当前支持范围内。CPU、WGPU、CUDA 和 macOS Metal 入口分别由对应 feature 提供。
 
 ## 2. 主机准备
 
@@ -84,7 +84,7 @@ readlink -f /opt/quantinfer/current/quantinfer-cli
 
 ## 4. 下载 Qwen3 0.6B 模型
 
-当前转换器要求单个 SafeTensors 文件。`Qwen/Qwen3-0.6B` 提供单个 `model.safetensors`，适合作为当前流程的示例。
+`Qwen/Qwen3-0.6B` 提供单个 `model.safetensors`，适合作为当前流程的示例。更大的模型可以使用 `model.safetensors.index.json`，转换器会按索引读取分片。
 
 创建项目专用虚拟环境并安装 Hugging Face Hub CLI。
 
@@ -125,7 +125,8 @@ sudo -H -u quantinfer sha256sum config.json tokenizer.json tokenizer_config.json
   | sudo -H -u quantinfer tee input.sha256 >/dev/null
 ```
 
-Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转换器不能直接读取 `model.safetensors.index.json` 或单个分片。
+Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。转换器支持
+`model.safetensors.index.json`，并按索引从对应分片读取张量。
 
 ### Qwen3-4B-Instruct-2507 的适用性
 
@@ -133,11 +134,12 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。当前转�
 
 它不适合作为当前 Runbook 的直接示例，原因如下。
 
-- 官方仓库提供 `model.safetensors.index.json` 和多个权重分片，当前转换器不能直接读取。
+- 官方仓库提供 `model.safetensors.index.json` 和多个权重分片。使用索引文件作为
+  `--weights` 参数，必要时通过 `--weights-checksums` 校验全部分片。
 - 4B 模型在 CPU Scalar 下的内存和延迟预算显著高于 0.6B，必须先用目标主机完成 RSS、Prefill 和 Decode 压测。
 - 该模型的官方 chat template 由 `tokenizer_config.json` 提供，包含 Instruct 2507 的 system、tool call 和 assistant prompt 规则。当前 CLI 仅构造单轮 Qwen3-0.6B prompt，`Qwen3ChatTemplate` 未覆盖 4B-Instruct-2507 的完整 system、tool call、assistant prompt 和多轮模板语义。
 
-因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。如果目标是 4B-Instruct-2507，应先完成分片 SafeTensors 输入、官方 chat template 兼容和真实 tokenizer golden 校验，再单独进行 4B 适配和验证。
+因此，Runbook 的直接下载和转换示例使用 `Qwen3-0.6B`。4B-Instruct-2507 仍需单独完成官方 chat template 兼容和真实 tokenizer golden 校验。
 
 ## 5. 转换为 Q8_0 GGUF
 

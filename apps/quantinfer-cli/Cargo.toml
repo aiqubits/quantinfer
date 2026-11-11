@@ -8,6 +8,7 @@ license.workspace = true
 cpu-simd = ["quantinfer/cpu-simd"]
 wgpu = ["quantinfer/wgpu"]
 cuda = ["quantinfer/cuda"]
+metal = ["quantinfer/metal"]
 
 [dependencies]
 quantinfer = { workspace = true }

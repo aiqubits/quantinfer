@@ -552,7 +552,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu|cuda] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu|cuda|metal] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 

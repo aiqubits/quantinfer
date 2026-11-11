@@ -1905,8 +1905,10 @@ dependencies = [
 name = "quantinfer-backend-metal"
 version = "0.1.0"
 dependencies = [
+ "quantinfer-backend-wgpu",
  "quantinfer-core",
  "quantinfer-kernel",
+ "quantinfer-runtime",
 ]
 
 [[package]]

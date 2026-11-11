@@ -8,6 +8,7 @@ on:
       - "apps/quantinfer-cli/**"
       - "backends/wgpu/**"
       - "backends/gpu-common/**"
+      - "backends/metal/**"
       - "backends/cpu/**"
       - "crates/quantinfer-core/**"
       - "crates/quantinfer-format/**"

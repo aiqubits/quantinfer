@@ -7,3 +7,8 @@ license.workspace = true
 [dependencies]
 quantinfer-core = { workspace = true }
 quantinfer-kernel = { workspace = true }
+quantinfer-runtime = { workspace = true }
+quantinfer-backend-wgpu = { workspace = true, optional = true, features = ["native"] }
+
+[features]
+native = ["dep:quantinfer-backend-wgpu"]

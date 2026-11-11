@@ -63,3 +63,17 @@ numerical comparison on a CUDA machine with `cargo test --release --locked
 -p quantinfer-backend-cuda --features native --test native -- --ignored`.
 The same test can run through the CUDA workflow using a self-hosted runner
 with the label configured in `QUANTINFER_CUDA_RUNNER`.
+
+## Metal
+
+On macOS, enable the `metal` feature on `quantinfer` to use
+`quantinfer::metal::MetalBackend`. It selects only the system Metal adapter
+through WGPU, while exposing an independent `metal` runtime provider name.
+The provider accelerates the same F32, Q4_0 and Q8_0 projection operations
+and keeps the scalar CPU implementation for the remaining decoder operators.
+
+```sh
+cargo run --release --locked -p quantinfer-cli --features metal -- generate \
+  --backend metal --input model.gguf --prompt "The capital of France is" \
+  --max-new-tokens 8 --max-sequence-length 64
+```

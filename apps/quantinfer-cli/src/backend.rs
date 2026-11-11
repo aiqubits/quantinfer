@@ -12,6 +12,8 @@ pub enum Backend {
     Wgpu,
     #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
     Cuda,
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    Metal,
 }
 
 impl Backend {
@@ -44,7 +46,22 @@ impl Backend {
                     Err("CUDA generation requires a Linux or Windows CLI built with --features cuda".to_owned())
                 }
             }
-            name => Err(format!("unknown --backend {name}; use cpu, wgpu, or cuda")),
+            "metal" => {
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                {
+                    Ok(Self::Metal)
+                }
+                #[cfg(not(all(feature = "metal", target_os = "macos")))]
+                {
+                    Err(
+                        "Metal generation requires a macOS CLI built with --features metal"
+                            .to_owned(),
+                    )
+                }
+            }
+            name => Err(format!(
+                "unknown --backend {name}; use cpu, wgpu, cuda, or metal"
+            )),
         }
     }
 
@@ -64,13 +81,16 @@ impl Backend {
             }),
             #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
             Self::Cuda => load_gpu(reader, manifest, || quantinfer::cuda::CudaBackend::open(0)),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            Self::Metal => load_gpu(reader, manifest, quantinfer::metal::MetalBackend::open),
         }
     }
 }
 
 #[cfg(any(
     all(feature = "wgpu", not(target_arch = "wasm32")),
-    all(feature = "cuda", any(target_os = "linux", target_os = "windows"))
+    all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
+    all(feature = "metal", target_os = "macos")
 ))]
 fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     reader: &GgufReader,

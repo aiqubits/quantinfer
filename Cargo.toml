@@ -39,8 +39,8 @@ quantinfer-test-support = { path = "crates/quantinfer-test-support", version = "
 quantinfer-backend-cpu = { path = "backends/cpu", version = "0.1.0" }
 quantinfer-backend-wgpu = { path = "backends/wgpu", version = "0.1.0" }
 quantinfer-gpu-common = { path = "backends/gpu-common", version = "0.1.0" }
-quantinfer-backend-cuda = { path = "backends/cuda", version = "0.1.0" }
 quantinfer-backend-metal = { path = "backends/metal", version = "0.1.0" }
+quantinfer-backend-cuda = { path = "backends/cuda", version = "0.1.0" }
 quantinfer-backend-ascend = { path = "backends/ascend", version = "0.1.0" }
 quantinfer-backend-mock = { path = "backends/mock", version = "0.1.0" }
 quantinfer-adapter-candle = { path = "adapters/candle", version = "0.1.0" }
