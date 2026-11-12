@@ -328,7 +328,10 @@ jobs:
       - run: cargo run -p quantinfer-cli -- inspect-gguf --input qwen3-0.6b.gguf
 
   qwen3-conversion:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    # The pinned Qwen3 artifact is part of the main-branch conformance gate.
+    # Keep the manual and weekly triggers as well, but do not silently skip the
+    # real-model conversion on pushes that change runtime or format code.
+    if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     needs: conformance
     runs-on: ubuntu-latest
     timeout-minutes: 35
