@@ -97,8 +97,10 @@ impl<E: AscendMatmulExecutor> KernelBackend for AscendBackend<E> {
     }
 }
 
-/// CANN runtime handle used to verify that an Ascend device is available.
-/// Operator execution is added after the ACL tensor and operator ABI is wired.
+/// CANN runtime handle used to verify that an Ascend device is available and to
+/// invoke the two-phase ACLNN MatMul ABI. ACL Tensor creation, device-memory
+/// ownership, and model-level NPU scheduling remain the responsibility of the
+/// executor supplied to `AscendBackend`.
 pub struct AscendRuntime {
     library: Library,
     op_library: Option<Library>,

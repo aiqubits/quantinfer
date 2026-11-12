@@ -159,7 +159,12 @@ pub struct ModelPackage {
 
 impl ModelPackage {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
-        let root = root.as_ref().to_path_buf();
+        let root = fs::canonicalize(root.as_ref()).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot resolve package root {}: {error}",
+                root.as_ref().display()
+            ))
+        })?;
         let manifest_path = root.join("manifest.json");
         let manifest =
             ModelManifest::from_json(&fs::read_to_string(&manifest_path).map_err(|error| {
@@ -190,7 +195,19 @@ impl ModelPackage {
                 "invalid package artifact path {relative_path}"
             )));
         }
-        Ok(self.root.join(path))
+        let path = self.root.join(path);
+        let resolved = fs::canonicalize(&path).map_err(|error| {
+            FormatError::Io(format!(
+                "cannot resolve package artifact {}: {error}",
+                path.display()
+            ))
+        })?;
+        if !resolved.starts_with(&self.root) {
+            return Err(FormatError::Invalid(format!(
+                "package artifact {relative_path} resolves outside the package root"
+            )));
+        }
+        Ok(resolved)
     }
 
     pub fn read_verified(&self, relative_path: &str) -> Result<Vec<u8>> {
@@ -288,6 +305,27 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("checksum mismatch for profiles/default.json"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_package_artifacts_that_escape_through_symlinks() {
+        let root =
+            std::env::temp_dir().join(format!("quantinfer-package-symlink-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside =
+            root.with_file_name(format!("quantinfer-package-outside-{}", std::process::id()));
+        std::fs::write(&outside, b"outside").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("model.gguf")).unwrap();
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.insert_checksum("model.gguf", b"outside");
+        std::fs::write(root.join("manifest.json"), manifest.to_json().unwrap()).unwrap();
+        let package = ModelPackage::open(&root).unwrap();
+        let error = package.verify_all().unwrap_err().to_string();
+        assert!(error.contains("outside the package root"));
+        std::fs::remove_file(root.join("model.gguf")).unwrap();
+        std::fs::remove_file(outside).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 }

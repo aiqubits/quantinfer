@@ -23,7 +23,7 @@ pub struct ServedModel {
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelDescriptor {
     pub id: String,
-    pub path: String,
+    pub artifact_name: String,
     pub revision: Option<String>,
     pub has_lora: bool,
     pub package: bool,
@@ -126,7 +126,12 @@ impl ModelRegistry {
                     .collect();
                 ModelDescriptor {
                     id: id.clone(),
-                    path: model.entry.path.display().to_string(),
+                    artifact_name: model
+                        .entry
+                        .path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "model".to_owned()),
                     revision: model.entry.revision.clone(),
                     has_lora: model.entry.lora.is_some(),
                     package: model.entry.path.is_dir(),

@@ -336,7 +336,7 @@ impl SafeTensorShards {
             if shards.contains_key(shard) {
                 continue;
             }
-            let path = parent.join(shard);
+            let path = resolve_shard_path(parent, shard)?;
             let file = SafeTensorFileReader::open(&path).map_err(|error| {
                 FormatError::Io(format!(
                     "cannot open SafeTensors shard {}: {error}",
@@ -399,7 +399,13 @@ impl SafeTensorShards {
 
     pub fn verify_shard_checksum(&self, shard: &str, expected_sha256: &str) -> Result<()> {
         let parent = self.index_path.parent().unwrap_or_else(|| Path::new("."));
-        let mut file = File::open(parent.join(shard))
+        if !self.shards.contains_key(shard) {
+            return Err(FormatError::Invalid(format!(
+                "unknown SafeTensors shard {shard}"
+            )));
+        }
+        let path = resolve_shard_path(parent, shard)?;
+        let mut file = File::open(path)
             .map_err(|error| FormatError::Io(format!("cannot read shard {shard}: {error}")))?;
         let actual = sha256_reader(&mut file)
             .map_err(|error| FormatError::Io(format!("cannot hash shard {shard}: {error}")))?;
@@ -420,6 +426,43 @@ impl SafeTensorShards {
         }
         Ok(())
     }
+}
+
+fn resolve_shard_path(parent: &Path, shard: &str) -> Result<PathBuf> {
+    let relative = Path::new(shard);
+    let mut has_normal = false;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(_) => has_normal = true,
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => {
+                return Err(FormatError::Invalid(format!(
+                    "invalid SafeTensors shard path {shard}"
+                )))
+            }
+        }
+    }
+    if !has_normal {
+        return Err(FormatError::Invalid(format!(
+            "invalid SafeTensors shard path {shard}"
+        )));
+    }
+    let parent = fs::canonicalize(parent).map_err(|error| {
+        FormatError::Io(format!(
+            "cannot resolve SafeTensors shard directory: {error}"
+        ))
+    })?;
+    let path = fs::canonicalize(parent.join(relative)).map_err(|error| {
+        FormatError::Io(format!("cannot resolve SafeTensors shard {shard}: {error}"))
+    })?;
+    if !path.starts_with(&parent) {
+        return Err(FormatError::Invalid(format!(
+            "SafeTensors shard {shard} escapes its index directory"
+        )));
+    }
+    Ok(path)
 }
 
 fn decode_tensor_f32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<Vec<f32>> {
@@ -705,6 +748,22 @@ mod tests {
         let error = shards.tensor_f32("b").unwrap_err().to_string();
         assert!(error.contains("model-00002-of-00002.safetensors"));
         assert_eq!(shards.tensor_f32("a").unwrap(), vec![1.0]);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_shard_paths_outside_the_index_directory() {
+        let directory =
+            std::env::temp_dir().join(format!("quantinfer-shard-path-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let index_path = directory.join("model.safetensors.index.json");
+        std::fs::write(
+            &index_path,
+            r#"{"weight_map":{"weight":"../outside.safetensors"}}"#,
+        )
+        .unwrap();
+        let error = SafeTensorShards::open(&index_path).unwrap_err().to_string();
+        assert!(error.contains("invalid SafeTensors shard path"));
         std::fs::remove_dir_all(directory).unwrap();
     }
 }
