@@ -69,7 +69,10 @@ def check(binary, model, golden, adapter=None):
         registry = json.loads(request(base, "/studio/api/registry"))["models"]
         assert [entry["id"] for entry in registry] == ["primary", "secondary"]
         assert all(entry["package"] is False for entry in registry)
-        assert all("path" not in entry and entry["artifact_name"] == "model.gguf" for entry in registry)
+        assert all(
+            "path" not in entry and entry["artifact_name"] == Path(model).name
+            for entry in registry
+        )
         common = {"prompt": prompt, "max_new_tokens": len(expected)}
         for stream_model in ("secondary", "primary"):
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
