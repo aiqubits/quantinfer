@@ -178,6 +178,7 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         .route("/v1/generate", post(generate))
         .route("/metrics", get(metrics_response))
         .route("/studio", get(studio))
+        .route("/studio/api/registry", get(studio_registry))
         .fallback(|| async { error_response((StatusCode::NOT_FOUND, "not_found".to_owned())) })
         .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state);
@@ -240,6 +241,10 @@ async fn studio() -> Html<&'static str> {
     Html(STUDIO_HTML)
 }
 
+async fn studio_registry(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"models": state.models.descriptors()}))
+}
+
 const STUDIO_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
@@ -275,6 +280,7 @@ const STUDIO_HTML: &str = r##"<!doctype html>
     <section>
       <h2>Model registry</h2>
       <p id="models">loading…</p>
+      <pre id="registry-details">loading package and profile metadata…</pre>
       <button id="refresh" type="button">Refresh</button>
     </section>
     <section>
@@ -314,8 +320,8 @@ const STUDIO_HTML: &str = r##"<!doctype html>
       }).join('');
     }
     async function refresh() {
-      const [health, models, metrics] = await Promise.all([
-        fetch('/healthz'), fetch('/v1/models'), fetch('/metrics')
+      const [health, models, metrics, registry] = await Promise.all([
+        fetch('/healthz'), fetch('/v1/models'), fetch('/metrics'), fetch('/studio/api/registry')
       ]);
       $('health').textContent = health.ok ? 'service healthy' : 'service unavailable';
       const payload = await models.json();
@@ -323,6 +329,7 @@ const STUDIO_HTML: &str = r##"<!doctype html>
       $('models').textContent = entries.length ? entries.map((m) => m.id).join(', ') : 'No models loaded';
       $('model').replaceChildren(...entries.map((m) => new Option(m.id, m.id)));
       $('metrics').textContent = await metrics.text();
+      $('registry-details').textContent = JSON.stringify((await registry.json()).models || [], null, 2);
     }
     $('refresh').addEventListener('click', () => refresh().catch((e) => $('health').textContent = e));
     $('generate').addEventListener('click', async () => {
@@ -616,6 +623,7 @@ mod tests {
         assert!(STUDIO_HTML.contains("/v1/models"));
         assert!(STUDIO_HTML.contains("/v1/generate"));
         assert!(STUDIO_HTML.contains("/metrics"));
+        assert!(STUDIO_HTML.contains("/studio/api/registry"));
         assert!(STUDIO_HTML.contains("Live generation samples"));
         assert!(STUDIO_HTML.contains("tokens/s"));
     }

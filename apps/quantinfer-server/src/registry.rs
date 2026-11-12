@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
 use quantinfer::tokenizer::GgufBpeTokenizer;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, PartialEq, Eq)]
 struct ModelEntry {
@@ -18,6 +18,16 @@ pub struct ServedModel {
     entry: ModelEntry,
     pub decoder: Arc<CpuModel>,
     pub tokenizer: Option<GgufBpeTokenizer>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelDescriptor {
+    pub id: String,
+    pub path: String,
+    pub revision: Option<String>,
+    pub has_lora: bool,
+    pub package: bool,
+    pub profiles: Vec<String>,
 }
 
 impl ServedModel {
@@ -90,6 +100,39 @@ impl ModelRegistry {
             .unwrap_or_else(|error| error.into_inner())
             .keys()
             .cloned()
+            .collect()
+    }
+
+    pub fn descriptors(&self) -> Vec<ModelDescriptor> {
+        self.models
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .map(|(id, model)| {
+                let profiles = model
+                    .entry
+                    .path
+                    .is_dir()
+                    .then(|| model.entry.path.join("profiles"))
+                    .and_then(|path| fs::read_dir(path).ok())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|extension| extension == "json")
+                    })
+                    .filter_map(|path| path.file_stem().map(|name| name.to_string_lossy().into()))
+                    .collect();
+                ModelDescriptor {
+                    id: id.clone(),
+                    path: model.entry.path.display().to_string(),
+                    revision: model.entry.revision.clone(),
+                    has_lora: model.entry.lora.is_some(),
+                    package: model.entry.path.is_dir(),
+                    profiles,
+                }
+            })
             .collect()
     }
 
