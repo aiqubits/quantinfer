@@ -2,6 +2,8 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "simd")]
+use quantinfer_core::{Q4_0Block, Q8_0Block};
 use quantinfer_core::{
     QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K,
     Shape, Tensor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
@@ -38,6 +40,19 @@ impl CpuIsa {
             Self::Neon => SimdIsa::Neon,
         };
         ScaledAdd::for_isa(isa)
+    }
+
+    #[cfg(feature = "simd")]
+    fn quantized_dot(self) -> Option<quantinfer_backend_cpu_simd::QuantizedDot> {
+        use quantinfer_backend_cpu_simd::{QuantizedDot, SimdIsa};
+
+        let isa = match self {
+            Self::Scalar => return None,
+            Self::Avx2 => SimdIsa::Avx2,
+            Self::Avx512 => SimdIsa::Avx512,
+            Self::Neon => SimdIsa::Neon,
+        };
+        QuantizedDot::for_isa(isa)
     }
 }
 
@@ -362,6 +377,86 @@ impl CpuScalar {
         let subblock = local / 16;
         Ok(block.scale * f32::from(block.scales[subblock]) * (i32::from(q) - 32) as f32)
     }
+
+    #[cfg(feature = "simd")]
+    fn matmul_output_rows_q8_simd(
+        &self,
+        lhs: &Tensor,
+        rhs_shape: &Shape,
+        blocks: &[Q8_0Block],
+        dot: quantinfer_backend_cpu_simd::QuantizedDot,
+    ) -> Result<Tensor> {
+        let (rows, inner) = self.expect_matrix(lhs, "lhs")?;
+        let &[input, outputs] = rhs_shape.dims() else {
+            return Err(KernelError::InvalidInput(
+                "expected rank-2 quantized matrix".to_owned(),
+            ));
+        };
+        let row_blocks = inner / Q8_0_BLOCK_SIZE;
+        if input != inner
+            || input == 0
+            || outputs == 0
+            || !input.is_multiple_of(Q8_0_BLOCK_SIZE)
+            || blocks.len() != outputs * row_blocks
+        {
+            return Err(KernelError::InvalidInput(
+                "invalid quantized output rows".to_owned(),
+            ));
+        }
+        let mut result = Vec::with_capacity(rows * outputs);
+        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
+            let left = left.as_chunks::<32>().0;
+            for row in blocks.chunks_exact(row_blocks) {
+                result.push(
+                    left.iter()
+                        .zip(row)
+                        .map(|(left, block)| dot.q8(left, block.scale, &block.values))
+                        .sum(),
+                );
+            }
+        }
+        Ok(Tensor::from_f32(vec![rows, outputs], result)?)
+    }
+
+    #[cfg(feature = "simd")]
+    fn matmul_output_rows_q4_simd(
+        &self,
+        lhs: &Tensor,
+        rhs_shape: &Shape,
+        blocks: &[Q4_0Block],
+        dot: quantinfer_backend_cpu_simd::QuantizedDot,
+    ) -> Result<Tensor> {
+        let (rows, inner) = self.expect_matrix(lhs, "lhs")?;
+        let &[input, outputs] = rhs_shape.dims() else {
+            return Err(KernelError::InvalidInput(
+                "expected rank-2 quantized matrix".to_owned(),
+            ));
+        };
+        let row_blocks = inner / Q4_0_BLOCK_SIZE;
+        if input != inner
+            || input == 0
+            || outputs == 0
+            || !input.is_multiple_of(Q4_0_BLOCK_SIZE)
+            || blocks.len() != outputs * row_blocks
+        {
+            return Err(KernelError::InvalidInput(
+                "invalid quantized output rows".to_owned(),
+            ));
+        }
+        let mut result = Vec::with_capacity(rows * outputs);
+        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
+            let left = left.as_chunks::<32>().0;
+            for row in blocks.chunks_exact(row_blocks) {
+                result.push(
+                    left.iter()
+                        .zip(row)
+                        .map(|(left, block)| dot.q4(left, block.scale, &block.values))
+                        .sum(),
+                );
+            }
+        }
+        Ok(Tensor::from_f32(vec![rows, outputs], result)?)
+    }
 }
 
 impl KernelBackend for CpuScalar {
@@ -370,6 +465,10 @@ impl KernelBackend for CpuScalar {
     }
 
     fn matmul_q8_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor> {
+        #[cfg(feature = "simd")]
+        if let Some(dot) = self.config.isa.quantized_dot() {
+            return self.matmul_output_rows_q8_simd(lhs, rhs.shape(), rhs.blocks(), dot);
+        }
         self.matmul_output_rows(
             lhs,
             rhs.shape(),
@@ -380,6 +479,10 @@ impl KernelBackend for CpuScalar {
     }
 
     fn matmul_q4_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
+        #[cfg(feature = "simd")]
+        if let Some(dot) = self.config.isa.quantized_dot() {
+            return self.matmul_output_rows_q4_simd(lhs, rhs.shape(), rhs.blocks(), dot);
+        }
         self.matmul_output_rows(
             lhs,
             rhs.shape(),
@@ -765,6 +868,56 @@ mod tests {
                 scalar.as_f32().unwrap(),
                 "{isa:?}"
             );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "simd")]
+    fn quantized_output_rows_dispatch_matches_scalar_reference() {
+        let lhs = Tensor::from_f32(
+            vec![3, 32],
+            (0..96).map(|index| index as f32 / 17.0 - 2.0).collect(),
+        )
+        .unwrap();
+        let q8_blocks = (0..3)
+            .map(|column| quantinfer_core::Q8_0Block {
+                scale: 0.13 + column as f32 * 0.07,
+                values: std::array::from_fn(|index| (index as i8 % 15) - 7),
+            })
+            .collect();
+        let q8 = QuantizedTensor::from_blocks(vec![32, 3], q8_blocks).unwrap();
+        let q4_blocks = (0..3)
+            .map(|column| Q4_0Block {
+                scale: 0.21 + column as f32 * 0.03,
+                values: std::array::from_fn(|index| (index % 16) as u8),
+            })
+            .collect();
+        let q4 = QuantizedTensor4::from_blocks(vec![32, 3], q4_blocks).unwrap();
+        let scalar = CpuScalar::new();
+        let expected_q8 = scalar.matmul_q8_0_output_rows(&lhs, &q8).unwrap();
+        let expected_q4 = scalar.matmul_q4_0_output_rows(&lhs, &q4).unwrap();
+        for isa in [CpuIsa::Avx2, CpuIsa::Avx512, CpuIsa::Neon] {
+            let backend = CpuScalar::with_config(CpuRuntimeConfig {
+                isa,
+                ..CpuRuntimeConfig::default()
+            });
+            if backend.config().isa != isa {
+                continue;
+            }
+            let actual_q8 = backend.matmul_q8_0_output_rows(&lhs, &q8).unwrap();
+            let actual_q4 = backend.matmul_q4_0_output_rows(&lhs, &q4).unwrap();
+            for (actual, expected) in [
+                (actual_q8.as_f32().unwrap(), expected_q8.as_f32().unwrap()),
+                (actual_q4.as_f32().unwrap(), expected_q4.as_f32().unwrap()),
+            ] {
+                assert_eq!(actual.len(), expected.len());
+                for (&actual, &expected) in actual.iter().zip(expected) {
+                    assert!(
+                        (actual - expected).abs() < 1e-4,
+                        "{isa:?}: {actual} != {expected}"
+                    );
+                }
+            }
         }
     }
 
