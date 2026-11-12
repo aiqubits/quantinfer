@@ -1912,6 +1912,7 @@ name = "quantinfer-backend-ascend"
 version = "0.1.0"
 dependencies = [
  "libloading 0.9.0",
+ "quantinfer-backend-cpu",
  "quantinfer-core",
  "quantinfer-kernel",
  "quantinfer-runtime",
