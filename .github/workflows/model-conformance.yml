@@ -291,7 +291,7 @@ jobs:
         run: |
           cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
             --features conformance --test host -- --include-ignored
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: smollm2-benchmark
@@ -460,7 +460,7 @@ jobs:
           python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
             --server "$RUNNER_TEMP/llama/bin/llama-server" --model qwen3-imatrix-q4_0.gguf \
             --architecture qwen3 --dtype Q4_0 --count 5
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: qwen3-conformance-report
