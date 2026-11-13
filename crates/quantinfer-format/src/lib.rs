@@ -62,6 +62,7 @@ pub enum GgufValue {
     I32(i32),
     I64(i64),
     F32(f32),
+    F64(f64),
     Bool(bool),
     String(String),
     Array(Vec<Self>),
@@ -970,6 +971,7 @@ fn value_kind(value: &GgufValue) -> Result<u32> {
         GgufValue::I32(_) => Ok(5),
         GgufValue::I64(_) => Ok(11),
         GgufValue::F32(_) => Ok(6),
+        GgufValue::F64(_) => Ok(12),
         GgufValue::Bool(_) => Ok(7),
         GgufValue::String(_) => Ok(8),
         GgufValue::Array(_) => Err(FormatError::Invalid(
@@ -985,6 +987,7 @@ fn encode_scalar(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
         GgufValue::I32(value) => output.extend_from_slice(&value.to_le_bytes()),
         GgufValue::I64(value) => output.extend_from_slice(&value.to_le_bytes()),
         GgufValue::F32(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::F64(value) => output.extend_from_slice(&value.to_le_bytes()),
         GgufValue::Bool(value) => output.push(u8::from(*value)),
         GgufValue::String(value) => write_string(output, value)?,
         GgufValue::Array(_) => {
@@ -1177,9 +1180,9 @@ impl<'a> Cursor<'a> {
             ))),
             7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
             8 => Ok(GgufValue::String(self.read_string()?)),
-            12 => Ok(GgufValue::F32(
-                f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()) as f32,
-            )),
+            12 => Ok(GgufValue::F64(f64::from_le_bytes(
+                self.read_exact(8)?.try_into().unwrap(),
+            ))),
             kind => Err(FormatError::Invalid(format!(
                 "unsupported GGUF metadata type {kind}"
             ))),
@@ -1442,7 +1445,8 @@ mod tests {
             raw.extend_from_slice(&kind.to_le_bytes());
             raw.extend_from_slice(&value);
         }
-        assert!(GgufReader::open(raw).is_ok());
+        let reader = GgufReader::open(raw).unwrap();
+        assert_eq!(reader.metadata().get("f64"), Some(&GgufValue::F64(1.25)));
     }
 
     #[test]

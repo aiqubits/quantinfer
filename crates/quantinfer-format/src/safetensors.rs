@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use super::{sha256_reader, FormatError, Result};
@@ -169,7 +171,7 @@ pub struct SafeTensorFileReader {
 impl SafeTensorFileReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)
+        let mut file = open_readonly_nofollow(&path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         let file_len = usize::try_from(
             file.metadata()
@@ -233,7 +235,7 @@ impl SafeTensorFileReader {
                 FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
             })?;
         let byte_length = info.data_offsets.1 - info.data_offsets.0;
-        let mut file = File::open(path)
+        let mut file = open_readonly_nofollow(path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
             |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
@@ -262,7 +264,7 @@ impl SafeTensorFileReader {
                 FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
             })?;
         let byte_length = info.data_offsets.1 - info.data_offsets.0;
-        let mut file = File::open(path)
+        let mut file = open_readonly_nofollow(path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
             |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
@@ -291,7 +293,7 @@ impl SafeTensorFileReader {
                 FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
             })?;
         let byte_length = info.data_offsets.1 - info.data_offsets.0;
-        let mut file = File::open(path)
+        let mut file = open_readonly_nofollow(path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
             |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
@@ -306,6 +308,14 @@ impl SafeTensorFileReader {
         })?;
         decode_tensor_u64(info, &bytes, name)
     }
+}
+
+fn open_readonly_nofollow(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
 }
 
 #[derive(Debug, Clone)]
@@ -417,7 +427,7 @@ impl SafeTensorShards {
             )));
         }
         let path = resolve_shard_path(parent, shard)?;
-        let mut file = File::open(path)
+        let mut file = open_readonly_nofollow(&path)
             .map_err(|error| FormatError::Io(format!("cannot read shard {shard}: {error}")))?;
         let actual = sha256_reader(&mut file)
             .map_err(|error| FormatError::Io(format!("cannot hash shard {shard}: {error}")))?;

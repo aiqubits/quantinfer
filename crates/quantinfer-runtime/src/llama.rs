@@ -639,6 +639,7 @@ fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
     };
     match value {
         GgufValue::F32(value) => Ok(Some(*value)),
+        GgufValue::F64(value) => Ok(Some(*value as f32)),
         GgufValue::U32(value) => Ok(Some(*value as f32)),
         GgufValue::U64(value) => Ok(Some(*value as f32)),
         _ => Err(RuntimeError::InvalidInput(format!(

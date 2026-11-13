@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use quantinfer_core::{QuantizationScheme, TensorStorageDescriptor};
@@ -213,7 +215,10 @@ impl ModelPackage {
     pub fn read_verified(&self, relative_path: &str) -> Result<Vec<u8>> {
         let path = self.artifact_path(relative_path)?;
         let expected = self.manifest.expected_checksum(relative_path)?;
-        let bytes = fs::read(&path)
+        let mut file = open_readonly_nofollow(&path)
+            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         verify_digest(relative_path, expected, &sha256_hex(&bytes))?;
         Ok(bytes)
@@ -228,7 +233,7 @@ impl ModelPackage {
         }
         for (name, expected) in &self.manifest.checksums {
             let path = self.artifact_path(name)?;
-            let actual = fs::File::open(&path)
+            let actual = open_readonly_nofollow(&path)
                 .and_then(|mut file| sha256_reader(&mut file))
                 .map_err(|error| {
                     FormatError::Io(format!("cannot hash {}: {error}", path.display()))
@@ -237,6 +242,14 @@ impl ModelPackage {
         }
         Ok(self.manifest.checksums.len())
     }
+}
+
+fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    options.open(path)
 }
 
 fn verify_digest(path: &str, expected: &str, actual: &str) -> Result<()> {

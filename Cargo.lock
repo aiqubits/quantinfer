@@ -2045,6 +2045,7 @@ name = "quantinfer-format"
 version = "0.1.0"
 dependencies = [
  "half",
+ "libc",
  "quantinfer-core",
  "serde",
  "serde_json",
