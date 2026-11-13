@@ -12,7 +12,7 @@ Before pushing a commit, run the same checks as the fast CI job:
 cargo fmt --all -- --check
 cargo check --workspace --locked
 cargo test --workspace --locked
-cargo run -p quantinfer-xtask -- bench
+cargo run --locked -p quantinfer-xtask -- bench
 cargo clippy --workspace --all-targets --locked -- -D warnings
 git diff --check
 ```
@@ -20,7 +20,7 @@ git diff --check
 Model conformance is opt-in locally because it downloads pinned artifacts:
 
 ```sh
-cargo run -p quantinfer-xtask -- conformance
+cargo run --locked -p quantinfer-xtask -- conformance
 ```
 
 ## Change boundaries

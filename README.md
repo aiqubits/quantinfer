@@ -19,8 +19,8 @@ The first implementation target is native CPU execution with GGUF and SafeTensor
 
 ```bash
 cargo fmt --all -- --check
-cargo check --workspace
-cargo test --workspace
+    cargo check --workspace --locked
+    cargo test --workspace --locked
 ```
 
 ## MVP flow
@@ -28,7 +28,7 @@ cargo test --workspace
 Convert a Qwen3 SafeTensors checkpoint to the canonical GGUF layout. Linear projection matrices are transposed into the runtime layout, and `--quantize q8_0` stores supported projection weights as Q8_0 blocks.
 
 ```bash
-cargo run -p quantinfer-convert -- \
+cargo run --locked -p quantinfer-convert -- \
   --config config.json \
   --weights model.safetensors \
   --output model.gguf \
@@ -39,7 +39,7 @@ cargo run -p quantinfer-convert -- \
 The converter also accepts `model.safetensors.index.json` with sharded weights and can emit a verified model manifest. Q4_0 uses the standard GGML block layout.
 
 ```bash
-cargo run -p quantinfer-convert -- \
+cargo run --locked -p quantinfer-convert -- \
   --config config.json \
   --weights model.safetensors.index.json \
   --output model.gguf \
@@ -50,13 +50,13 @@ cargo run -p quantinfer-convert -- \
 Inspect the resulting metadata and tensor inventory.
 
 ```bash
-cargo run -p quantinfer-cli -- inspect-gguf --input model.gguf
+cargo run --locked -p quantinfer-cli -- inspect-gguf --input model.gguf
 ```
 
 Run CPU Prefill and Decode from a natural-language prompt. The converter embeds the Qwen3 BPE vocabulary and merges into GGUF.
 
 ```bash
-cargo run -p quantinfer-cli -- generate \
+cargo run --locked -p quantinfer-cli -- generate \
   --input model.gguf \
   --prompt "Hello, QuantInfer" \
   --chat \
@@ -68,7 +68,7 @@ cargo run -p quantinfer-cli -- generate \
 The token-id form remains available for runtime smoke tests.
 
 ```bash
-cargo run -p quantinfer-cli -- generate \
+cargo run --locked -p quantinfer-cli -- generate \
   --input model.gguf \
   --tokens 1,2,3 \
   --max-new-tokens 16 \

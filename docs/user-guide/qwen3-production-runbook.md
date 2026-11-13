@@ -1,8 +1,8 @@
 # QuantInfer Qwen3-0.6B CPU 单机试运行 Runbook
 
-本文档适用于 Qwen3-0.6B Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口，`quantinfer-server` 不提供 HTTP 服务。
+本文档适用于 Qwen3-0.6B Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口和可选的 HTTP 服务入口；本文只覆盖 CLI 单机流程。
 
-运行代码固定为经过 CI 验证的 commit。本文示例使用 `38a1ed1f6744e6721ce3c9b67445f4bf450b1021`，发布时替换为实际批准的 commit。
+运行代码应固定为经过 CI 验证的 commit。发布时将本文示例中的提交替换为实际批准的 commit。
 
 ## 1. 支持范围
 
@@ -54,7 +54,7 @@ rustup component add rustfmt clippy
 ```bash
 sudo git clone https://github.com/aiqubits/quantinfer.git /opt/quantinfer/src
 cd /opt/quantinfer/src
-git checkout 38a1ed1f6744e6721ce3c9b67445f4bf450b1021
+git checkout <APPROVED_COMMIT>
 git rev-parse HEAD
 ```
 
@@ -62,17 +62,17 @@ git rev-parse HEAD
 
 ```bash
 cargo fmt --all -- --check
-cargo check --workspace
-cargo test --workspace
-cargo run -p quantinfer-xtask -- bench
-cargo clippy --workspace --all-targets -- -D warnings
+cargo check --workspace --locked
+cargo test --workspace --locked
+cargo run --locked -p quantinfer-xtask -- bench
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 构建并安装到版本目录。`RELEASE_ID` 使用代码 commit 的短 SHA 或内部发布编号。
 
 ```bash
-RELEASE_ID=38a1ed1
-cargo build --release -p quantinfer-convert -p quantinfer-cli
+RELEASE_ID=<APPROVED_COMMIT>
+cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
 sudo install -d -o quantinfer -g quantinfer -m 0755 "/opt/quantinfer/releases/$RELEASE_ID"
 sudo install -m 0755 target/release/quantinfer-convert "/opt/quantinfer/releases/$RELEASE_ID/quantinfer-convert"
 sudo install -m 0755 target/release/quantinfer-cli "/opt/quantinfer/releases/$RELEASE_ID/quantinfer-cli"
@@ -146,7 +146,7 @@ Qwen3-1.7B、4B、8B 等模型通常使用多个 SafeTensors 分片。转换器�
 ```bash
 set -euo pipefail
 SOURCE=/opt/quantinfer/models/source/qwen3-0.6b
-MODEL_DIR=/opt/quantinfer/models/qwen3/38a1ed1
+MODEL_DIR=/opt/quantinfer/models/qwen3/<APPROVED_COMMIT>
 sudo install -d -o quantinfer -g quantinfer -m 0750 "$MODEL_DIR"
 sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-convert \
   --config "$SOURCE/config.json" \

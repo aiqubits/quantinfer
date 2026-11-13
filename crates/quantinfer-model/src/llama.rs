@@ -87,8 +87,23 @@ impl LlamaConfig {
         if self.head_dim.is_none() && !self.hidden_size.is_multiple_of(self.num_attention_heads) {
             return Err("hidden size must be divisible by attention heads".to_owned());
         }
-        if self.rms_norm_eps <= 0.0 || self.rope_theta <= 0.0 {
+        if !self.rms_norm_eps.is_finite()
+            || !self.rope_theta.is_finite()
+            || self.rms_norm_eps <= 0.0
+            || self.rope_theta <= 0.0
+        {
             return Err("normalization epsilon and RoPE theta must be positive".to_owned());
+        }
+        if self
+            .num_attention_heads
+            .checked_mul(self.effective_head_dim())
+            .is_none()
+            || self
+                .num_key_value_heads()
+                .checked_mul(self.effective_head_dim())
+                .is_none()
+        {
+            return Err("Llama projection dimensions overflow usize".to_owned());
         }
         Ok(())
     }

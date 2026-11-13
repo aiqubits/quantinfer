@@ -13,16 +13,20 @@ jobs:
   portable:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - run: cargo test --locked -p quantinfer-backend-ascend --features native
 
   native:
     if: ${{ github.event_name == 'workflow_dispatch' && vars.QUANTINFER_ASCEND_RUNNER != '' }}
     runs-on: [self-hosted, '${{ vars.QUANTINFER_ASCEND_RUNNER }}']
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - name: Probe CANN ACL runtime
         env:
           ASCEND_ACL_LIBRARY: ${{ vars.ASCEND_ACL_LIBRARY }}

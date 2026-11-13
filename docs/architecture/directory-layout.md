@@ -15,4 +15,4 @@ This document is the reviewed workspace baseline for QuantInfer.
 
 ## Initial scope
 
-The first implementation targets Qwen3 Dense, native CPU execution, SafeTensors input, GGUF runtime loading, Q8_0 weight-only quantization, KV cache, and single-sequence generation. Qwen3 MoE, sliding-window execution, GPU backends, QIF, vendor SDKs, WASM, and WASI-NN remain extensions.
+The initial implementation targeted Qwen3 Dense, native CPU execution, SafeTensors input, GGUF runtime loading, Q8_0 weight-only quantization, KV cache, and single-sequence generation. The current workspace also contains optional QIF, WGPU, CUDA, Metal, vendor, WASM, WASI-NN, and HTTP service integrations; Qwen3 MoE and sliding-window execution remain outside the supported model scope.

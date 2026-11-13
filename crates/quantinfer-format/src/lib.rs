@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{self, Read, Seek, Write};
 
@@ -569,8 +569,14 @@ impl PackedTensorReader {
             ));
         }
         let mut tensors = Vec::with_capacity(tensor_count);
+        let mut tensor_names = BTreeSet::new();
         for _ in 0..tensor_count {
             let name = cursor.read_string()?;
+            if !tensor_names.insert(name.clone()) {
+                return Err(FormatError::Invalid(format!(
+                    "duplicate GGUF tensor name {name}"
+                )));
+            }
             let dimensions = cursor.read_u32()? as usize;
             let mut shape = Vec::with_capacity(dimensions);
             for _ in 0..dimensions {
@@ -1150,6 +1156,16 @@ impl<'a> Cursor<'a> {
 
     fn read_scalar(&mut self, kind: u32) -> Result<GgufValue> {
         match kind {
+            0 => Ok(GgufValue::U32(u32::from(self.read_exact(1)?[0]))),
+            1 => Ok(GgufValue::I32(i32::from(i8::from_le_bytes([
+                self.read_exact(1)?[0]
+            ])))),
+            2 => Ok(GgufValue::U32(u32::from(u16::from_le_bytes(
+                self.read_exact(2)?.try_into().unwrap(),
+            )))),
+            3 => Ok(GgufValue::I32(i32::from(i16::from_le_bytes(
+                self.read_exact(2)?.try_into().unwrap(),
+            )))),
             4 => Ok(GgufValue::U32(self.read_u32()?)),
             10 => Ok(GgufValue::U64(self.read_u64()?)),
             5 => Ok(GgufValue::I32(self.read_u32()? as i32)),
@@ -1161,6 +1177,9 @@ impl<'a> Cursor<'a> {
             ))),
             7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
             8 => Ok(GgufValue::String(self.read_string()?)),
+            12 => Ok(GgufValue::F32(
+                f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap()) as f32,
+            )),
             kind => Err(FormatError::Invalid(format!(
                 "unsupported GGUF metadata type {kind}"
             ))),
@@ -1398,6 +1417,51 @@ mod tests {
         assert!(matches!(
             GgufReader::open(bytes),
             Err(FormatError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn reads_all_standard_scalar_metadata_kinds() {
+        // The reader-level coverage for the compact scalar kinds is exercised
+        // through a hand-built metadata section because GgufWriter emits the
+        // canonical wide kinds only.
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"GGUF");
+        raw.extend_from_slice(&3_u32.to_le_bytes());
+        raw.extend_from_slice(&0_u64.to_le_bytes());
+        raw.extend_from_slice(&5_u64.to_le_bytes());
+        for (name, kind, value) in [
+            ("u8", 0_u32, vec![7]),
+            ("i8", 1_u32, vec![0xfb]),
+            ("u16", 2_u32, 0x1234_u16.to_le_bytes().to_vec()),
+            ("i16", 3_u32, (-7_i16).to_le_bytes().to_vec()),
+            ("f64", 12_u32, 1.25_f64.to_le_bytes().to_vec()),
+        ] {
+            raw.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            raw.extend_from_slice(name.as_bytes());
+            raw.extend_from_slice(&kind.to_le_bytes());
+            raw.extend_from_slice(&value);
+        }
+        assert!(GgufReader::open(raw).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_tensor_names() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"GGUF");
+        raw.extend_from_slice(&3_u32.to_le_bytes());
+        raw.extend_from_slice(&2_u64.to_le_bytes());
+        raw.extend_from_slice(&0_u64.to_le_bytes());
+        for _ in 0..2 {
+            raw.extend_from_slice(&3_u64.to_le_bytes());
+            raw.extend_from_slice(b"dup");
+            raw.extend_from_slice(&0_u32.to_le_bytes());
+            raw.extend_from_slice(&0_u32.to_le_bytes());
+            raw.extend_from_slice(&0_u64.to_le_bytes());
+        }
+        assert!(matches!(
+            GgufReader::open(raw),
+            Err(FormatError::Invalid(message)) if message.contains("duplicate GGUF tensor name")
         ));
     }
 }

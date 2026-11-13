@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use unicode_normalization::UnicodeNormalization;
-
 mod chat_template;
 
 pub use chat_template::HuggingFaceChatTemplate;
@@ -320,8 +318,6 @@ fn consume_whitespace(text: &str, cursor: &mut usize) {
 
 impl Tokenizer for GgufBpeTokenizer {
     fn encode(&self, text: &str) -> Result<Vec<usize>> {
-        let normalized = text.nfc().collect::<String>();
-        let text = normalized.as_str();
         let mut output = Vec::new();
         let mut segment_start = 0;
         let mut cursor = 0;

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use super::{sha256_reader, FormatError, Result};
 use half::{bf16, f16};
 
+const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeTensorDType {
     F32,
@@ -79,6 +81,11 @@ impl SafeTensorFile {
                 FormatError::Invalid("invalid SafeTensors header".to_owned())
             })?))
             .map_err(|_| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
+        if header_size > MAX_HEADER_BYTES {
+            return Err(FormatError::Invalid(
+                "SafeTensors header exceeds the size limit".to_owned(),
+            ));
+        }
         let header_start: usize = 8;
         let data_start = header_start
             .checked_add(header_size)
@@ -181,6 +188,11 @@ impl SafeTensorFileReader {
         })?;
         let header_size = usize::try_from(u64::from_le_bytes(size_bytes))
             .map_err(|_| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
+        if header_size > MAX_HEADER_BYTES {
+            return Err(FormatError::Invalid(
+                "SafeTensors header exceeds the size limit".to_owned(),
+            ));
+        }
         let data_start = 8usize
             .checked_add(header_size)
             .ok_or_else(|| FormatError::Invalid("SafeTensors header overflows usize".to_owned()))?;
@@ -434,8 +446,8 @@ fn resolve_shard_path(parent: &Path, shard: &str) -> Result<PathBuf> {
     for component in relative.components() {
         match component {
             std::path::Component::Normal(_) => has_normal = true,
-            std::path::Component::CurDir
-            | std::path::Component::ParentDir
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir
             | std::path::Component::RootDir
             | std::path::Component::Prefix(_) => {
                 return Err(FormatError::Invalid(format!(
@@ -702,6 +714,13 @@ mod tests {
         bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
         bytes.extend_from_slice(header);
         bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        assert!(SafeTensorFile::open(bytes).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_headers_before_allocating_them() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&((64 * 1024 * 1024 + 1) as u64).to_le_bytes());
         assert!(SafeTensorFile::open(bytes).is_err());
     }
 

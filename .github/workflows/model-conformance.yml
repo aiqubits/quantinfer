@@ -55,19 +55,20 @@ jobs:
   conformance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --locked
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Verify pinned Qwen3 official tokenizer vectors
         run: |
           curl --fail --location --retry 3 --output /tmp/qwen3-tokenizer.json \
             "https://huggingface.co/Qwen/Qwen3-0.6B/resolve/c1899de289a04d12100db370d81485cdf75e47ca/tokenizer.json"
           echo "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4  /tmp/qwen3-tokenizer.json" | sha256sum --check
-          cargo run -p quantinfer-xtask -- tokenizer-golden \
+          cargo run --locked -p quantinfer-xtask -- tokenizer-golden \
             --tokenizer /tmp/qwen3-tokenizer.json \
             --golden model-zoo/tokenizer/qwen3-0.6b-golden.json
           manifest=model-zoo/manifests/qwen3-0.6b.json
@@ -77,15 +78,17 @@ jobs:
           printf '%s  /tmp/qwen3-tokenizer-config.json\n' "$config_sha" | sha256sum --check
           QUANTINFER_TOKENIZER_CONFIG=/tmp/qwen3-tokenizer-config.json \
             cargo test --locked -p quantinfer-tokenizer --test official_chat_template -- --ignored
-      - run: cargo run -p quantinfer-xtask -- conformance
-      - run: cargo run -p quantinfer-xtask -- bench
+      - run: cargo run --locked -p quantinfer-xtask -- conformance
+      - run: cargo run --locked -p quantinfer-xtask -- bench
 
   smollm2-f32:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - name: Download and verify pinned SmolLM2 checkpoint
         run: |
           manifest=model-zoo/manifests/smollm2-135m.json
@@ -254,7 +257,7 @@ jobs:
           python3 -m pip install --no-deps --target "$RUNNER_TEMP/quantinfer-python" ./bindings/python
           PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
             python3 bindings/python/tests/smoke.py smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '22'
       - name: Verify WebAssembly generation against the native CPU runtime
@@ -288,7 +291,7 @@ jobs:
         run: |
           cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
             --features conformance --test host -- --include-ignored
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: smollm2-benchmark
@@ -298,8 +301,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - name: Verify and run the external SmolLM2 F16 GGUF
         env:
           QUANTINFER_SMOLLM2_GGUF: ${{ github.workspace }}/smollm2-external-f16.gguf
@@ -316,8 +321,10 @@ jobs:
     needs: conformance
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - name: Download and verify fixed GGUF artifact
         env:
           GGUF_URL: ${{ inputs.gguf_url }}
@@ -325,7 +332,7 @@ jobs:
         run: |
           curl --fail --location --retry 3 --output qwen3-0.6b.gguf "$GGUF_URL"
           echo "$GGUF_SHA256  qwen3-0.6b.gguf" | sha256sum --check
-      - run: cargo run -p quantinfer-cli -- inspect-gguf --input qwen3-0.6b.gguf
+      - run: cargo run --locked -p quantinfer-cli -- inspect-gguf --input qwen3-0.6b.gguf
 
   qwen3-conversion:
     # The pinned Qwen3 artifact is part of the main-branch conformance gate.
@@ -336,15 +343,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ggml-org/llama.cpp
           ref: 0ec4027a2a0183de87c007069adddc06e665f7de
           path: vendor/llama.cpp
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - name: Download and verify pinned Qwen3 checkpoint
@@ -451,7 +460,7 @@ jobs:
           python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
             --server "$RUNNER_TEMP/llama/bin/llama-server" --model qwen3-imatrix-q4_0.gguf \
             --architecture qwen3 --dtype Q4_0 --count 5
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
           name: qwen3-conformance-report

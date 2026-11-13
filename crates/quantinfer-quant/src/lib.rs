@@ -188,6 +188,7 @@ impl From<quantinfer_core::CoreError> for QuantizationError {
 
 pub fn quantize_q8_0(input: &Tensor) -> Result<QuantizedTensor> {
     let values = input.as_f32()?;
+    validate_finite(values)?;
     if !values.len().is_multiple_of(Q8_0_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q8_0 requires a multiple of 32 elements".to_owned(),
@@ -226,6 +227,7 @@ pub fn dequantize_q8_0(input: &QuantizedTensor) -> Result<Tensor> {
 
 pub fn quantize_q4_0(input: &Tensor) -> Result<QuantizedTensor4> {
     let values = input.as_f32()?;
+    validate_finite(values)?;
     if !values.len().is_multiple_of(Q4_0_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q4_0 requires a multiple of 32 elements".to_owned(),
@@ -266,6 +268,7 @@ pub fn dequantize_q4_0(input: &QuantizedTensor4) -> Result<Tensor> {
 
 pub fn quantize_q4_k(input: &Tensor) -> Result<QuantizedTensorQ4K> {
     let values = input.as_f32()?;
+    validate_finite(values)?;
     if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q4_K requires a multiple of 256 elements".to_owned(),
@@ -362,6 +365,7 @@ pub fn dequantize_q4_k(input: &QuantizedTensorQ4K) -> Result<Tensor> {
 
 pub fn quantize_q5_k(input: &Tensor) -> Result<QuantizedTensorQ5K> {
     let values = input.as_f32()?;
+    validate_finite(values)?;
     if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q5_K requires a multiple of 256 elements".to_owned(),
@@ -474,6 +478,7 @@ pub fn dequantize_q5_k(input: &QuantizedTensorQ5K) -> Result<Tensor> {
 
 pub fn quantize_q6_k(input: &Tensor) -> Result<QuantizedTensorQ6K> {
     let values = input.as_f32()?;
+    validate_finite(values)?;
     if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
         return Err(QuantizationError::InvalidInput(
             "Q6_K requires a multiple of 256 elements".to_owned(),
@@ -675,6 +680,15 @@ pub trait QuantizationProvider {
     fn export_layout(&self) -> &'static str;
 }
 
+fn validate_finite(values: &[f32]) -> Result<()> {
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(QuantizationError::InvalidInput(
+            "quantization requires finite input values".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FloatProvider;
 
@@ -728,7 +742,9 @@ impl QuantizationProvider for NativeQ8_0Provider {
     }
 
     fn validate(&self, input: &Tensor) -> Result<()> {
-        if !input.as_f32()?.len().is_multiple_of(Q8_0_BLOCK_SIZE) {
+        let values = input.as_f32()?;
+        validate_finite(values)?;
+        if !values.len().is_multiple_of(Q8_0_BLOCK_SIZE) {
             return Err(QuantizationError::InvalidInput(
                 "Q8_0 requires a multiple of 32 elements".to_owned(),
             ));
@@ -804,7 +820,9 @@ impl QuantizationProvider for NativeQ4_0Provider {
     }
 
     fn validate(&self, input: &Tensor) -> Result<()> {
-        if !input.as_f32()?.len().is_multiple_of(Q4_0_BLOCK_SIZE) {
+        let values = input.as_f32()?;
+        validate_finite(values)?;
+        if !values.len().is_multiple_of(Q4_0_BLOCK_SIZE) {
             return Err(QuantizationError::InvalidInput(
                 "Q4_0 requires a multiple of 32 elements".to_owned(),
             ));
@@ -849,7 +867,9 @@ impl QuantizationProvider for NativeQ4KProvider {
     }
 
     fn validate(&self, input: &Tensor) -> Result<()> {
-        if !input.as_f32()?.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
+        let values = input.as_f32()?;
+        validate_finite(values)?;
+        if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
             return Err(QuantizationError::InvalidInput(
                 "Q4_K requires a multiple of 256 elements".to_owned(),
             ));
@@ -892,7 +912,9 @@ impl QuantizationProvider for NativeQ5KProvider {
         )?)
     }
     fn validate(&self, input: &Tensor) -> Result<()> {
-        if !input.as_f32()?.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
+        let values = input.as_f32()?;
+        validate_finite(values)?;
+        if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
             return Err(QuantizationError::InvalidInput(
                 "Q5_K requires a multiple of 256 elements".to_owned(),
             ));
@@ -932,7 +954,9 @@ impl QuantizationProvider for NativeQ6KProvider {
         )?)
     }
     fn validate(&self, input: &Tensor) -> Result<()> {
-        if !input.as_f32()?.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
+        let values = input.as_f32()?;
+        validate_finite(values)?;
+        if !values.len().is_multiple_of(Q4_K_BLOCK_SIZE) {
             return Err(QuantizationError::InvalidInput(
                 "Q6_K requires a multiple of 256 elements".to_owned(),
             ));
@@ -979,6 +1003,13 @@ mod tests {
     fn rejects_non_block_aligned_input() {
         let input = Tensor::from_f32(vec![31], vec![1.0; 31]).unwrap();
         assert!(quantize_q8_0(&input).is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_quantization_input() {
+        let input = Tensor::from_f32(vec![32], vec![f32::NAN; 32]).unwrap();
+        assert!(quantize_q8_0(&input).is_err());
+        assert!(NativeQ4_0Provider.quantize(&input).is_err());
     }
 
     #[test]

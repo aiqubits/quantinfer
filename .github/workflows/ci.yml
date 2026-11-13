@@ -8,15 +8,16 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - run: cargo fmt --all -- --check
-      - run: cargo check --workspace
-      - run: cargo test --workspace
-      - run: cargo run -p quantinfer-xtask -- bench
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo check --workspace --locked
+      - run: cargo test --workspace --locked
+      - run: cargo run --locked -p quantinfer-xtask -- bench
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
 
   cpu-simd:
@@ -25,8 +26,10 @@ jobs:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: stable
       - name: Compare optional SIMD kernels with the scalar reference
         shell: bash
         run: |

@@ -12,6 +12,8 @@ pub struct WasmModel {
     tokenizer: Option<GgufBpeTokenizer>,
 }
 
+const MAX_GENERATION_TOKENS: usize = 4096;
+
 impl WasmModel {
     /// Take ownership of GGUF or QIF file bytes supplied by the host.
     pub fn open(bytes: Vec<u8>) -> Result<Self> {
@@ -43,6 +45,11 @@ impl WasmModel {
         config: GenerationConfig,
     ) -> Result<Vec<usize>> {
         config.validate()?;
+        if config.max_new_tokens > MAX_GENERATION_TOKENS {
+            return Err(RuntimeError::InvalidInput(format!(
+                "max_new_tokens must be <= {MAX_GENERATION_TOKENS}"
+            )));
+        }
         if tokens.is_empty()
             || tokens
                 .iter()

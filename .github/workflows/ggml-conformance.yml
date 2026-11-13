@@ -15,15 +15,16 @@ jobs:
   q8-0:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           repository: ggml-org/llama.cpp
           ref: 0ec4027a2a0183de87c007069adddc06e665f7de
           path: vendor/llama.cpp
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
         with:
+          toolchain: stable
           components: clippy
       - name: Build pinned GGML library
         run: |

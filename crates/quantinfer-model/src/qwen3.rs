@@ -76,8 +76,23 @@ impl Qwen3Config {
                     .to_owned(),
             );
         }
-        if self.rms_norm_eps <= 0.0 || self.rope_theta <= 0.0 {
+        if !self.rms_norm_eps.is_finite()
+            || !self.rope_theta.is_finite()
+            || self.rms_norm_eps <= 0.0
+            || self.rope_theta <= 0.0
+        {
             return Err("Qwen3 normalization epsilon and RoPE theta must be positive".to_owned());
+        }
+        if self
+            .num_attention_heads
+            .checked_mul(self.effective_head_dim())
+            .is_none()
+            || self
+                .num_key_value_heads
+                .checked_mul(self.effective_head_dim())
+                .is_none()
+        {
+            return Err("Qwen3 projection dimensions overflow usize".to_owned());
         }
         if !self.architectures.is_empty()
             && !self
@@ -163,5 +178,31 @@ mod tests {
         config.sliding_window = None;
         config.use_sliding_window = false;
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_non_finite_and_overflowing_dimensions() {
+        let mut config = Qwen3Config {
+            vocab_size: 128,
+            hidden_size: 64,
+            intermediate_size: 128,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: Some(usize::MAX - 1),
+            rms_norm_eps: f32::NAN,
+            rope_theta: 1_000_000.0,
+            max_position_embeddings: 128,
+            tie_word_embeddings: true,
+            sliding_window: None,
+            max_window_layers: None,
+            use_sliding_window: false,
+            rope_scaling: None,
+            architectures: Vec::new(),
+        };
+        assert!(config.validate().is_err());
+        config.rms_norm_eps = 1e-6;
+        config.head_dim = Some(usize::MAX - 1);
+        assert!(config.validate().is_err());
     }
 }
