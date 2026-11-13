@@ -1,5 +1,8 @@
 # Developer guide
 
+Agents start at [`AGENTS.md`](../../AGENTS.md), which restates the rules in
+this guide.
+
 The repository is a Cargo virtual workspace. Keep dependency direction
 one-way: core tensor contracts do not depend on model, format, runtime, or
 vendor crates; optional backends and bindings depend on the public contracts.

@@ -2,7 +2,7 @@
 
 本文档适用于 Qwen3-0.6B Dense、CPU Scalar、单序列 Prefill/Decode 和 Q8_0 线性层量化。当前仓库提供 CLI 推理入口和可选的 HTTP 服务入口；本文只覆盖 CLI 单机流程。
 
-运行代码应固定为经过 CI 验证的 commit。发布时将本文示例中的提交替换为实际批准的 commit。
+本文 CLI 行为对照 commit `ee63330`。运行代码应固定为经过 CI 验证的 commit。发布时将本文示例中的提交替换为实际批准的 commit。
 
 ## 1. 支持范围
 
@@ -17,7 +17,7 @@
 | tokenizer | tokenizer.json 的 BPE vocab 和 merges |
 | 服务 | CLI 单次生成 |
 
-Qwen3 MoE、sliding-window、custom RoPE scaling 和多请求调度不在当前支持范围内。CPU、WGPU、CUDA 和 macOS Metal 入口分别由对应 feature 提供。
+Qwen3 MoE、sliding-window 和 custom RoPE scaling 不在支持范围内。多请求调度由 `quantinfer-server` 提供，说明见 [`apps/README.md`](../../apps/README.md)；本 Runbook 只覆盖 CLI 单序列。CPU、WGPU、CUDA 和 macOS Metal 入口分别由对应 feature 提供。对照 commit：`ee63330`。
 
 ## 2. 主机准备
 
@@ -277,4 +277,4 @@ sudo -H -u quantinfer /usr/bin/time -v \
 
 ## 9. 适用边界
 
-当前代码适合 Qwen3-0.6B CPU 单机、离线单序列任务和受控内网试运行。完整 Qwen3 在线生产平台属于第二版 MVP，待第二版 MVP 实现后单独补充对应运行手册。
+当前代码适合 Qwen3-0.6B CPU 单机、离线单序列任务和受控内网试运行。`quantinfer-server` 已提供排队、连续批处理和流式响应，但不在本文流程内，也不构成完整的在线生产平台。
