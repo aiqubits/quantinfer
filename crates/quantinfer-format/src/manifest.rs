@@ -277,9 +277,11 @@ pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
-/// Read a regular file without following a final symlink on Unix.
+/// Resolve a path once, then read the resolved regular file without following
+/// a replacement final symlink on Unix.
 pub fn read_file_nofollow(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
-    let mut file = open_readonly_nofollow(path.as_ref())?;
+    let resolved = fs::canonicalize(path.as_ref())?;
+    let mut file = open_readonly_nofollow(&resolved)?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     Ok(bytes)
