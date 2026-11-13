@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -163,7 +164,7 @@ pub enum Device {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Storage {
-    F32(Vec<f32>),
+    F32(Arc<Vec<f32>>),
     U16(Vec<u16>),
     U8(Vec<u8>),
 }
@@ -190,7 +191,10 @@ impl Storage {
 
     pub fn as_f32_mut(&mut self) -> Option<&mut [f32]> {
         match self {
-            Self::F32(values) => Some(values),
+            Self::F32(values) => {
+                let values: &mut Vec<f32> = Arc::make_mut(values);
+                Some(values.as_mut_slice())
+            }
             _ => None,
         }
     }
@@ -218,7 +222,7 @@ impl Tensor {
         }
         Ok(Self {
             strides: Strides::row_major(&shape),
-            storage: Storage::F32(data),
+            storage: Storage::F32(Arc::new(data)),
             dtype: DType::F32,
             shape,
             device: Device::Cpu,
@@ -233,7 +237,7 @@ impl Tensor {
 
     pub fn scalar(value: f32) -> Self {
         Self {
-            storage: Storage::F32(vec![value]),
+            storage: Storage::F32(Arc::new(vec![value])),
             dtype: DType::F32,
             shape: Shape::scalar(),
             strides: Strides(Vec::new()),
@@ -279,7 +283,13 @@ impl Tensor {
                 "reshape must preserve the number of elements".to_owned(),
             ));
         }
+        if self.dtype == DType::F32 && self.strides != Strides::row_major(&self.shape) {
+            return Err(CoreError::Unsupported(
+                "reshape requires a contiguous row-major tensor".to_owned(),
+            ));
+        }
         Ok(Self {
+            // F32 storage is reference-counted, so this shares the allocation.
             storage: self.storage.clone(),
             dtype: self.dtype,
             strides: Strides::row_major(&shape),
@@ -289,7 +299,12 @@ impl Tensor {
     }
 
     pub fn view(&self) -> TensorView<'_> {
-        TensorView { tensor: self }
+        TensorView {
+            parent: self,
+            offset: 0,
+            shape: self.shape.clone(),
+            strides: self.strides.clone(),
+        }
     }
 
     pub fn get_f32(&self, indices: &[usize]) -> Result<f32> {
@@ -315,30 +330,188 @@ impl Tensor {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TensorView<'a> {
-    tensor: &'a Tensor,
+    parent: &'a Tensor,
+    offset: usize,
+    shape: Shape,
+    strides: Strides,
 }
 
 impl<'a> TensorView<'a> {
-    pub fn dtype(self) -> DType {
-        self.tensor.dtype()
+    pub fn dtype(&self) -> DType {
+        self.parent.dtype()
     }
 
-    pub fn shape(self) -> &'a Shape {
-        self.tensor.shape()
+    pub fn shape(&self) -> &Shape {
+        &self.shape
     }
 
-    pub fn strides(self) -> &'a Strides {
-        self.tensor.strides()
+    pub fn strides(&self) -> &Strides {
+        &self.strides
     }
 
-    pub fn as_f32(self) -> Result<&'a [f32]> {
-        self.tensor.as_f32()
+    pub fn offset(&self) -> usize {
+        self.offset
     }
 
-    pub fn tensor(self) -> &'a Tensor {
-        self.tensor
+    pub fn tensor(&self) -> &'a Tensor {
+        self.parent
+    }
+
+    /// Borrow the elements when they occupy one contiguous span.
+    ///
+    /// A transposed matrix is addressable through [`Self::get_f32`] and does
+    /// not copy, but it is not one slice.
+    pub fn as_f32(&self) -> Result<&'a [f32]> {
+        if self.parent.dtype != DType::F32 {
+            return Err(CoreError::DTypeMismatch {
+                expected: DType::F32,
+                actual: self.parent.dtype,
+            });
+        }
+        if !self.is_contiguous() {
+            return Err(CoreError::Unsupported(
+                "tensor view is not a contiguous slice".to_owned(),
+            ));
+        }
+        let count = self.shape.num_elements()?;
+        let data = self.parent.as_f32()?;
+        let end = self.offset.checked_add(count).ok_or_else(|| {
+            CoreError::InvalidShape("tensor view range overflows usize".to_owned())
+        })?;
+        data.get(self.offset..end)
+            .ok_or_else(|| CoreError::InvalidShape("tensor view is outside its storage".to_owned()))
+    }
+
+    pub fn get_f32(&self, indices: &[usize]) -> Result<f32> {
+        if indices.len() != self.shape.rank() {
+            return Err(CoreError::InvalidShape(
+                "index rank does not match tensor rank".to_owned(),
+            ));
+        }
+        let mut linear = self.offset;
+        for ((index, dimension), stride) in indices
+            .iter()
+            .zip(self.shape.dims())
+            .zip(self.strides.as_slice())
+        {
+            if *index >= *dimension {
+                return Err(CoreError::InvalidShape(
+                    "tensor index is out of bounds".to_owned(),
+                ));
+            }
+            linear = linear
+                .checked_add(index.checked_mul(*stride).ok_or_else(|| {
+                    CoreError::InvalidShape("tensor index overflows usize".to_owned())
+                })?)
+                .ok_or_else(|| {
+                    CoreError::InvalidShape("tensor index overflows usize".to_owned())
+                })?;
+        }
+        self.parent
+            .as_f32()?
+            .get(linear)
+            .copied()
+            .ok_or_else(|| CoreError::InvalidShape("tensor view is outside its storage".to_owned()))
+    }
+
+    /// Rows `[start, end)` of a rank-2 view, sharing the parent storage.
+    pub fn row_slice(&self, start: usize, end: usize) -> Result<Self> {
+        let dims = self.shape.dims();
+        if dims.len() != 2 || self.strides.as_slice().len() != 2 {
+            return Err(CoreError::InvalidShape(
+                "row slice requires a rank-2 tensor".to_owned(),
+            ));
+        }
+        if start >= end || end > dims[0] {
+            return Err(CoreError::InvalidShape(
+                "row slice is out of bounds".to_owned(),
+            ));
+        }
+        let row_stride = self.strides.as_slice()[0];
+        let offset = self
+            .offset
+            .checked_add(start.checked_mul(row_stride).ok_or_else(|| {
+                CoreError::InvalidShape("row slice offset overflows usize".to_owned())
+            })?)
+            .ok_or_else(|| {
+                CoreError::InvalidShape("row slice offset overflows usize".to_owned())
+            })?;
+        Ok(Self {
+            parent: self.parent,
+            offset,
+            shape: Shape::new(vec![end - start, dims[1]])?,
+            strides: self.strides.clone(),
+        })
+    }
+
+    /// Swap the two axes without copying elements.
+    pub fn transpose(&self) -> Result<Self> {
+        let dims = self.shape.dims();
+        let strides = self.strides.as_slice();
+        if dims.len() != 2 || strides.len() != 2 {
+            return Err(CoreError::InvalidShape(
+                "transpose requires a rank-2 tensor".to_owned(),
+            ));
+        }
+        Ok(Self {
+            parent: self.parent,
+            offset: self.offset,
+            shape: Shape::new(vec![dims[1], dims[0]])?,
+            strides: Strides(vec![strides[1], strides[0]]),
+        })
+    }
+
+    /// Contiguous element range starting at `element_offset`, as `shape`.
+    pub fn narrow(&self, element_offset: usize, shape: impl Into<Shape>) -> Result<Self> {
+        if !self.is_contiguous() {
+            return Err(CoreError::Unsupported(
+                "narrow requires a contiguous view".to_owned(),
+            ));
+        }
+        let shape = shape.into();
+        shape.validate()?;
+        let count = shape.num_elements()?;
+        let available = self.shape.num_elements()?;
+        if element_offset
+            .checked_add(count)
+            .is_none_or(|end| end > available)
+        {
+            return Err(CoreError::InvalidShape(
+                "narrow range is out of bounds".to_owned(),
+            ));
+        }
+        let offset = self
+            .offset
+            .checked_add(element_offset)
+            .ok_or_else(|| CoreError::InvalidShape("narrow offset overflows usize".to_owned()))?;
+        Ok(Self {
+            parent: self.parent,
+            offset,
+            strides: Strides::row_major(&shape),
+            shape,
+        })
+    }
+
+    fn is_contiguous(&self) -> bool {
+        let mut expected = 1usize;
+        for (&dimension, &stride) in self
+            .shape
+            .dims()
+            .iter()
+            .rev()
+            .zip(self.strides.as_slice().iter().rev())
+        {
+            if dimension <= 1 {
+                continue;
+            }
+            if stride != expected {
+                return false;
+            }
+            expected = expected.saturating_mul(dimension);
+        }
+        self.strides.as_slice().len() == self.shape.rank()
     }
 }
 
@@ -789,6 +962,55 @@ mod tests {
         let tensor = Tensor::from_f32(vec![2, 2], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
         let reshaped = tensor.reshape(Shape::new(vec![4]).unwrap()).unwrap();
         assert_eq!(reshaped.as_f32().unwrap(), &[1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            tensor.as_f32().unwrap().as_ptr(),
+            reshaped.as_f32().unwrap().as_ptr()
+        );
+    }
+
+    #[test]
+    fn reshape_write_does_not_alias_the_source() {
+        let tensor = Tensor::from_f32(vec![2], vec![1.0, 2.0]).unwrap();
+        let mut reshaped = tensor.reshape(Shape::new(vec![1, 2]).unwrap()).unwrap();
+        reshaped.as_f32_mut().unwrap()[0] = 9.0;
+        assert_eq!(tensor.as_f32().unwrap(), &[1.0, 2.0]);
+    }
+
+    #[test]
+    fn views_share_storage_and_reject_bad_ranges() {
+        let tensor = Tensor::from_f32(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).unwrap();
+        let view = tensor.view();
+        let rows = view.row_slice(1, 3).unwrap();
+        assert_eq!(rows.offset(), 2);
+        assert_eq!(rows.as_f32().unwrap(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(rows.get_f32(&[1, 0]).unwrap(), 5.0);
+        assert!(view.row_slice(2, 2).is_err());
+        assert!(view.row_slice(0, 4).is_err());
+
+        let narrow = view.narrow(2, vec![2, 2]).unwrap();
+        assert_eq!(narrow.as_f32().unwrap(), &[3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(
+            narrow.as_f32().unwrap().as_ptr(),
+            tensor.as_f32().unwrap()[2..].as_ptr()
+        );
+        assert!(view.narrow(4, vec![2, 2]).is_err());
+        assert!(view.narrow(0, vec![0]).is_err());
+
+        let transposed = view.transpose().unwrap();
+        assert_eq!(transposed.shape().dims(), &[2, 3]);
+        assert!(transposed.as_f32().is_err());
+        assert_eq!(transposed.get_f32(&[1, 2]).unwrap(), 6.0);
+        assert_eq!(transposed.get_f32(&[0, 1]).unwrap(), 3.0);
+        assert!(transposed.get_f32(&[2, 0]).is_err());
+        assert!(transposed.get_f32(&[0]).is_err());
+        assert!(transposed.narrow(0, vec![2, 2]).is_err());
+    }
+
+    #[test]
+    fn transpose_requires_rank_two() {
+        let tensor = Tensor::from_f32(vec![4], vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        assert!(tensor.view().transpose().is_err());
+        assert!(tensor.view().row_slice(0, 1).is_err());
     }
 
     #[test]
