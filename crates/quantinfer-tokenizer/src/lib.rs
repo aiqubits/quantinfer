@@ -46,6 +46,12 @@ pub struct GgufBpeTokenizer {
     special_tokens: Vec<(String, usize)>,
     bos_token_id: Option<usize>,
     eos_token_id: Option<usize>,
+    pre_tokenizer: GgufPreTokenizer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GgufPreTokenizer {
+    ByteLevel,
 }
 
 impl GgufBpeTokenizer {
@@ -55,6 +61,28 @@ impl GgufBpeTokenizer {
         bos_token_id: Option<usize>,
         eos_token_id: Option<usize>,
     ) -> Result<Self> {
+        Self::new_with_pre(tokens, merges, bos_token_id, eos_token_id, None)
+    }
+
+    /// Build a GGUF BPE tokenizer while honoring the converter's pre-tokenizer
+    /// declaration. The current runtime implements the GPT-2 byte-level family.
+    pub fn new_with_pre(
+        tokens: Vec<String>,
+        merges: &[String],
+        bos_token_id: Option<usize>,
+        eos_token_id: Option<usize>,
+        pre_tokenizer: Option<&str>,
+    ) -> Result<Self> {
+        let pre_tokenizer = match pre_tokenizer.unwrap_or("default") {
+            "default" | "gpt2" | "llama-bpe" | "llama3" | "qwen2" | "qwen2new" | "smollm" => {
+                GgufPreTokenizer::ByteLevel
+            }
+            value => {
+                return Err(TokenizerError::InvalidInput(format!(
+                    "unsupported GGUF pre-tokenizer {value:?}"
+                )))
+            }
+        };
         if tokens.is_empty() {
             return Err(TokenizerError::InvalidInput(
                 "GGUF tokenizer vocabulary cannot be empty".to_owned(),
@@ -123,6 +151,7 @@ impl GgufBpeTokenizer {
             special_tokens,
             bos_token_id,
             eos_token_id,
+            pre_tokenizer,
         })
     }
 
@@ -131,7 +160,10 @@ impl GgufBpeTokenizer {
             return Ok(Vec::new());
         }
         let mut encoded = Vec::new();
-        for segment in byte_level_segments(text)? {
+        let segments = match self.pre_tokenizer {
+            GgufPreTokenizer::ByteLevel => byte_level_segments(text)?,
+        };
+        for segment in segments {
             encoded.extend(self.encode_piece(segment)?);
         }
         Ok(encoded)
@@ -645,6 +677,17 @@ mod tests {
         let ids = tokenizer.encode("hi the<|im_end|>").unwrap();
         assert_eq!(ids, vec![2, 9, 10]);
         assert_eq!(tokenizer.decode(&ids).unwrap(), "hi the");
+    }
+
+    #[test]
+    fn validates_gguf_pre_tokenizer_modes() {
+        let tokens = vec!["a".to_owned()];
+        assert!(
+            GgufBpeTokenizer::new_with_pre(tokens.clone(), &[], None, None, Some("qwen2")).is_ok()
+        );
+        assert!(
+            GgufBpeTokenizer::new_with_pre(tokens, &[], None, None, Some("unsupported")).is_err()
+        );
     }
 
     #[test]

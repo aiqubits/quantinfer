@@ -3,11 +3,10 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
 
 use quantinfer_core::Tensor;
-use quantinfer_format::SafeTensorFile;
+use quantinfer_format::{read_file_nofollow, SafeTensorFile};
 use quantinfer_model::{canonical_dense_tensor_name, ModelSpec, TensorRole};
 use quantinfer_runtime::{LoraAdapter, LoraProjection};
 use regex::Regex;
@@ -85,7 +84,7 @@ pub fn load_peft(directory: impl AsRef<Path>, spec: &ModelSpec) -> Result<LoraAd
     let directory = directory.as_ref();
     let config_path = directory.join("adapter_config.json");
     let config: PeftConfig = serde_json::from_slice(
-        &fs::read(&config_path)
+        &read_file_nofollow(&config_path)
             .map_err(|error| format!("cannot read {}: {error}", config_path.display()))?,
     )
     .map_err(|error| format!("cannot parse {}: {error}", config_path.display()))?;

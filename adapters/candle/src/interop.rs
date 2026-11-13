@@ -90,7 +90,12 @@ pub fn packed_from_qif(reader: &QifReader<'_>, name: &str, device: &Device) -> R
             "Candle requires quantization blocks to fit within each tensor row".to_owned(),
         ));
     }
-    let expected = descriptor.logical_shape.num_elements() / dtype.block_size() * dtype.type_size();
+    let expected = descriptor
+        .logical_shape
+        .num_elements()
+        .map_err(InteropError::Core)?
+        / dtype.block_size()
+        * dtype.type_size();
     if bytes.len() != expected {
         return Err(InteropError::Invalid(
             "QIF and Candle block sizes disagree".to_owned(),

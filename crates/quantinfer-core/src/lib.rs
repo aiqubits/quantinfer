@@ -80,6 +80,11 @@ impl Shape {
                 "tensor dimensions must be greater than zero".to_owned(),
             ));
         }
+        dims.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| CoreError::InvalidShape("tensor shape overflows usize".to_owned()))
+        })?;
         Ok(Self(dims))
     }
 
@@ -95,8 +100,12 @@ impl Shape {
         &self.0
     }
 
-    pub fn num_elements(&self) -> usize {
-        self.0.iter().product()
+    pub fn num_elements(&self) -> Result<usize> {
+        self.0.iter().try_fold(1usize, |product, dimension| {
+            product
+                .checked_mul(*dimension)
+                .ok_or_else(|| CoreError::InvalidShape("tensor shape overflows usize".to_owned()))
+        })
     }
 
     pub fn last_dim(&self) -> Option<usize> {
@@ -109,6 +118,7 @@ impl Shape {
                 "tensor dimensions must be greater than zero".to_owned(),
             ));
         }
+        self.num_elements()?;
         Ok(())
     }
 }
@@ -199,10 +209,10 @@ impl Tensor {
     pub fn from_f32(shape: impl Into<Shape>, data: Vec<f32>) -> Result<Self> {
         let shape = shape.into();
         shape.validate()?;
-        if shape.num_elements() != data.len() {
+        let elements = shape.num_elements()?;
+        if elements != data.len() {
             return Err(CoreError::InvalidData(format!(
-                "shape contains {} elements but data contains {}",
-                shape.num_elements(),
+                "shape contains {elements} elements but data contains {}",
                 data.len()
             )));
         }
@@ -217,7 +227,8 @@ impl Tensor {
 
     pub fn zeros_f32(shape: impl Into<Shape>) -> Result<Self> {
         let shape = shape.into();
-        Self::from_f32(shape.clone(), vec![0.0; shape.num_elements()])
+        let elements = shape.num_elements()?;
+        Self::from_f32(shape, vec![0.0; elements])
     }
 
     pub fn scalar(value: f32) -> Self {
@@ -263,7 +274,7 @@ impl Tensor {
     pub fn reshape(&self, shape: impl Into<Shape>) -> Result<Self> {
         let shape = shape.into();
         shape.validate()?;
-        if shape.num_elements() != self.shape.num_elements() {
+        if shape.num_elements()? != self.shape.num_elements()? {
             return Err(CoreError::InvalidShape(
                 "reshape must preserve the number of elements".to_owned(),
             ));
@@ -349,12 +360,13 @@ pub struct QuantizedTensor {
 impl QuantizedTensor {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q8_0Block>) -> Result<Self> {
         let shape = shape.into();
-        if !shape.num_elements().is_multiple_of(Q8_0_BLOCK_SIZE) {
+        let elements = shape.num_elements()?;
+        if !elements.is_multiple_of(Q8_0_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
                 "Q8_0 tensor element count must be a multiple of 32".to_owned(),
             ));
         }
-        if blocks.len() * Q8_0_BLOCK_SIZE != shape.num_elements() {
+        if blocks.len() * Q8_0_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q8_0 block count does not match tensor shape".to_owned(),
             ));
@@ -375,7 +387,9 @@ impl QuantizedTensor {
     }
 
     pub fn num_elements(&self) -> usize {
-        self.shape.num_elements()
+        self.shape
+            .num_elements()
+            .expect("quantized tensor shape is validated at construction")
     }
 }
 
@@ -580,12 +594,13 @@ pub struct QuantizedTensor4 {
 impl QuantizedTensor4 {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4_0Block>) -> Result<Self> {
         let shape = shape.into();
-        if !shape.num_elements().is_multiple_of(Q4_0_BLOCK_SIZE) {
+        let elements = shape.num_elements()?;
+        if !elements.is_multiple_of(Q4_0_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
                 "Q4_0 tensor element count must be a multiple of 32".to_owned(),
             ));
         }
-        if blocks.len() * Q4_0_BLOCK_SIZE != shape.num_elements() {
+        if blocks.len() * Q4_0_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q4_0 block count does not match tensor shape".to_owned(),
             ));
@@ -615,7 +630,9 @@ impl QuantizedTensor4 {
     }
 
     pub fn num_elements(&self) -> usize {
-        self.shape.num_elements()
+        self.shape
+            .num_elements()
+            .expect("quantized tensor shape is validated at construction")
     }
 }
 
@@ -636,12 +653,13 @@ pub struct QuantizedTensorQ4K {
 impl QuantizedTensorQ4K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4KBlock>) -> Result<Self> {
         let shape = shape.into();
-        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE) {
+        let elements = shape.num_elements()?;
+        if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
                 "Q4_K tensor element count must be a multiple of 256".to_owned(),
             ));
         }
-        if blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements() {
+        if blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q4_K block count does not match tensor shape".to_owned(),
             ));
@@ -672,7 +690,9 @@ impl QuantizedTensorQ4K {
     }
 
     pub fn num_elements(&self) -> usize {
-        self.shape.num_elements()
+        self.shape
+            .num_elements()
+            .expect("quantized tensor shape is validated at construction")
     }
 }
 
@@ -694,9 +714,8 @@ pub struct QuantizedTensorQ5K {
 impl QuantizedTensorQ5K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q5KBlock>) -> Result<Self> {
         let shape = shape.into();
-        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE)
-            || blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements()
-        {
+        let elements = shape.num_elements()?;
+        if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) || blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q5_K block count does not match tensor shape".to_owned(),
             ));
@@ -710,7 +729,9 @@ impl QuantizedTensorQ5K {
         &self.blocks
     }
     pub fn num_elements(&self) -> usize {
-        self.shape.num_elements()
+        self.shape
+            .num_elements()
+            .expect("quantized tensor shape is validated at construction")
     }
 }
 
@@ -731,9 +752,8 @@ pub struct QuantizedTensorQ6K {
 impl QuantizedTensorQ6K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q6KBlock>) -> Result<Self> {
         let shape = shape.into();
-        if !shape.num_elements().is_multiple_of(Q4_K_BLOCK_SIZE)
-            || blocks.len() * Q4_K_BLOCK_SIZE != shape.num_elements()
-        {
+        let elements = shape.num_elements()?;
+        if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) || blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q6_K block count does not match tensor shape".to_owned(),
             ));
@@ -747,7 +767,9 @@ impl QuantizedTensorQ6K {
         &self.blocks
     }
     pub fn num_elements(&self) -> usize {
-        self.shape.num_elements()
+        self.shape
+            .num_elements()
+            .expect("quantized tensor shape is validated at construction")
     }
 }
 
@@ -803,5 +825,11 @@ mod tests {
             .unwrap();
             assert_eq!(descriptor.quantization, scheme);
         }
+    }
+
+    #[test]
+    fn rejects_overflowing_shapes() {
+        assert!(Shape::new(vec![usize::MAX, 2]).is_err());
+        assert!(Tensor::from_f32(Shape::from(vec![usize::MAX, 2]), Vec::new()).is_err());
     }
 }

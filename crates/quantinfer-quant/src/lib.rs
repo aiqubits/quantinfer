@@ -73,7 +73,10 @@ impl ImatrixStatistics {
     }
 
     pub fn from_dataset(dataset: &CalibrationDataset) -> Result<Self> {
-        let elements = dataset.samples()[0].shape().num_elements();
+        let elements = dataset.samples()[0]
+            .shape()
+            .num_elements()
+            .map_err(QuantizationError::Core)?;
         let mut statistics = Self::new(elements)?;
         for sample in dataset.samples() {
             statistics.observe(sample)?;

@@ -69,7 +69,8 @@ impl DenseAttention {
             return attend(&query, &key, value, request.cache);
         }
 
-        let mut output = Vec::with_capacity(query.shape().num_elements());
+        let mut output =
+            Vec::with_capacity(query.shape().num_elements().map_err(RuntimeError::Core)?);
         let mut offset = 0;
         for request in batch {
             let count = request.tokens.len();

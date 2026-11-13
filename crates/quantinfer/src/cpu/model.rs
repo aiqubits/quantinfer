@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use quantinfer_core::Tensor;
-use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
+use quantinfer_format::{read_file_nofollow, GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::ModelSpec;
 use quantinfer_runtime::{
@@ -261,7 +261,7 @@ impl ModelSource {
             }
             Self::Gguf(path) => {
                 check_file_budget(path, budget)?;
-                let bytes = fs::read(path).map_err(|error| {
+                let bytes = read_file_nofollow(path).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
                 })?;
                 GgufReader::open_artifact(bytes).map_err(|error| {
@@ -291,11 +291,17 @@ fn check_file_budget(path: &Path, budget: Option<usize>) -> Result<()> {
 pub fn load_gguf_tokenizer(reader: &GgufReader) -> Result<GgufBpeTokenizer> {
     let tokens = metadata_string_array(reader, "tokenizer.ggml.tokens")?;
     let merges = metadata_string_array_or_empty(reader, "tokenizer.ggml.merges")?;
+    let pre_tokenizer = metadata_string_optional(reader, "tokenizer.ggml.pre")?;
     let bos_token_id = metadata_usize(reader, "tokenizer.ggml.bos_token_id")?;
     let eos_token_id = metadata_usize(reader, "tokenizer.ggml.eos_token_id")?;
-    GgufBpeTokenizer::new(tokens, &merges, bos_token_id, eos_token_id).map_err(|error| {
-        RuntimeError::InvalidInput(format!("cannot build GGUF tokenizer: {error}"))
-    })
+    GgufBpeTokenizer::new_with_pre(
+        tokens,
+        &merges,
+        bos_token_id,
+        eos_token_id,
+        pre_tokenizer.as_deref(),
+    )
+    .map_err(|error| RuntimeError::InvalidInput(format!("cannot build GGUF tokenizer: {error}")))
 }
 
 fn metadata_string_array(reader: &GgufReader, key: &str) -> Result<Vec<String>> {
@@ -321,6 +327,18 @@ fn metadata_string_array_or_empty(reader: &GgufReader, key: &str) -> Result<Vec<
         metadata_string_array(reader, key)
     } else {
         Ok(Vec::new())
+    }
+}
+
+fn metadata_string_optional(reader: &GgufReader, key: &str) -> Result<Option<String>> {
+    let Some(value) = reader.metadata().get(key) else {
+        return Ok(None);
+    };
+    match value {
+        GgufValue::String(value) => Ok(Some(value.clone())),
+        _ => Err(RuntimeError::InvalidInput(format!(
+            "GGUF metadata {key} must be a string"
+        ))),
     }
 }
 

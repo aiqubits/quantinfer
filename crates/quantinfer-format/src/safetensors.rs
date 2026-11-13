@@ -66,7 +66,7 @@ impl SafeTensorFile {
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         Self::open(
-            fs::read(path).map_err(|error| {
+            super::read_file_nofollow(path).map_err(|error| {
                 FormatError::Io(format!("cannot read {}: {error}", path.display()))
             })?,
         )
@@ -330,7 +330,7 @@ pub struct SafeTensorShards {
 impl SafeTensorShards {
     pub fn open(index_path: impl AsRef<Path>) -> Result<Self> {
         let index_path = index_path.as_ref().to_path_buf();
-        let index_bytes = fs::read(&index_path).map_err(|error| {
+        let index_bytes = super::read_file_nofollow(&index_path).map_err(|error| {
             FormatError::Io(format!("cannot read {}: {error}", index_path.display()))
         })?;
         let value: serde_json::Value = serde_json::from_slice(&index_bytes).map_err(|error| {
@@ -493,7 +493,7 @@ fn decode_tensor_f32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<
             "tensor {name} has a non-aligned byte length"
         )));
     }
-    Ok(match info.dtype {
+    let values: Vec<f32> = match info.dtype {
         SafeTensorDType::F32 => bytes
             .as_chunks::<4>()
             .0
@@ -521,7 +521,13 @@ fn decode_tensor_f32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<
                 info.dtype
             )))
         }
-    })
+    };
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(FormatError::Invalid(format!(
+            "tensor {name} contains non-finite values"
+        )));
+    }
+    Ok(values)
 }
 
 fn decode_tensor_u32(info: &SafeTensorInfo, bytes: &[u8], name: &str) -> Result<Vec<u32>> {
@@ -693,6 +699,17 @@ mod tests {
         let file = SafeTensorFile::open(bytes).unwrap();
         assert_eq!(file.metadata().get("format"), Some(&"pt".to_owned()));
         assert_eq!(file.tensor_f32("weight").unwrap(), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn rejects_non_finite_floating_tensors() {
+        let header = br#"{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&f32::NAN.to_le_bytes());
+        let file = SafeTensorFile::open(bytes).unwrap();
+        assert!(file.tensor_f32("weight").is_err());
     }
 
     #[test]

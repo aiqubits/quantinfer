@@ -362,6 +362,11 @@ pub fn argmax(logits: &Tensor) -> Result<usize> {
             "logits cannot be empty".to_owned(),
         ));
     }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(RuntimeError::InvalidInput(
+            "logits must contain only finite values".to_owned(),
+        ));
+    }
     let mut best_index = 0;
     for (index, value) in values.iter().copied().enumerate().skip(1) {
         if value > values[best_index] {
@@ -377,6 +382,11 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
     if values.is_empty() {
         return Err(RuntimeError::InvalidInput(
             "logits cannot be empty".to_owned(),
+        ));
+    }
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(RuntimeError::InvalidInput(
+            "logits must contain only finite values".to_owned(),
         ));
     }
     if config.temperature == 0.0 && config.top_k.is_none() && config.top_p.is_none() {
@@ -544,5 +554,12 @@ mod tests {
             select_token(&logits, &GenerationConfig::default()).unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn rejects_non_finite_logits() {
+        let logits = Tensor::from_f32(vec![2], vec![f32::NAN, 1.0]).unwrap();
+        assert!(argmax(&logits).is_err());
+        assert!(select_token(&logits, &GenerationConfig::default()).is_err());
     }
 }

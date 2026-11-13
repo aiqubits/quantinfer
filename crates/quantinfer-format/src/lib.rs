@@ -29,6 +29,8 @@ const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
 const DEFAULT_ALIGNMENT: u64 = 32;
 const QUANT_BLOCK_LAYOUT: &str = "quantinfer.ggml.block_layout";
+const MAX_GGUF_HEADER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_GGUF_ARRAY_ITEMS: usize = 1_048_576;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatError {
@@ -557,7 +559,11 @@ impl PackedTensorReader {
         let mut metadata = BTreeMap::new();
         for _ in 0..metadata_count {
             let key = cursor.read_string()?;
-            metadata.insert(key, cursor.read_value()?);
+            if key.is_empty() || metadata.insert(key, cursor.read_value()?).is_some() {
+                return Err(FormatError::Invalid(
+                    "GGUF metadata keys must be unique and non-empty".to_owned(),
+                ));
+            }
         }
         let alignment = match metadata.get("general.alignment") {
             Some(GgufValue::U32(value)) => *value as u64,
@@ -595,6 +601,11 @@ impl PackedTensorReader {
                 offset,
                 size,
             });
+        }
+        if cursor.position() > MAX_GGUF_HEADER_BYTES {
+            return Err(FormatError::Invalid(
+                "GGUF header exceeds the size limit".to_owned(),
+            ));
         }
         let data_start = usize::try_from(align_up(cursor.position() as u64, alignment)?)
             .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
@@ -708,6 +719,11 @@ impl PackedTensorReader {
                 "GGUF tensor {name} has an invalid byte length"
             )));
         }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {name} contains non-finite values"
+            )));
+        }
         Ok(Tensor::from_f32(info.shape.clone(), values)?)
     }
 
@@ -734,6 +750,11 @@ impl PackedTensorReader {
                     .map_err(|_| FormatError::Invalid("invalid Q8_0 scale".to_owned()))?,
             )
             .to_f32();
+            if !scale.is_finite() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF Q8_0 tensor {name} contains a non-finite scale"
+                )));
+            }
             let mut values = [0_i8; Q8_0_BLOCK_SIZE];
             for (index, value) in chunk[std::mem::size_of::<f16>()..]
                 .iter()
@@ -771,6 +792,11 @@ impl PackedTensorReader {
                     .map_err(|_| FormatError::Invalid("invalid Q4_0 scale".to_owned()))?,
             )
             .to_f32();
+            if !scale.is_finite() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF Q4_0 tensor {name} contains a non-finite scale"
+                )));
+            }
             let mut values = [0_u8; Q4_0_BLOCK_SIZE];
             for (index, packed) in chunk[std::mem::size_of::<f16>()..]
                 .iter()
@@ -818,6 +844,11 @@ impl PackedTensorReader {
                     .map_err(|_| FormatError::Invalid("invalid Q4_K minimum scale".to_owned()))?,
             )
             .to_f32();
+            if !scale.is_finite() || !min_scale.is_finite() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF Q4_K tensor {name} contains a non-finite scale"
+                )));
+            }
             let mut scales = [0_u8; 12];
             scales.copy_from_slice(&chunk[4..16]);
             let mut values = [0_u8; Q4_K_BLOCK_SIZE / 2];
@@ -850,6 +881,11 @@ impl PackedTensorReader {
         for chunk in bytes.as_chunks::<176>().0 {
             let scale = f16::from_le_bytes(chunk[..2].try_into().unwrap()).to_f32();
             let min_scale = f16::from_le_bytes(chunk[2..4].try_into().unwrap()).to_f32();
+            if !scale.is_finite() || !min_scale.is_finite() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF Q5_K tensor {name} contains a non-finite scale"
+                )));
+            }
             let mut scales = [0_u8; 12];
             scales.copy_from_slice(&chunk[4..16]);
             let mut high_bits = [0_u8; 32];
@@ -895,6 +931,11 @@ impl PackedTensorReader {
                 )
             };
             let scale = f16::from_le_bytes(scale.try_into().unwrap()).to_f32();
+            if !scale.is_finite() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF Q6_K tensor {name} contains a non-finite scale"
+                )));
+            }
             blocks.push(Q6KBlock {
                 scale,
                 scales: std::array::from_fn(|index| scales[index] as i8),
@@ -1133,7 +1174,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn read_value(&mut self) -> Result<GgufValue> {
-        self.read_value_with_limit(usize::MAX)
+        self.read_value_with_limit(MAX_GGUF_ARRAY_ITEMS)
     }
 
     fn read_value_with_limit(&mut self, array_limit: usize) -> Result<GgufValue> {
@@ -1466,6 +1507,35 @@ mod tests {
         assert!(matches!(
             GgufReader::open(raw),
             Err(FormatError::Invalid(message)) if message.contains("duplicate GGUF tensor name")
+        ));
+    }
+
+    #[test]
+    fn rejects_duplicate_metadata_keys_and_non_finite_tensors() {
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"GGUF");
+        raw.extend_from_slice(&3_u32.to_le_bytes());
+        raw.extend_from_slice(&0_u64.to_le_bytes());
+        raw.extend_from_slice(&2_u64.to_le_bytes());
+        for value in [1_u32, 2_u32] {
+            raw.extend_from_slice(&3_u64.to_le_bytes());
+            raw.extend_from_slice(b"dup");
+            raw.extend_from_slice(&4_u32.to_le_bytes());
+            raw.extend_from_slice(&value.to_le_bytes());
+        }
+        assert!(matches!(
+            GgufReader::open(raw),
+            Err(FormatError::Invalid(message)) if message.contains("metadata keys must be unique")
+        ));
+
+        let mut writer = GgufWriter::new();
+        writer
+            .add_f32_tensor("non_finite", vec![1], &[f32::NAN])
+            .unwrap();
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        assert!(matches!(
+            reader.tensor_f32("non_finite"),
+            Err(FormatError::Invalid(message)) if message.contains("non-finite")
         ));
     }
 }

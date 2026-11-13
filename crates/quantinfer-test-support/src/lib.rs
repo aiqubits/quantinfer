@@ -28,7 +28,10 @@ pub fn tiny_qwen3_config() -> Qwen3Config {
 
 pub fn deterministic_tensor(shape: impl Into<quantinfer_core::Shape>, seed: u32) -> Tensor {
     let shape = shape.into();
-    let data = (0..shape.num_elements())
+    let elements = shape
+        .num_elements()
+        .expect("deterministic fixture shape must be valid");
+    let data = (0..elements)
         .map(|index| {
             let value = ((index as u32).wrapping_mul(1_664_525).wrapping_add(seed)) % 10_000;
             (value as f32 / 10_000.0) - 0.5

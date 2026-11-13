@@ -168,10 +168,16 @@ impl ModelPackage {
             ))
         })?;
         let manifest_path = root.join("manifest.json");
-        let manifest =
-            ModelManifest::from_json(&fs::read_to_string(&manifest_path).map_err(|error| {
-                FormatError::Io(format!("cannot read {}: {error}", manifest_path.display()))
-            })?)?;
+        let manifest_bytes = read_file_nofollow(&manifest_path).map_err(|error| {
+            FormatError::Io(format!("cannot read {}: {error}", manifest_path.display()))
+        })?;
+        let manifest_text = String::from_utf8(manifest_bytes).map_err(|error| {
+            FormatError::Invalid(format!(
+                "manifest {} is not UTF-8: {error}",
+                manifest_path.display()
+            ))
+        })?;
+        let manifest = ModelManifest::from_json(&manifest_text)?;
         Ok(Self { root, manifest })
     }
 
@@ -269,6 +275,14 @@ pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut digest = Sha256::new();
     io::copy(reader, &mut digest)?;
     Ok(format!("{:x}", digest.finalize()))
+}
+
+/// Read a regular file without following a final symlink on Unix.
+pub fn read_file_nofollow(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+    let mut file = open_readonly_nofollow(path.as_ref())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
