@@ -137,13 +137,76 @@ impl CpuScalar {
     where
         F: Fn(usize) -> Result<f32> + Sync + Send,
     {
-        self.matmul_rows_accumulate(lhs_values, rows, inner, columns, |output, index, left| {
-            let rhs_offset = index * columns;
-            for (column, result) in output.iter_mut().enumerate() {
-                *result += left * value(rhs_offset + column)?;
+        self.matmul_rows_accumulate(
+            lhs_values,
+            rows,
+            inner,
+            columns,
+            |output, index, column_start, left| {
+                let rhs_offset = index * columns + column_start;
+                for (column, result) in output.iter_mut().enumerate() {
+                    *result += left * value(rhs_offset + column)?;
+                }
+                Ok(())
+            },
+        )
+    }
+
+    /// Run `compute(start_column, end_column)` on disjoint output-column ranges.
+    ///
+    /// Each call returns `rows * (end - start)` values, one contiguous column
+    /// strip per input row. A single input row (decode) has no row to split, so
+    /// the columns are the parallel axis. Summation order inside one column
+    /// stays identical to the single-thread loop.
+    fn map_output_columns<F>(&self, rows: usize, columns: usize, compute: F) -> Result<Vec<f32>>
+    where
+        F: Fn(usize, usize) -> Result<Vec<f32>> + Sync,
+    {
+        let worker_count = self.config.threads.max(1).min(columns);
+        if worker_count == 1 {
+            return compute(0, columns);
+        }
+        let columns_per_worker = columns.div_ceil(worker_count);
+        let mut output = vec![
+            0.0;
+            rows.checked_mul(columns).ok_or_else(|| {
+                KernelError::InvalidInput("matmul output size overflows usize".to_owned())
+            })?
+        ];
+        let partials = std::thread::scope(|scope| -> Result<Vec<(usize, Vec<f32>)>> {
+            let compute = &compute;
+            let mut handles = Vec::with_capacity(worker_count);
+            for worker in 0..worker_count {
+                let start = worker * columns_per_worker;
+                if start >= columns {
+                    break;
+                }
+                let end = (start + columns_per_worker).min(columns);
+                handles
+                    .push(scope.spawn(move || compute(start, end).map(|values| (start, values))));
             }
-            Ok(())
-        })
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))?
+                })
+                .collect()
+        })?;
+        for (start, values) in partials {
+            let width = columns_per_worker.min(columns - start);
+            if values.len() != rows * width {
+                return Err(KernelError::InvalidInput(
+                    "CPU worker returned an unexpected column strip".to_owned(),
+                ));
+            }
+            for (row, strip) in values.chunks_exact(width).enumerate() {
+                let dest = row * columns + start;
+                output[dest..dest + width].copy_from_slice(strip);
+            }
+        }
+        Ok(output)
     }
 
     fn matmul_rows_accumulate<F>(
@@ -155,7 +218,7 @@ impl CpuScalar {
         accumulate: F,
     ) -> Result<Vec<f32>>
     where
-        F: Fn(&mut [f32], usize, f32) -> Result<()> + Sync,
+        F: Fn(&mut [f32], usize, usize, f32) -> Result<()> + Sync,
     {
         if columns == 0 {
             return Err(KernelError::InvalidInput(
@@ -168,40 +231,56 @@ impl CpuScalar {
                 .zip(output.chunks_exact_mut(columns))
             {
                 for (index, &left) in lhs_row.iter().enumerate() {
-                    accumulate(output_row, index, left)?;
+                    accumulate(output_row, index, 0, left)?;
                 }
             }
             Ok(())
         };
 
-        let worker_count = self.config.threads.max(1).min(rows);
+        let threads = self.config.threads.max(1);
         let output_elements = rows.checked_mul(columns).ok_or_else(|| {
             KernelError::InvalidInput("matmul output size overflows usize".to_owned())
         })?;
-        let mut output = vec![0.0; output_elements];
-        if worker_count == 1 {
-            compute_rows(lhs_values, &mut output)?;
+        // Enough input rows to occupy the workers: keep the contiguous row split.
+        // Decode has one row, so split the output columns instead.
+        if threads == 1 || rows >= threads {
+            let worker_count = threads.min(rows);
+            let mut output = vec![0.0; output_elements];
+            if worker_count == 1 {
+                compute_rows(lhs_values, &mut output)?;
+                return Ok(output);
+            }
+            let rows_per_worker = rows.div_ceil(worker_count);
+            std::thread::scope(|scope| -> Result<()> {
+                let mut handles = Vec::with_capacity(worker_count);
+                for (lhs, output) in lhs_values
+                    .chunks(rows_per_worker * inner)
+                    .zip(output.chunks_mut(rows_per_worker * columns))
+                {
+                    let compute = &compute_rows;
+                    handles.push(scope.spawn(move || compute(lhs, output)));
+                }
+                for handle in handles {
+                    handle.join().map_err(|_| {
+                        KernelError::InvalidInput("CPU worker panicked".to_owned())
+                    })??;
+                }
+                Ok(())
+            })?;
             return Ok(output);
         }
 
-        let rows_per_worker = rows.div_ceil(worker_count);
-        std::thread::scope(|scope| -> Result<()> {
-            let mut handles = Vec::with_capacity(worker_count);
-            for (lhs, output) in lhs_values
-                .chunks(rows_per_worker * inner)
-                .zip(output.chunks_mut(rows_per_worker * columns))
-            {
-                let compute = &compute_rows;
-                handles.push(scope.spawn(move || compute(lhs, output)));
+        self.map_output_columns(rows, columns, |start, end| {
+            let width = end - start;
+            let mut local = vec![0.0; rows * width];
+            for (row, lhs_row) in lhs_values.chunks_exact(inner).enumerate() {
+                let dest = &mut local[row * width..(row + 1) * width];
+                for (index, &left) in lhs_row.iter().enumerate() {
+                    accumulate(dest, index, start, left)?;
+                }
             }
-            for handle in handles {
-                handle
-                    .join()
-                    .map_err(|_| KernelError::InvalidInput("CPU worker panicked".to_owned()))??;
-            }
-            Ok(())
-        })?;
-        Ok(output)
+            Ok(local)
+        })
     }
 
     fn matmul_rows(
@@ -219,9 +298,9 @@ impl CpuScalar {
                 rows,
                 inner,
                 columns,
-                |output, index, left| {
-                    let start = index * columns;
-                    kernel.apply(output, &rhs_values[start..start + columns], left);
+                |output, index, column_start, left| {
+                    let start = index * columns + column_start;
+                    kernel.apply(output, &rhs_values[start..start + output.len()], left);
                     Ok(())
                 },
             );
@@ -236,11 +315,12 @@ impl CpuScalar {
         lhs: &Tensor,
         rhs_shape: &Shape,
         blocks: &[B],
-        unpack: impl Fn(&B) -> (f32, &[T; 32]),
-        convert: impl Fn(T) -> f32,
+        unpack: impl Fn(&B) -> (f32, &[T; 32]) + Sync,
+        convert: impl Fn(T) -> f32 + Sync,
     ) -> Result<Tensor>
     where
         T: Copy,
+        B: Sync,
     {
         let (rows, inner) = self.expect_matrix(lhs, "lhs")?;
         let &[input, outputs] = rhs_shape.dims() else {
@@ -254,23 +334,25 @@ impl CpuScalar {
             ));
         }
         let row_blocks = inner / 32;
-        let elements = rows.checked_mul(outputs).ok_or_else(|| {
-            KernelError::InvalidInput("matmul output size overflows usize".to_owned())
-        })?;
-        let mut result = Vec::with_capacity(elements);
-        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
-            let left = left.as_chunks::<32>().0;
-            for row in blocks.chunks_exact(row_blocks) {
-                let mut sum = 0.0;
-                for (left, block) in left.iter().zip(row) {
-                    let (scale, codes) = unpack(block);
-                    for (&activation, &code) in left.iter().zip(codes) {
-                        sum += activation * (scale * convert(code));
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let result = self.map_output_columns(rows, outputs, |start, end| {
+            let mut partial = Vec::with_capacity(rows * (end - start));
+            let strip = &blocks[start * row_blocks..end * row_blocks];
+            for left in lhs_values.chunks_exact(inner) {
+                let left = left.as_chunks::<32>().0;
+                for row in strip.chunks_exact(row_blocks) {
+                    let mut sum = 0.0;
+                    for (left, block) in left.iter().zip(row) {
+                        let (scale, codes) = unpack(block);
+                        for (&activation, &code) in left.iter().zip(codes) {
+                            sum += activation * (scale * convert(code));
+                        }
                     }
+                    partial.push(sum);
                 }
-                result.push(sum);
             }
-        }
+            Ok(partial)
+        })?;
         Ok(Tensor::from_f32(vec![rows, outputs], result)?)
     }
 
@@ -403,18 +485,23 @@ impl CpuScalar {
                 "invalid quantized output rows".to_owned(),
             ));
         }
-        let mut result = Vec::with_capacity(rows * outputs);
-        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
-            let left = left.as_chunks::<32>().0;
-            for row in blocks.chunks_exact(row_blocks) {
-                result.push(
-                    left.iter()
-                        .zip(row)
-                        .map(|(left, block)| dot.q8(left, block.scale, &block.values))
-                        .sum(),
-                );
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let result = self.map_output_columns(rows, outputs, |start, end| {
+            let mut partial = Vec::with_capacity(rows * (end - start));
+            let strip = &blocks[start * row_blocks..end * row_blocks];
+            for left in lhs_values.chunks_exact(inner) {
+                let left = left.as_chunks::<32>().0;
+                for row in strip.chunks_exact(row_blocks) {
+                    partial.push(
+                        left.iter()
+                            .zip(row)
+                            .map(|(left, block)| dot.q8(left, block.scale, &block.values))
+                            .sum(),
+                    );
+                }
             }
-        }
+            Ok(partial)
+        })?;
         Ok(Tensor::from_f32(vec![rows, outputs], result)?)
     }
 
@@ -443,18 +530,23 @@ impl CpuScalar {
                 "invalid quantized output rows".to_owned(),
             ));
         }
-        let mut result = Vec::with_capacity(rows * outputs);
-        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
-            let left = left.as_chunks::<32>().0;
-            for row in blocks.chunks_exact(row_blocks) {
-                result.push(
-                    left.iter()
-                        .zip(row)
-                        .map(|(left, block)| dot.q4(left, block.scale, &block.values))
-                        .sum(),
-                );
+        let lhs_values = self.f32_values(lhs, "lhs")?;
+        let result = self.map_output_columns(rows, outputs, |start, end| {
+            let mut partial = Vec::with_capacity(rows * (end - start));
+            let strip = &blocks[start * row_blocks..end * row_blocks];
+            for left in lhs_values.chunks_exact(inner) {
+                let left = left.as_chunks::<32>().0;
+                for row in strip.chunks_exact(row_blocks) {
+                    partial.push(
+                        left.iter()
+                            .zip(row)
+                            .map(|(left, block)| dot.q4(left, block.scale, &block.values))
+                            .sum(),
+                    );
+                }
             }
-        }
+            Ok(partial)
+        })?;
         Ok(Tensor::from_f32(vec![rows, outputs], result)?)
     }
 }
@@ -940,5 +1032,99 @@ mod tests {
         .matmul_q8_0(&lhs, &rhs)
         .unwrap();
         assert_eq!(threaded.as_f32().unwrap(), scalar.as_f32().unwrap());
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn column_split_decode_shape_scales_over_repeated_matmuls() {
+        let inner = 576;
+        let outputs = 576;
+        let row_blocks = inner / 32;
+        let lhs = Tensor::from_f32(vec![1, inner], vec![0.01; inner]).unwrap();
+        let blocks = (0..outputs * row_blocks)
+            .map(|index| Q8_0Block {
+                scale: 0.02,
+                values: [((index % 9) as i8) - 4; 32],
+            })
+            .collect();
+        let rhs = QuantizedTensor::from_blocks(vec![inner, outputs], blocks).unwrap();
+        let once = CpuScalar::new();
+        let quad = CpuScalar::with_config(CpuRuntimeConfig {
+            threads: 4,
+            ..CpuRuntimeConfig::default()
+        });
+        let started = std::time::Instant::now();
+        for _ in 0..40 {
+            once.matmul_q8_0_output_rows(&lhs, &rhs).unwrap();
+        }
+        let serial = started.elapsed();
+        let started = std::time::Instant::now();
+        for _ in 0..40 {
+            quad.matmul_q8_0_output_rows(&lhs, &rhs).unwrap();
+        }
+        let parallel = started.elapsed();
+        // End-to-end decode is gated by benches/llama-cpp-compare.py. This only
+        // checks that splitting one decode-shaped matmul is actually faster.
+        assert!(
+            parallel.as_secs_f64() * 1.5 <= serial.as_secs_f64(),
+            "4 workers took {parallel:?}, one worker took {serial:?}"
+        );
+    }
+
+    #[test]
+    fn threaded_quantized_output_columns_match_scalar_reference() {
+        let rows = [1_usize, 5];
+        let outputs = 70;
+        let inner = 64;
+        let lhs_values: Vec<f32> = (0..rows[1] * inner)
+            .map(|index| index as f32 / 19.0 - 1.5)
+            .collect();
+        let q8_blocks: Vec<Q8_0Block> = (0..outputs * (inner / 32))
+            .map(|index| Q8_0Block {
+                scale: 0.05 + (index % 11) as f32 * 0.01,
+                values: std::array::from_fn(|lane| ((index + lane) % 15) as i8 - 7),
+            })
+            .collect();
+        let q8 = QuantizedTensor::from_blocks(vec![inner, outputs], q8_blocks).unwrap();
+        let q4_blocks: Vec<Q4_0Block> = (0..outputs * (inner / 32))
+            .map(|index| Q4_0Block {
+                scale: 0.2 + (index % 5) as f32 * 0.03,
+                values: std::array::from_fn(|lane| ((index + lane) % 16) as u8),
+            })
+            .collect();
+        let q4 = QuantizedTensor4::from_blocks(vec![inner, outputs], q4_blocks).unwrap();
+        let scalar = CpuScalar::new();
+        let threaded = CpuScalar::with_config(CpuRuntimeConfig {
+            isa: CpuIsa::Scalar,
+            threads: 4,
+            workspace_reuse: true,
+        });
+        for row_count in rows {
+            let lhs = Tensor::from_f32(
+                vec![row_count, inner],
+                lhs_values[..row_count * inner].to_vec(),
+            )
+            .unwrap();
+            for (actual, expected) in [
+                (
+                    threaded.matmul_q8_0_output_rows(&lhs, &q8).unwrap(),
+                    scalar.matmul_q8_0_output_rows(&lhs, &q8).unwrap(),
+                ),
+                (
+                    threaded.matmul_q4_0_output_rows(&lhs, &q4).unwrap(),
+                    scalar.matmul_q4_0_output_rows(&lhs, &q4).unwrap(),
+                ),
+                (
+                    threaded.matmul_q8_0(&lhs, &q8).unwrap(),
+                    scalar.matmul_q8_0(&lhs, &q8).unwrap(),
+                ),
+            ] {
+                assert_eq!(
+                    actual.as_f32().unwrap(),
+                    expected.as_f32().unwrap(),
+                    "rows={row_count}"
+                );
+            }
+        }
     }
 }

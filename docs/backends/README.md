@@ -49,6 +49,16 @@ unsafe FFI. They provide the stable capability boundary and target detection;
 an application links its chosen upstream kernel and registers the provider
 only when that execution implementation is present.
 
+## Performance status
+
+The same-machine comparison against llama.cpp (pinned revision, CPU only)
+is recorded under `benches/llama-cpp/`. On an Apple M4 Pro with
+SmolLM2-135M Q8_0, splitting quantized matmul across output columns makes
+four-thread decode about twice the one-thread rate. The scalar path is
+still roughly 22x slower than llama.cpp at one thread. Attention fusion is
+the next CPU lever and takes priority over new backends. See
+`benches/README.md`.
+
 ## Verification
 
 Run the portable checks with:

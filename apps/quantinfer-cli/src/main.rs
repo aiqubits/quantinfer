@@ -196,14 +196,30 @@ fn generate(arguments: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("invalid --memory-budget-bytes: {error}"))
         })
         .transpose()?;
+    let cpu_threads = option_value(arguments, "--threads")?
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|error| format!("invalid --threads: {error}"))
+        })
+        .transpose()?;
+    if cpu_threads == Some(0) {
+        return Err("--threads must be greater than zero".to_owned());
+    }
     let profile = has_flag(arguments, "--profile");
     let inference_profile_name = option_value(arguments, "--inference-profile")?;
     if backend != Backend::Cpu
-        && (memory_budget_bytes.is_some() || inference_profile_name.is_some())
+        && (memory_budget_bytes.is_some()
+            || inference_profile_name.is_some()
+            || cpu_threads.is_some())
     {
         return Err(
-            "use --backend cpu with --inference-profile or --memory-budget-bytes".to_owned(),
+            "use --backend cpu with --inference-profile, --memory-budget-bytes, or --threads"
+                .to_owned(),
         );
+    }
+    if cpu_threads.is_some() && inference_profile_name.is_some() {
+        return Err("--inference-profile supplies the CPU thread count; omit --threads".to_owned());
     }
     let model_read_started = Instant::now();
     let source = ModelSource::open(&path).map_err(|error| error.to_string())?;
@@ -290,7 +306,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
             )
         })
         .transpose()?;
-    let mut model = backend.load(&reader, manifest, inference_profile.as_ref())?;
+    let mut model = backend.load(&reader, manifest, inference_profile.as_ref(), cpu_threads)?;
     if let Some(adapter) = adapter {
         model
             .attach_lora(adapter)
@@ -407,6 +423,12 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         println!("kv_cache_bytes={}", cache.memory_bytes());
         println!("kv_cache_capacity_bytes={}", cache.capacity_bytes());
         println!("max_sequence_length={max_sequence_length}");
+        println!(
+            "threads={}",
+            inference_profile
+                .as_ref()
+                .map_or_else(|| cpu_threads.unwrap_or(1), |profile| profile.thread_count)
+        );
         println!(
             "peak_rss_kib={}",
             peak_rss_kib().map_or_else(|| "unmeasured".to_owned(), |rss| rss.to_string())
@@ -552,7 +574,7 @@ fn has_flag(arguments: &[String], flag: &str) -> bool {
 
 fn print_help() {
     println!(
-        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu|cuda|metal] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
+        "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu|cuda|metal] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--threads N] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"
     );
 }
 

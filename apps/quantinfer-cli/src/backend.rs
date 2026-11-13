@@ -70,9 +70,10 @@ impl Backend {
         reader: &GgufReader,
         manifest: Option<&ModelManifest>,
         profile: Option<&InferenceProfile>,
+        cpu_threads: Option<usize>,
     ) -> Result<Box<dyn Generator>, String> {
         match self {
-            Self::Cpu => CpuModel::from_gguf(reader, manifest, profile)
+            Self::Cpu => CpuModel::from_gguf_with_threads(reader, manifest, profile, cpu_threads)
                 .map(|model| Box::new(model) as Box<dyn Generator>)
                 .map_err(|error| error.to_string()),
             #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]

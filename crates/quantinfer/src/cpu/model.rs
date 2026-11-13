@@ -13,7 +13,7 @@ use quantinfer_runtime::{
 };
 use quantinfer_tokenizer::GgufBpeTokenizer;
 
-use super::{resolve_backend, resolve_profiled_backend, CpuScalar};
+use super::{resolve_backend, resolve_backend_with_threads, resolve_profiled_backend, CpuScalar};
 
 pub enum DenseModel<B> {
     Qwen3(Qwen3Model<B>),
@@ -41,6 +41,25 @@ impl DenseModel<CpuScalar> {
         manifest: Option<&ModelManifest>,
         profile: Option<&InferenceProfile>,
     ) -> Result<Self> {
+        Self::from_gguf_with_threads(reader, manifest, profile, None)
+    }
+
+    /// Load with an explicit CPU thread count for runs without a profile.
+    ///
+    /// A profile already supplies the thread count, so combining the two is
+    /// rejected instead of silently preferring one source.
+    pub fn from_gguf_with_threads(
+        reader: &GgufReader,
+        manifest: Option<&ModelManifest>,
+        profile: Option<&InferenceProfile>,
+        threads: Option<usize>,
+    ) -> Result<Self> {
+        if profile.is_some() && threads.is_some() {
+            return Err(RuntimeError::InvalidInput(
+                "CPU thread count is supplied by both an inference profile and an explicit value"
+                    .to_owned(),
+            ));
+        }
         let architecture = model_architecture(reader, manifest)?;
         let manifest = manifest.or(reader.embedded_manifest());
         let backend = if let Some(profile) = profile {
@@ -48,6 +67,8 @@ impl DenseModel<CpuScalar> {
                 RuntimeError::InvalidInput("inference profiles require a model manifest".to_owned())
             })?;
             resolve_profiled_backend(reader, manifest, profile)
+        } else if let Some(threads) = threads {
+            resolve_backend_with_threads(reader, manifest, threads)
         } else {
             resolve_backend(reader, manifest)
         }

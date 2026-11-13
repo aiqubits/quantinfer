@@ -1,0 +1,90 @@
+{
+  "model": "smollm2-q8_0.gguf",
+  "gguf_sha256": "197cc26187ff482f7cc0ad9ec870f7994de36152761047250f816d79bec92864",
+  "cpu_model": "Apple M4 Pro",
+  "cpu_arch": "arm64",
+  "build_profile": "release",
+  "prompt_tokens": 5,
+  "generated_tokens": 8,
+  "max_sequence_length": 64,
+  "llama_cpp_build_commit": "0ec4027a2",
+  "peak_rss_note": "llama.cpp RSS is unmeasured; QuantInfer RSS is Linux-only",
+  "runs": [
+    {
+      "threads": 1,
+      "quantinfer": {
+        "model_load_ms": 336.269,
+        "prefill_ms": 383.54,
+        "ttft_ms": 383.673,
+        "decode_ms": 607.294,
+        "profile_decode_tokens_per_sec": 13.185,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 614.243406,
+        "decode_tokens_per_sec": 348.648603,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 26.442821615472123
+    },
+    {
+      "threads": 2,
+      "quantinfer": {
+        "model_load_ms": 314.121,
+        "prefill_ms": 375.522,
+        "ttft_ms": 375.668,
+        "decode_ms": 605.396,
+        "profile_decode_tokens_per_sec": 13.225,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 1061.840595,
+        "decode_tokens_per_sec": 502.837619,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 38.021748128544424
+    },
+    {
+      "threads": 4,
+      "quantinfer": {
+        "model_load_ms": 302.572,
+        "prefill_ms": 375.874,
+        "ttft_ms": 376.003,
+        "decode_ms": 604.35,
+        "profile_decode_tokens_per_sec": 13.245,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 1635.842882,
+        "decode_tokens_per_sec": 542.706512,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 40.97444409211023
+    },
+    {
+      "threads": 8,
+      "quantinfer": {
+        "model_load_ms": 305.703,
+        "prefill_ms": 372.293,
+        "ttft_ms": 372.445,
+        "decode_ms": 610.04,
+        "profile_decode_tokens_per_sec": 13.164,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 1608.951626,
+        "decode_tokens_per_sec": 513.593716,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 39.0150194469766
+    }
+  ]
+}

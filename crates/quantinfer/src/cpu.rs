@@ -17,7 +17,24 @@ pub use model::{load_gguf_tokenizer, model_architecture, CpuModel, DenseModel, M
 
 /// Select a CPU kernel that supports the weight types recorded in a GGUF.
 pub fn resolve_backend(reader: &GgufReader, manifest: Option<&ModelManifest>) -> Result<CpuScalar> {
-    resolve_backend_impl(reader, manifest, None)
+    resolve_backend_impl(reader, manifest, None, None)
+}
+
+/// Select a CPU kernel with an explicit CPU thread count.
+///
+/// Inference profiles supply their own thread count; use
+/// [`resolve_profiled_backend`] when a profile is present.
+pub fn resolve_backend_with_threads(
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+    threads: usize,
+) -> Result<CpuScalar> {
+    if threads == 0 {
+        return Err(RuntimeError::InvalidInput(
+            "CPU thread count must be greater than zero".to_owned(),
+        ));
+    }
+    resolve_backend_impl(reader, manifest, None, Some(threads))
 }
 
 pub fn resolve_profiled_backend(
@@ -25,13 +42,14 @@ pub fn resolve_profiled_backend(
     manifest: &ModelManifest,
     profile: &InferenceProfile,
 ) -> Result<CpuScalar> {
-    resolve_backend_impl(reader, Some(manifest), Some(profile))
+    resolve_backend_impl(reader, Some(manifest), Some(profile), None)
 }
 
 fn resolve_backend_impl(
     reader: &GgufReader,
     manifest: Option<&ModelManifest>,
     profile: Option<&InferenceProfile>,
+    threads: Option<usize>,
 ) -> Result<CpuScalar> {
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
@@ -137,7 +155,7 @@ fn resolve_backend_impl(
     }
     match plan.provider_name.as_str() {
         "cpu-scalar" => Ok(CpuScalar::with_config(CpuRuntimeConfig {
-            threads: profile.map_or(1, |profile| profile.thread_count),
+            threads: profile.map_or_else(|| threads.unwrap_or(1), |profile| profile.thread_count),
             ..CpuRuntimeConfig::default()
         })),
         provider => Err(RuntimeError::InvalidInput(format!(
@@ -210,6 +228,15 @@ mod tests {
         });
         assert!(resolve_backend(&reader, Some(&manifest)).is_err());
         assert!(resolve_backend(&reader, None).is_ok());
+    }
+
+    #[test]
+    fn resolves_backend_with_an_explicit_thread_count() {
+        let reader = GgufReader::open(GgufWriter::new().finish().unwrap()).unwrap();
+        let backend = resolve_backend_with_threads(&reader, None, 4).unwrap();
+        assert_eq!(backend.config().threads, 4);
+        assert!(resolve_backend_with_threads(&reader, None, 0).is_err());
+        assert_eq!(resolve_backend(&reader, None).unwrap().config().threads, 1);
     }
 
     #[test]

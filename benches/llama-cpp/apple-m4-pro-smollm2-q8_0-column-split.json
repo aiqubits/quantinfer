@@ -1,0 +1,71 @@
+{
+  "model": "smollm2-q8_0.gguf",
+  "gguf_sha256": "197cc26187ff482f7cc0ad9ec870f7994de36152761047250f816d79bec92864",
+  "cpu_model": "Apple M4 Pro",
+  "cpu_arch": "arm64",
+  "build_profile": "release",
+  "prompt_tokens": 5,
+  "generated_tokens": 8,
+  "max_sequence_length": 64,
+  "llama_cpp_build_commit": "0ec4027a2",
+  "peak_rss_note": "llama.cpp RSS is unmeasured; QuantInfer RSS is Linux-only",
+  "runs": [
+    {
+      "threads": 1,
+      "quantinfer": {
+        "model_load_ms": 227.174,
+        "prefill_ms": 257.409,
+        "ttft_ms": 257.52,
+        "decode_ms": 410.013,
+        "profile_decode_tokens_per_sec": 19.511,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 749.337767,
+        "decode_tokens_per_sec": 424.740887,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 21.7693038286095
+    },
+    {
+      "threads": 2,
+      "quantinfer": {
+        "model_load_ms": 224.527,
+        "prefill_ms": 149.151,
+        "ttft_ms": 149.273,
+        "decode_ms": 281.608,
+        "profile_decode_tokens_per_sec": 28.432,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 1345.751493,
+        "decode_tokens_per_sec": 532.599906,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 18.732410875070347
+    },
+    {
+      "threads": 4,
+      "quantinfer": {
+        "model_load_ms": 211.653,
+        "prefill_ms": 87.885,
+        "ttft_ms": 87.994,
+        "decode_ms": 202.434,
+        "profile_decode_tokens_per_sec": 39.527,
+        "peak_rss_kib": null,
+        "kv_cache_bytes": 599040,
+        "kv_cache_capacity_bytes": 2949120
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 1794.425488,
+        "decode_tokens_per_sec": 609.327713,
+        "peak_rss_kib": null
+      },
+      "decode_ratio_llama_over_quantinfer": 15.415480886482657
+    }
+  ]
+}

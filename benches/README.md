@@ -36,6 +36,54 @@ both models. SmolLM2 quantized runs use the GGML output-row layout.
 The `baselines/` directory records the i7-12700 single-thread measurements
 and the available GitHub runner measurements.
 
+## llama.cpp throughput comparison
+
+`llama-cpp-compare.py` runs QuantInfer and `llama-bench` from the llama.cpp
+revision pinned by the GGUF Interoperability workflow
+(`0ec4027a2a0183de87c007069adddc06e665f7de`) on the same GGUF, sweeping
+thread counts. QuantInfer follows the real-model convention (five fixed
+prompt tokens, eight greedy tokens, 64-token context); llama-bench uses the
+same lengths with `-ngl 0`, so this is a CPU throughput comparison, not a
+token-equivalence check (that is `tests/conformance/gguf_interop.py`).
+
+```bash
+python benches/llama-cpp-compare.py \
+  --cli target/release/quantinfer-cli \
+  --llama-bench /path/to/llama-bench \
+  --model /path/to/model.gguf \
+  --threads 1,2,4,8 \
+  --output benches/llama-cpp/report.json
+```
+
+First recorded run, before output-column splitting (Apple M4 Pro,
+SmolLM2-135M Q8_0 quantized with the pinned `llama-quantize`, QuantInfer
+default scalar build; `llama-cpp/apple-m4-pro-smollm2-q8_0.json`):
+
+| Threads | QuantInfer decode | llama.cpp decode | Ratio |
+| --- | --- | --- | --- |
+| 1 | 13.2 tok/s | 348.6 tok/s | 26.4x |
+| 2 | 13.2 tok/s | 502.8 tok/s | 38.0x |
+| 4 | 13.2 tok/s | 542.7 tok/s | 41.0x |
+| 8 | 13.2 tok/s | 513.6 tok/s | 39.0x |
+
+Decode did not scale because CPU matmul split input rows, and decode has
+one row. Quantized matmul, including GGML output-row weights, now splits
+output columns when there are fewer input rows than threads. The same
+machine afterwards
+(`llama-cpp/apple-m4-pro-smollm2-q8_0-column-split.json`):
+
+| Threads | QuantInfer decode | llama.cpp decode | Ratio |
+| --- | --- | --- | --- |
+| 1 | 19.5 tok/s | 424.7 tok/s | 21.8x |
+| 2 | 28.4 tok/s | 532.6 tok/s | 18.7x |
+| 4 | 39.5 tok/s | 609.3 tok/s | 15.4x |
+
+Four threads decode at about twice the one-thread rate. The single-thread
+gap is still about 22x, so attention fusion remains the next lever. The
+llama.cpp Comparison workflow reruns this comparison on the pinned
+artifact. Thread counts above the performance-core count are not part of
+the comparison: this machine mixes in efficiency cores past 10 threads.
+
 Model Conformance checks peak RSS against a 10% allowance and verifies exact
 KV cache sizes. On a CPU with a recorded timing baseline, it allows up to 35%
 more prefill, first-token, and decode latency, and requires at least 70% of
