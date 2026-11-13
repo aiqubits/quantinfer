@@ -1,13 +1,9 @@
 # QI-004 验证
 
-在 `ee63330` 上跑过：
+第一次在 `ee63330` 上跑过工作区测试和 core 的 clippy，`numerical_gates` 通过，没有改容差。
 
-```sh
-cargo test --workspace --locked
-cargo clippy --locked -p quantinfer-core --all-targets -- -D warnings
-```
-
-两次都通过。`numerical_gates` 在工作区测试里通过，没有单独改容差。
+QI-001 和 QI-003 并入同一条分支之后，又跑了一次 `cargo test --workspace --locked`。
+core 里的 reshape、视图和越界测试仍然通过。
 
 覆盖的单测：
 

@@ -78,11 +78,14 @@ machine afterwards
 | 2 | 28.4 tok/s | 532.6 tok/s | 18.7x |
 | 4 | 39.5 tok/s | 609.3 tok/s | 15.4x |
 
-Four threads decode at about twice the one-thread rate. The single-thread
-gap is still about 22x, so attention fusion remains the next lever. The
-llama.cpp Comparison workflow reruns this comparison on the pinned
-artifact. Thread counts above the performance-core count are not part of
-the comparison: this machine mixes in efficiency cores past 10 threads.
+Four threads decode at about twice the one-thread rate. A later release run
+with phase timers (`llama-cpp/apple-m4-pro-smollm2-q8_0-phases.json`) puts
+about 98% of this 8-token decode in matmul. Attention is under 1% at this
+length, so the remaining single-thread gap of about 21x is inside matmul.
+`check-llama-cpp-report.py` checks that report. It is not a
+`benches/baselines/` file; `check-regressions.py` only reads the key=value
+real-model reports. The llama.cpp Comparison workflow reruns the comparison
+on the pinned artifact.
 
 Model Conformance checks peak RSS against a 10% allowance and verifies exact
 KV cache sizes. On a CPU with a recorded timing baseline, it allows up to 35%

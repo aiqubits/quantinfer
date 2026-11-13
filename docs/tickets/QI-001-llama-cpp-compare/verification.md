@@ -19,3 +19,18 @@ QuantInfer 的 RSS 只在 Linux 上读 `/proc`。
 
 第一次对照作废。当时没加 `-ngl 0`，llama-bench 走了 Metal，线程越多越慢。
 作废的数字没有写入这份 JSON。
+
+列切分之后、带分项计时的 release 运行记在
+`benches/llama-cpp/apple-m4-pro-smollm2-q8_0-phases.json`。`check-llama-cpp-report.py`
+对这份文件返回 ok。四档线程生成的 token 都是
+`6395, 1526, 30, 198, 198, 504, 808, 282`。
+
+| 线程 | decode tok/s | matmul | attention | sampling | other | QuantInfer RSS KiB | llama.cpp RSS KiB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 20.026 | 394.2 ms，98.9% | 1.8 ms，0.4% | 0.84 ms | 1.7 ms | 578288 | 396640 |
+| 2 | 29.799 | 264.6 ms，98.4% | 1.7 ms，0.6% | 0.82 ms | 1.8 ms | 536496 | 390560 |
+| 4 | 39.586 | 197.2 ms，97.8% | 1.7 ms，0.8% | 0.79 ms | 2.1 ms | 585728 | 393376 |
+| 8 | 37.720 | 207.9 ms，97.8% | 1.6 ms，0.8% | 0.83 ms | 2.1 ms | 585744 | 398224 |
+
+百分比是这四项之和。计时包在 matmul 和 attention 调用外面，只在 `--profile` 打开时生效。
+8 个 token、上下文从 6 涨到 14，attention 还没有成为热点。和 llama.cpp 的差距在 matmul 里面。

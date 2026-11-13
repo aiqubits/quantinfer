@@ -14,6 +14,7 @@ on:
       - "crates/quantinfer-quant/**"
       - "crates/quantinfer-runtime/**"
       - "benches/llama-cpp-compare.py"
+      - "benches/check-llama-cpp-report.py"
       - "benches/real-model.sh"
       - "model-zoo/manifests/smollm2-135m.json"
       - ".github/workflows/llama-cpp-compare.yml"
@@ -57,4 +58,5 @@ jobs:
             --model smollm2-q8_0.gguf \
             --threads 1,2,4 \
             --output llama-cpp-compare.json
+          python benches/check-llama-cpp-report.py llama-cpp-compare.json
           cat llama-cpp-compare.json >> "$GITHUB_STEP_SUMMARY"

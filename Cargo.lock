@@ -2009,6 +2009,7 @@ dependencies = [
 name = "quantinfer-cli"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "quantinfer",
  "quantinfer-adapter-lora",
  "quantinfer-core",

@@ -128,38 +128,33 @@ impl LlamaLayerWeights {
             ],
             &normalized,
         )?;
-        let query = self
-            .q_proj
-            .matmul(backend, &normalized)?
+        let query = crate::phases::time_matmul(|| self.q_proj.matmul(backend, &normalized))?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_attention_heads,
                 config.effective_head_dim(),
             ]))?;
-        let key = self
-            .k_proj
-            .matmul(backend, &normalized)?
+        let key = crate::phases::time_matmul(|| self.k_proj.matmul(backend, &normalized))?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads(),
                 config.effective_head_dim(),
             ]))?;
-        let value = self
-            .v_proj
-            .matmul(backend, &normalized)?
+        let value = crate::phases::time_matmul(|| self.v_proj.matmul(backend, &normalized))?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads(),
                 config.effective_head_dim(),
             ]))?;
-        let attended = attention
-            .apply(backend, &query, &key, &value, trace.layer, batch)?
-            .reshape(Shape::from(vec![
-                sequence_length,
-                config.query_projection_size(),
-            ]))?;
+        let attended = crate::phases::time_attention(|| {
+            attention.apply(backend, &query, &key, &value, trace.layer, batch)
+        })?
+        .reshape(Shape::from(vec![
+            sequence_length,
+            config.query_projection_size(),
+        ]))?;
         trace.record(&[TensorRole::OutputProjection], &attended)?;
-        let projected = self.o_proj.matmul(backend, &attended)?;
+        let projected = crate::phases::time_matmul(|| self.o_proj.matmul(backend, &attended))?;
         let residual = add(&residual, &projected)?;
         let normalized = backend.rms_norm(
             &residual,
@@ -170,11 +165,12 @@ impl LlamaLayerWeights {
             &[TensorRole::GateProjection, TensorRole::UpProjection],
             &normalized,
         )?;
-        let gate = self.gate_proj.matmul(backend, &normalized)?;
-        let up = self.up_proj.matmul(backend, &normalized)?;
+        let gate = crate::phases::time_matmul(|| self.gate_proj.matmul(backend, &normalized))?;
+        let up = crate::phases::time_matmul(|| self.up_proj.matmul(backend, &normalized))?;
         let feed_forward = backend.silu_mul(&gate, &up)?;
         trace.record(&[TensorRole::DownProjection], &feed_forward)?;
-        let feed_forward = self.down_proj.matmul(backend, &feed_forward)?;
+        let feed_forward =
+            crate::phases::time_matmul(|| self.down_proj.matmul(backend, &feed_forward))?;
         add(&residual, &feed_forward)
     }
 }
@@ -343,7 +339,7 @@ impl<B: KernelBackend> LlamaModel<B> {
         let hidden = self
             .backend
             .rms_norm(hidden, &self.final_norm, self.config.rms_norm_eps)?;
-        let logits = self.backend.matmul(&hidden, &self.lm_head)?;
+        let logits = crate::phases::time_matmul(|| self.backend.matmul(&hidden, &self.lm_head))?;
         match &self.lora_head {
             Some(adapter) => adapter.add_to(&self.backend, &hidden, logits),
             None => Ok(logits),

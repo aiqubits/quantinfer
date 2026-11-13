@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::env;
-use std::fs;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -10,7 +9,10 @@ use std::time::Instant;
 use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
 use quantinfer::model::ModelSpec;
 use quantinfer_format::{GgmlType, GgufReader, ModelPackage};
-use quantinfer_runtime::{select_token, GenerationConfig, InferenceProfile, MemoryPlan};
+use quantinfer_runtime::{
+    begin_phase_profile, end_phase_profile, select_token, GenerationConfig, InferenceProfile,
+    MemoryPlan,
+};
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
 
 mod backend;
@@ -367,9 +369,15 @@ fn generate(arguments: &[String]) -> Result<(), String> {
         .map_err(|error| format!("Qwen3 prefill failed: {error}"))?;
     let prefill_elapsed = prefill_started.elapsed();
     let decode_started = Instant::now();
+    let mut sampling_elapsed = std::time::Duration::ZERO;
+    if profile {
+        begin_phase_profile();
+    }
     for _ in 0..generation_config.max_new_tokens {
+        let sample_started = Instant::now();
         let next = select_token(&last_logits(&logits)?, &generation_config)
             .map_err(|error| format!("token selection failed: {error}"))?;
+        sampling_elapsed += sample_started.elapsed();
         if profile {
             let now = Instant::now();
             first_token_at.get_or_insert(now);
@@ -384,6 +392,7 @@ fn generate(arguments: &[String]) -> Result<(), String> {
             .map_err(|error| format!("Qwen3 decode failed: {error}"))?;
     }
     let decode_elapsed = decode_started.elapsed();
+    let phases = end_phase_profile();
     println!("prompt_tokens={prompt_tokens:?}");
     println!("generated_tokens={generated:?}");
     println!("prefill_ms={:.3}", prefill_elapsed.as_secs_f64() * 1000.0);
@@ -433,12 +442,42 @@ fn generate(arguments: &[String]) -> Result<(), String> {
             "peak_rss_kib={}",
             peak_rss_kib().map_or_else(|| "unmeasured".to_owned(), |rss| rss.to_string())
         );
+        if let Some(phases) = phases {
+            let matmul_ms = phases.matmul_ns as f64 / 1_000_000.0;
+            let attention_ms = phases.attention_ns as f64 / 1_000_000.0;
+            let sampling_ms = sampling_elapsed.as_secs_f64() * 1000.0;
+            let accounted_ns = (phases.matmul_ns as u128)
+                .saturating_add(phases.attention_ns as u128)
+                .saturating_add(sampling_elapsed.as_nanos());
+            let other_ms =
+                decode_elapsed.as_nanos().saturating_sub(accounted_ns) as f64 / 1_000_000.0;
+            println!("profile_decode_matmul_ms={matmul_ms:.3}");
+            println!("profile_decode_attention_ms={attention_ms:.3}");
+            println!("profile_decode_sampling_ms={sampling_ms:.3}");
+            println!("profile_decode_other_ms={other_ms:.3}");
+        }
     }
     Ok(())
 }
 
 fn peak_rss_kib() -> Option<u64> {
-    fs::read_to_string("/proc/self/status")
+    #[cfg(target_os = "linux")]
+    {
+        linux_peak_rss_kib()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos_peak_rss_kib()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_peak_rss_kib() -> Option<u64> {
+    std::fs::read_to_string("/proc/self/status")
         .ok()?
         .lines()
         .find_map(|line| {
@@ -448,6 +487,17 @@ fn peak_rss_kib() -> Option<u64> {
                 .parse()
                 .ok()
         })
+}
+
+#[cfg(target_os = "macos")]
+fn macos_peak_rss_kib() -> Option<u64> {
+    let mut usage = unsafe { std::mem::zeroed::<libc::rusage>() };
+    // SAFETY: `usage` is a zeroed `rusage` and `RUSAGE_SELF` names this process.
+    // `ru_maxrss` on macOS is the peak resident size in bytes.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+        return None;
+    }
+    Some((usage.ru_maxrss as u64) / 1024)
 }
 
 fn check_memory_plan(

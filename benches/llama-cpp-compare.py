@@ -88,21 +88,40 @@ def quantinfer_run(cli, model, threads, generated):
         ),
         "kv_cache_bytes": int(metrics["kv_cache_bytes"]),
         "kv_cache_capacity_bytes": int(metrics["kv_cache_capacity_bytes"]),
+        "generated_token_ids": json.loads(metrics["generated_tokens"]),
+        "profile_decode_matmul_ms": float(metrics["profile_decode_matmul_ms"]),
+        "profile_decode_attention_ms": float(metrics["profile_decode_attention_ms"]),
+        "profile_decode_sampling_ms": float(metrics["profile_decode_sampling_ms"]),
+        "profile_decode_other_ms": float(metrics["profile_decode_other_ms"]),
     }
 
 
+def resident_kib(stderr):
+    for line in stderr.splitlines():
+        if "maximum resident set size" in line:
+            return int(line.split()[0]) / 1024
+        if line.strip().startswith("Maximum resident set size"):
+            return float(line.split()[-1])
+    return None
+
+
 def llama_run(llama_bench, model, threads, prompt_tokens, generated, repetitions):
-    output = subprocess.check_output(
-        [
-            llama_bench, "-m", model,
-            "-p", str(prompt_tokens), "-n", str(generated),
-            "-t", str(threads), "-r", str(repetitions),
-            "-ngl", "0",
-            "--no-warmup", "-o", "json",
-        ],
-        text=True,
-        stderr=subprocess.DEVNULL,
+    command = [
+        llama_bench, "-m", model,
+        "-p", str(prompt_tokens), "-n", str(generated),
+        "-t", str(threads), "-r", str(repetitions),
+        "-ngl", "0",
+        "--no-warmup", "-o", "json",
+    ]
+    if platform.system() == "Darwin":
+        command = ["/usr/bin/time", "-l", *command]
+    elif platform.system() == "Linux":
+        command = ["/usr/bin/time", "-v", *command]
+    completed = subprocess.run(
+        command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
     )
+    output = completed.stdout
+    peak_rss_kib = resident_kib(completed.stderr)
     results = json.loads(output[output.index("["):])
     by_kind = {}
     for entry in results:
@@ -114,7 +133,7 @@ def llama_run(llama_bench, model, threads, prompt_tokens, generated, repetitions
     if missing:
         raise RuntimeError(f"llama-bench reported no {sorted(missing)} measurement")
     build_commit = results[0].get("build_commit", "unknown")
-    return by_kind, build_commit
+    return by_kind, build_commit, peak_rss_kib
 
 
 def main():
@@ -140,14 +159,14 @@ def main():
         quantinfer = quantinfer_run(
             args.cli, args.model, threads, args.generated_tokens
         )
-        llama, llama_commit = llama_run(
+        llama, llama_commit, llama_rss = llama_run(
             args.llama_bench, args.model, threads,
             len(PROMPT_TOKENS.split(",")), args.generated_tokens, args.repetitions,
         )
         runs.append({
             "threads": threads,
             "quantinfer": quantinfer,
-            "llama_cpp": {**llama, "peak_rss_kib": None},
+            "llama_cpp": {**llama, "peak_rss_kib": llama_rss},
             "decode_ratio_llama_over_quantinfer": (
                 llama["decode_tokens_per_sec"]
                 / quantinfer["profile_decode_tokens_per_sec"]
@@ -168,7 +187,10 @@ def main():
         "generated_tokens": args.generated_tokens,
         "max_sequence_length": 64,
         "llama_cpp_build_commit": llama_commit,
-        "peak_rss_note": "llama.cpp RSS is unmeasured; QuantInfer RSS is Linux-only",
+        "peak_rss_note": (
+            "QuantInfer peak RSS is VmHWM on Linux and ru_maxrss on macOS. "
+            "llama.cpp peak RSS comes from /usr/bin/time."
+        ),
         "runs": runs,
     }
     if args.output:

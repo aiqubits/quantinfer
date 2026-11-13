@@ -17,13 +17,10 @@
 
 更早一次冷启动大约是 1.87 倍。隔离的 576×576 release matmul 能过 2 倍。随后三次成对运行大约是 2.03、1.96 和 2.06 倍。入库的是 2.03 这一次。
 
-并入 `feature/cpu-decode` 之后，debug 单测通过：
+并入 `feature/cpu-decode` 之后，debug 单测通过，包括逐位对照。release 下
+`column_split_decode_shape_scales_over_repeated_matmuls` 也通过。
 
-```sh
-cargo test --locked -p quantinfer --lib
-cargo test --locked -p quantinfer-backend-cpu --lib
-```
-
-其中包含 `resolves_backend_with_an_explicit_thread_count` 和
-`threaded_quantized_output_columns_match_scalar_reference`。release 缩放测试
-因为 `debug_assertions` 没有在这次 debug 运行里执行。
+分项计时那次 release 运行把 token 写进了
+`apple-m4-pro-smollm2-q8_0-phases.json`。1、2、4、8 线程的 token 都是
+`6395, 1526, 30, 198, 198, 504, 808, 282`。同一次的 4 线程对 1 线程是
+39.586 / 20.026 = 1.98 倍，略低于早先入库的 2.03 倍。2 倍这条线会随机器冷热波动。
