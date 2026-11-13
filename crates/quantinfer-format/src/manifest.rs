@@ -218,6 +218,15 @@ impl ModelPackage {
         Ok(resolved)
     }
 
+    /// Map a packaged GGUF or QIF file after its manifest checksum matches.
+    pub fn open_verified_artifact(&self, relative_path: &str) -> Result<super::GgufReader> {
+        let path = self.artifact_path(relative_path)?;
+        let reader = super::GgufReader::open_artifact_path(&path)?;
+        self.manifest
+            .verify_checksum(relative_path, reader.as_slice())?;
+        Ok(reader)
+    }
+
     pub fn read_verified(&self, relative_path: &str) -> Result<Vec<u8>> {
         let path = self.artifact_path(relative_path)?;
         let expected = self.manifest.expected_checksum(relative_path)?;
@@ -250,7 +259,7 @@ impl ModelPackage {
     }
 }
 
-fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
+pub(crate) fn open_readonly_nofollow(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]

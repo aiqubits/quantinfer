@@ -5,6 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::{self, Read, Seek, Write};
+use std::ops::Deref;
+use std::path::Path;
+use std::sync::Arc;
 
 use half::{bf16, f16};
 use quantinfer_core::{
@@ -12,6 +15,7 @@ use quantinfer_core::{
     QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K, Tensor, Q4_0_BLOCK_SIZE,
     Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
+use quantinfer_map::MappedFile;
 use serde::Serialize;
 
 pub type Result<T> = std::result::Result<T, FormatError>;
@@ -440,10 +444,81 @@ impl<F: Read + Seek + Write> GgufSpool<F> {
     }
 }
 
+/// File bytes kept either in a buffer or in a read-only map.
+///
+/// The map stays inside this crate. Callers only see borrowed slices.
+#[derive(Clone)]
+pub(crate) struct ArtifactBytes {
+    backing: Arc<ArtifactBacking>,
+}
+
+enum ArtifactBacking {
+    Buffer(Vec<u8>),
+    Map(MappedFile),
+}
+
+impl ArtifactBytes {
+    fn buffer(bytes: Vec<u8>) -> Self {
+        Self {
+            backing: Arc::new(ArtifactBacking::Buffer(bytes)),
+        }
+    }
+
+    fn map_path(path: &Path) -> Result<Self> {
+        let resolved = std::fs::canonicalize(path).map_err(|error| {
+            FormatError::Io(format!("cannot resolve {}: {error}", path.display()))
+        })?;
+        let file = manifest::open_readonly_nofollow(&resolved).map_err(|error| {
+            FormatError::Io(format!("cannot open {}: {error}", resolved.display()))
+        })?;
+        let metadata = file.metadata().map_err(|error| {
+            FormatError::Io(format!("cannot stat {}: {error}", resolved.display()))
+        })?;
+        if !metadata.is_file() {
+            return Err(FormatError::Invalid(format!(
+                "{} is not a regular file",
+                resolved.display()
+            )));
+        }
+        let map = MappedFile::map(&file).map_err(|error| {
+            FormatError::Io(format!("cannot map {}: {error}", resolved.display()))
+        })?;
+        if map.len() as u64 != metadata.len() {
+            return Err(FormatError::Invalid(format!(
+                "{} changed length while opening",
+                resolved.display()
+            )));
+        }
+        Ok(Self {
+            backing: Arc::new(ArtifactBacking::Map(map)),
+        })
+    }
+}
+
+impl Deref for ArtifactBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match &*self.backing {
+            ArtifactBacking::Buffer(bytes) => bytes,
+            ArtifactBacking::Map(map) => map,
+        }
+    }
+}
+
+impl fmt::Debug for ArtifactBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ArtifactBytes")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
 /// Owned tensor payloads with a shared view of supported model encodings.
 #[derive(Debug, Clone)]
 pub struct PackedTensorReader {
-    bytes: Vec<u8>,
+    bytes: ArtifactBytes,
     metadata: BTreeMap<String, GgufValue>,
     tensors: Vec<GgufTensorInfo>,
     data_start: usize,
@@ -455,10 +530,23 @@ pub type GgufReader = PackedTensorReader;
 impl PackedTensorReader {
     /// Open GGUF or QIF based on its file magic.
     pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
+        Self::open_artifact_bytes(ArtifactBytes::buffer(bytes))
+    }
+
+    /// Map a GGUF or QIF file and parse it without copying the file into a buffer.
+    ///
+    /// Tensor ranges are checked against the mapped length. A file that is
+    /// already truncated returns an error. The mapped file must not shrink
+    /// while the reader is alive.
+    pub fn open_artifact_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_artifact_bytes(ArtifactBytes::map_path(path.as_ref())?)
+    }
+
+    fn open_artifact_bytes(bytes: ArtifactBytes) -> Result<Self> {
         if qif::has_magic(&bytes) {
             qif::open_packed(bytes)
         } else {
-            Self::open(bytes)
+            Self::open_backing(bytes)
         }
     }
 
@@ -540,6 +628,10 @@ impl PackedTensorReader {
     }
 
     pub fn open(bytes: Vec<u8>) -> Result<Self> {
+        Self::open_backing(ArtifactBytes::buffer(bytes))
+    }
+
+    fn open_backing(bytes: ArtifactBytes) -> Result<Self> {
         let mut cursor = Cursor::new(&bytes);
         if cursor.read_exact(4)? != &GGUF_MAGIC[..] {
             return Err(FormatError::Invalid("invalid GGUF magic".to_owned()));
@@ -609,6 +701,22 @@ impl PackedTensorReader {
         }
         let data_start = usize::try_from(align_up(cursor.position() as u64, alignment)?)
             .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
+        for tensor in &tensors {
+            let offset = usize::try_from(tensor.offset).map_err(|_| {
+                FormatError::Invalid("GGUF tensor offset overflows usize".to_owned())
+            })?;
+            let start = data_start.checked_add(offset).ok_or_else(|| {
+                FormatError::Invalid("GGUF tensor offset overflows usize".to_owned())
+            })?;
+            let end = start.checked_add(tensor.size).ok_or_else(|| {
+                FormatError::Invalid("GGUF tensor size overflows usize".to_owned())
+            })?;
+            if end > bytes.len() {
+                return Err(FormatError::Invalid(
+                    "GGUF tensor data is truncated".to_owned(),
+                ));
+            }
+        }
         Ok(Self {
             bytes,
             metadata,
@@ -624,6 +732,10 @@ impl PackedTensorReader {
 
     pub fn file_size_bytes(&self) -> usize {
         self.bytes.len()
+    }
+
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.bytes
     }
 
     pub fn tensors(&self) -> &[GgufTensorInfo] {
@@ -1278,6 +1390,33 @@ mod tests {
             reader.tensor_f32("bf16.weight").unwrap(),
             Tensor::from_f32(vec![2], vec![3.0, 4.0]).unwrap()
         );
+    }
+
+    #[test]
+    fn maps_a_gguf_file_and_rejects_a_truncated_copy() {
+        let mut writer = GgufWriter::new();
+        writer.insert_metadata(
+            "general.architecture",
+            GgufValue::String("qwen3".to_owned()),
+        );
+        writer
+            .add_f32_tensor("token_embd.weight", vec![2], &[1.0, 2.0])
+            .unwrap();
+        let bytes = writer.finish().unwrap();
+        let dir = std::env::temp_dir().join(format!("quantinfer-mmap-gguf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, &bytes).unwrap();
+        let mapped = GgufReader::open_artifact_path(&path).unwrap();
+        let owned = GgufReader::open(bytes.clone()).unwrap();
+        assert_eq!(
+            mapped.tensor_f32("token_embd.weight").unwrap(),
+            owned.tensor_f32("token_embd.weight").unwrap()
+        );
+        let truncated = dir.join("truncated.gguf");
+        std::fs::write(&truncated, &bytes[..bytes.len() - 1]).unwrap();
+        let error = GgufReader::open_artifact_path(&truncated).unwrap_err();
+        assert!(error.to_string().contains("truncated"), "{error}");
     }
 
     #[test]

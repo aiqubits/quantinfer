@@ -37,7 +37,7 @@ pub(crate) fn uses_ggml_dimension_order(metadata: &BTreeMap<String, GgufValue>) 
     }
 }
 
-pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
+pub(crate) fn open_packed(bytes: crate::ArtifactBytes) -> Result<PackedTensorReader> {
     let QifReader {
         manifest,
         metadata,
@@ -491,6 +491,32 @@ mod tests {
         assert_eq!(
             reader.manifest().tensors[1].checksum_sha256.as_deref(),
             Some(sha256_hex(&WEIGHT).as_str()),
+        );
+    }
+
+    #[test]
+    fn maps_a_qif_file_and_rejects_truncation_and_checksum_mismatch() {
+        let bytes = artifact();
+        let dir = std::env::temp_dir().join(format!("quantinfer-mmap-qif-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("model.qif");
+        std::fs::write(&path, &bytes).unwrap();
+        let mapped = PackedTensorReader::open_artifact_path(&path).unwrap();
+        assert_eq!(mapped.tensor_bytes("norm").unwrap(), NORM);
+        assert_eq!(mapped.tensor_bytes("weight").unwrap(), WEIGHT);
+
+        let truncated = dir.join("truncated.qif");
+        std::fs::write(&truncated, &bytes[..bytes.len() - 1]).unwrap();
+        assert!(PackedTensorReader::open_artifact_path(&truncated).is_err());
+
+        let mut damaged = bytes;
+        damaged[PREFIX] ^= 1;
+        let damaged_path = dir.join("damaged.qif");
+        std::fs::write(&damaged_path, damaged).unwrap();
+        let error = PackedTensorReader::open_artifact_path(&damaged_path).unwrap_err();
+        assert!(
+            error.to_string().contains("header checksum mismatch"),
+            "{error}"
         );
     }
 

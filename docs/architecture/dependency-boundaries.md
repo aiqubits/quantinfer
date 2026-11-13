@@ -8,4 +8,4 @@ applications and bindings
   -> hardware backends
 ```
 
-Core crates must not depend on vendor SDKs, HTTP servers, Candle, or WASI-NN. Format crates must expose generic tensor archives and must not depend on model architecture modules. Deployment adapters must remain optional features.
+Core crates must not depend on vendor SDKs, HTTP servers, Candle, or WASI-NN. Format crates must expose generic tensor archives and must not depend on model architecture modules. `quantinfer-map` is a leaf used only by the format crate. Deployment adapters must remain optional features.

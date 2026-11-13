@@ -27,6 +27,7 @@ serde_json = "1"
 half = "2"
 sha2 = "0.10"
 libc = "0.2"
+quantinfer-map = { path = "crates/quantinfer-map", version = "0.1.0" }
 quantinfer = { path = "crates/quantinfer", version = "0.1.0" }
 quantinfer-core = { path = "crates/quantinfer-core", version = "0.1.0" }
 quantinfer-format = { path = "crates/quantinfer-format", version = "0.1.0" }

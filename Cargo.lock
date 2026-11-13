@@ -2047,6 +2047,7 @@ dependencies = [
  "half",
  "libc",
  "quantinfer-core",
+ "quantinfer-map",
  "serde",
  "serde_json",
  "sha2",
@@ -2067,6 +2068,13 @@ name = "quantinfer-kernel"
 version = "0.1.0"
 dependencies = [
  "quantinfer-core",
+]
+
+[[package]]
+name = "quantinfer-map"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
 ]
 
 [[package]]

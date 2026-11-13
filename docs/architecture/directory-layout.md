@@ -8,6 +8,7 @@ This document is the reviewed workspace baseline for QuantInfer.
 - `crates/quantinfer-kernel` defines operator contracts and dispatch.
 - `crates/quantinfer-runtime` owns LLM execution, KV cache, scheduling, and generation.
 - `crates/quantinfer-quant` owns the offline quantization pipeline.
+- `crates/quantinfer-map` maps model files. Only the format crate depends on it.
 - `backends/` contains hardware implementations.
 - `adapters/candle` is optional external-engine interoperability.
 - `targets/wasi-nn` is deployment integration, not the runtime core.

@@ -6,6 +6,8 @@ that verifies the full artifact before returning borrowed tensor bytes.
 
 The converter imports a supported GGUF artifact and preserves its typed
 metadata and quantized weights. CPU generation accepts QIF files directly.
+Opening a QIF or GGUF path maps the file read-only and checks it there.
+Decoding a tensor still copies values into a runtime tensor.
 
 ```sh
 quantinfer-convert from-gguf --input model.gguf --output model.qif

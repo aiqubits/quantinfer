@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use quantinfer_core::Tensor;
-use quantinfer_format::{read_file_nofollow, GgufReader, GgufValue, ModelManifest, ModelPackage};
+use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::ModelSpec;
 use quantinfer_runtime::{
@@ -250,22 +250,17 @@ impl ModelSource {
                     .artifact_path(model_name)
                     .map_err(|error| RuntimeError::InvalidInput(error.to_string()))?;
                 check_file_budget(&model_path, budget)?;
-                let bytes = package.read_verified(model_name).map_err(|error| {
-                    RuntimeError::InvalidInput(format!(
-                        "cannot verify model package tensor file: {error}"
-                    ))
-                })?;
-                GgufReader::open_artifact(bytes).map_err(|error| {
+                package.open_verified_artifact(model_name).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot parse packaged model: {error}"))
                 })
             }
             Self::Gguf(path) => {
                 check_file_budget(path, budget)?;
-                let bytes = read_file_nofollow(path).map_err(|error| {
-                    RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
-                })?;
-                GgufReader::open_artifact(bytes).map_err(|error| {
-                    RuntimeError::InvalidInput(format!("cannot parse model: {error}"))
+                GgufReader::open_artifact_path(path).map_err(|error| {
+                    RuntimeError::InvalidInput(format!(
+                        "cannot parse model {}: {error}",
+                        path.display()
+                    ))
                 })
             }
         }
