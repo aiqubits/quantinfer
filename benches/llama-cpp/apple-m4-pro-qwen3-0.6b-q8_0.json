@@ -1,0 +1,146 @@
+{
+  "model": "qwen3-q8_0.gguf",
+  "gguf_sha256": "3705b0095f97f56e3442616a5d0799a249bc02816e0ed7f7504c74e71795e79d",
+  "cpu_model": "Apple M4 Pro",
+  "cpu_arch": "arm64",
+  "build_profile": "release",
+  "prompt_tokens": 5,
+  "generated_tokens": 8,
+  "max_sequence_length": 64,
+  "llama_cpp_build_commit": "0ec4027a2",
+  "peak_rss_note": "QuantInfer peak RSS is VmHWM on Linux and ru_maxrss on macOS. llama.cpp peak RSS comes from /usr/bin/time.",
+  "runs": [
+    {
+      "threads": 1,
+      "quantinfer": {
+        "model_load_ms": 3074.793,
+        "prefill_ms": 1810.523,
+        "ttft_ms": 1811.012,
+        "decode_ms": 2803.208,
+        "profile_decode_tokens_per_sec": 2.852,
+        "peak_rss_kib": 3380304.0,
+        "kv_cache_bytes": 2981888,
+        "kv_cache_capacity_bytes": 14680064,
+        "generated_token_ids": [
+          3,
+          4,
+          3,
+          4,
+          3,
+          4,
+          3,
+          4
+        ],
+        "profile_decode_matmul_ms": 2788.264,
+        "profile_decode_attention_ms": 6.91,
+        "profile_decode_sampling_ms": 3.658,
+        "profile_decode_other_ms": 4.376
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 113.318317,
+        "decode_tokens_per_sec": 48.248497,
+        "peak_rss_kib": 2300144.0
+      },
+      "decode_ratio_llama_over_quantinfer": 16.917425315568025
+    },
+    {
+      "threads": 2,
+      "quantinfer": {
+        "model_load_ms": 703.454,
+        "prefill_ms": 899.731,
+        "ttft_ms": 900.197,
+        "decode_ms": 1479.621,
+        "profile_decode_tokens_per_sec": 5.408,
+        "peak_rss_kib": 3400464.0,
+        "kv_cache_bytes": 2981888,
+        "kv_cache_capacity_bytes": 14680064,
+        "generated_token_ids": [
+          3,
+          4,
+          3,
+          4,
+          3,
+          4,
+          3,
+          4
+        ],
+        "profile_decode_matmul_ms": 1465.318,
+        "profile_decode_attention_ms": 6.552,
+        "profile_decode_sampling_ms": 3.587,
+        "profile_decode_other_ms": 4.164
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 202.359378,
+        "decode_tokens_per_sec": 83.85173,
+        "peak_rss_kib": 2304832.0
+      },
+      "decode_ratio_llama_over_quantinfer": 15.505127588757396
+    },
+    {
+      "threads": 4,
+      "quantinfer": {
+        "model_load_ms": 702.413,
+        "prefill_ms": 519.138,
+        "ttft_ms": 519.629,
+        "decode_ms": 808.073,
+        "profile_decode_tokens_per_sec": 9.892,
+        "peak_rss_kib": 3400240.0,
+        "kv_cache_bytes": 2981888,
+        "kv_cache_capacity_bytes": 14680064,
+        "generated_token_ids": [
+          3,
+          4,
+          3,
+          4,
+          3,
+          4,
+          3,
+          4
+        ],
+        "profile_decode_matmul_ms": 793.739,
+        "profile_decode_attention_ms": 6.39,
+        "profile_decode_sampling_ms": 3.672,
+        "profile_decode_other_ms": 4.272
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 340.618849,
+        "decode_tokens_per_sec": 139.903139,
+        "peak_rss_kib": 2304864.0
+      },
+      "decode_ratio_llama_over_quantinfer": 14.143058936514358
+    },
+    {
+      "threads": 8,
+      "quantinfer": {
+        "model_load_ms": 741.933,
+        "prefill_ms": 255.397,
+        "ttft_ms": 255.875,
+        "decode_ms": 531.955,
+        "profile_decode_tokens_per_sec": 15.041,
+        "peak_rss_kib": 3400464.0,
+        "kv_cache_bytes": 2981888,
+        "kv_cache_capacity_bytes": 14680064,
+        "generated_token_ids": [
+          3,
+          4,
+          3,
+          4,
+          3,
+          4,
+          3,
+          4
+        ],
+        "profile_decode_matmul_ms": 517.871,
+        "profile_decode_attention_ms": 6.113,
+        "profile_decode_sampling_ms": 3.709,
+        "profile_decode_other_ms": 4.262
+      },
+      "llama_cpp": {
+        "prefill_tokens_per_sec": 423.869284,
+        "decode_tokens_per_sec": 105.160948,
+        "peak_rss_kib": 2300832.0
+      },
+      "decode_ratio_llama_over_quantinfer": 6.9916194401967955
+    }
+  ]
+}

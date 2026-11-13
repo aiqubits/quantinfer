@@ -87,6 +87,23 @@ length, so the remaining single-thread gap of about 21x is inside matmul.
 real-model reports. The llama.cpp Comparison workflow reruns the comparison
 on the pinned artifact.
 
+Qwen3-0.6B uses the manifest revision `c1899de`, converted by
+`quantinfer-convert` to GGML Q8_0 and Q4_0 (`--tokenizer-pre qwen2`), not by
+`llama-quantize`. On the same M4 Pro
+(`llama-cpp/apple-m4-pro-qwen3-0.6b-q8_0.json`,
+`llama-cpp/apple-m4-pro-qwen3-0.6b-q4_0.json`):
+
+| Threads | Q8_0 decode | llama.cpp | Q4_0 decode | llama.cpp |
+| --- | --- | --- | --- | --- |
+| 1 | 2.9 tok/s | 48.2 tok/s | 2.8 tok/s | 50.6 tok/s |
+| 2 | 5.4 tok/s | 83.9 tok/s | 5.3 tok/s | 80.2 tok/s |
+| 4 | 9.9 tok/s | 139.9 tok/s | 8.7 tok/s | 143.0 tok/s |
+| 8 | 15.0 tok/s | 105.2 tok/s | 14.9 tok/s | 181.1 tok/s |
+
+Four threads are 3.47x (Q8_0) and 3.08x (Q4_0) the one-thread rate. Matmul is
+97–99% of the 8-token decode. Token ids match across thread counts inside
+each file. Both reports pass `check-llama-cpp-report.py`.
+
 Model Conformance checks peak RSS against a 10% allowance and verifies exact
 KV cache sizes. On a CPU with a recorded timing baseline, it allows up to 35%
 more prefill, first-token, and decode latency, and requires at least 70% of
@@ -95,7 +112,7 @@ checks memory and publishes the timings.
 
 | Model | Variant | Quality | Performance and memory | llama.cpp comparison |
 | --- | --- | --- | --- | --- |
-| Qwen3-0.6B | F32, Q8_0, Q4_0 | Transformers logits, prompt tokens, generation and EOS | Prefill, decode, peak RSS and KV cache | |
+| Qwen3-0.6B | F32, Q8_0, Q4_0 | Transformers logits, prompt tokens, generation and EOS | Prefill, decode, peak RSS and KV cache | Q8_0 and Q4_0 on M4 Pro |
 | Qwen3-0.6B | Q4_K | Weight and logit error, generation and EOS | | |
 | SmolLM2-135M | F32, Q8_0, Q4_0 | Sampled logits, prompt tokens and generation | Prefill, decode, peak RSS and KV cache | GGML exports |
 | SmolLM2-135M | External F16 | Sampled logits, prompt tokens and generation | | |

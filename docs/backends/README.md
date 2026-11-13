@@ -54,9 +54,10 @@ only when that execution implementation is present.
 The same-machine comparison against llama.cpp (pinned revision, CPU only)
 is recorded under `benches/llama-cpp/`. On an Apple M4 Pro with
 SmolLM2-135M Q8_0, splitting quantized matmul across output columns makes
-four-thread decode about twice the one-thread rate. On an 8-token decode,
-about 98% of the time is matmul and under 1% is attention. The remaining
-gap against llama.cpp is inside matmul. See `benches/README.md`.
+four-thread decode about twice the one-thread rate. Qwen3-0.6B Q8_0 and Q4_0
+on the same machine scale further: four threads are about 3.5x and 3.1x one
+thread. On an 8-token decode, about 97–99% of the time is matmul. The
+remaining gap against llama.cpp is inside matmul. See `benches/README.md`.
 
 ## Verification
 
