@@ -1,6 +1,8 @@
 use std::io::{self, Write};
 
-use minijinja::{context, Environment, Error, ErrorKind, Value};
+use minijinja::{
+    context, syntax::SyntaxConfig, value::Serde, Environment, Error, ErrorKind, Value,
+};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
@@ -28,8 +30,14 @@ impl HuggingFaceChatTemplate {
             )
         })?;
         let mut environment = Environment::new();
-        environment.set_trim_blocks(true);
-        environment.set_lstrip_blocks(true);
+        let syntax = SyntaxConfig::builder()
+            .trim_blocks(true)
+            .lstrip_blocks(true)
+            .build()
+            .map_err(|error| {
+                TokenizerError::InvalidInput(format!("invalid chat template syntax: {error}"))
+            })?;
+        environment.set_syntax(syntax);
         environment
             .set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         environment.add_filter("tojson", python_style_json);
@@ -73,8 +81,8 @@ impl HuggingFaceChatTemplate {
             .get_template(TEMPLATE_NAME)
             .and_then(|template| {
                 template.render(context! {
-                    messages => messages,
-                    tools => tools,
+                    messages => Serde(messages),
+                    tools => Serde(tools),
                     bos_token => self.bos_token.as_str(),
                     eos_token => self.eos_token.as_str(),
                     add_bos_token => options.add_bos_token,
