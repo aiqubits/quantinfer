@@ -59,10 +59,18 @@ pub(crate) fn load_tokenizer_metadata(
             .ok_or_else(|| format!("tokenizer id for {token:?} is not an integer"))?;
         let token_id = usize::try_from(token_id)
             .map_err(|_| format!("tokenizer id for {token:?} overflows usize"))?;
-        if token_id >= tokens.len() || tokens[token_id].is_some() {
+        if token_id >= tokens.len() {
             return Err(format!(
-                "tokenizer vocabulary contains duplicate id {token_id}"
+                "tokenizer vocabulary id {token_id} is out of range"
             ));
+        }
+        if let Some(existing) = &tokens[token_id] {
+            if existing != token {
+                return Err(format!(
+                    "tokenizer vocabulary contains conflicting id {token_id}"
+                ));
+            }
+            continue;
         }
         tokens[token_id] = Some(token.clone());
     }
@@ -85,12 +93,16 @@ pub(crate) fn load_tokenizer_metadata(
                 tokens.resize(token_id + 1, None);
                 token_types.resize(token_id + 1, 1);
             }
-            if tokens[token_id].is_some() {
-                return Err(format!(
-                    "tokenizer vocabulary contains duplicate id {token_id}"
-                ));
+            if let Some(existing) = &tokens[token_id] {
+                if existing != token {
+                    return Err(format!(
+                        "tokenizer vocabulary contains conflicting id {token_id}"
+                    ));
+                }
             }
-            tokens[token_id] = Some(token.to_owned());
+            if tokens[token_id].is_none() {
+                tokens[token_id] = Some(token.to_owned());
+            }
             token_types[token_id] =
                 if added_token.get("special").and_then(Value::as_bool) == Some(true) {
                     3 // GGML control token
