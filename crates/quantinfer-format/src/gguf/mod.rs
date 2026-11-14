@@ -1,6 +1,7 @@
 //! Compatibility format readers and writers.
 
 mod encoding;
+mod layout;
 mod reader;
 mod types;
 mod writer;
@@ -16,6 +17,7 @@ const MAX_GGUF_ARRAY_ITEMS: usize = 1_048_576;
 const MAX_GGUF_TENSOR_RANK: usize = 1024;
 
 pub(crate) use encoding::{encode_value, tensor_byte_size, write_string, Cursor};
+pub use layout::qk_channel;
 pub use reader::{GgufReader, PackedTensorReader};
 pub use types::{FormatError, GgmlType, GgufTensorInfo, GgufValue, GgufWriter};
 pub use writer::GgufSpool;

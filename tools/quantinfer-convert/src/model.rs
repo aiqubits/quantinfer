@@ -2,8 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use quantinfer_format::{GgufValue, GgufWriter};
-use quantinfer_model::llama::ggml_qk_channel;
+use quantinfer_format::{qk_channel, GgufValue, GgufWriter};
 use quantinfer_model::{LlamaConfig, Qwen3Config};
 use serde_json::Value;
 
@@ -109,7 +108,7 @@ impl ConversionModel {
                 let head_dim = config.effective_head_dim();
                 let mut ordered = Vec::with_capacity(values.len());
                 for row in 0..output {
-                    let start = ggml_qk_channel(row, head_dim) * input;
+                    let start = qk_channel(row, head_dim) * input;
                     ordered.extend_from_slice(&values[start..start + input]);
                 }
                 Ok((shape, ordered))

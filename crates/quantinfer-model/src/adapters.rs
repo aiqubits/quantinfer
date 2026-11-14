@@ -1,8 +1,7 @@
 //! Architecture adapters that expose validated semantic model specifications.
 //!
-//! Format-specific tensor names and layout transforms live at the format
-//! boundary (for example in the converter), so this module contains no
-//! GGUF/SafeTensors naming rules.
+//! Serialized tensor names and physical layout transforms live at format
+//! boundaries, so this module contains only architecture semantics.
 
 use crate::{LlamaConfig, ModelSpec, Qwen3Config};
 

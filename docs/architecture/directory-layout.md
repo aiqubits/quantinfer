@@ -16,9 +16,9 @@ first implementation file lands.
 - `crates/quantinfer-kernel` owns operator and backend contracts.
 - `crates/quantinfer-format` owns GGUF, SafeTensors, manifests, and QIF. The
   facade is in `src/lib.rs`; GGUF and SafeTensors are directory modules split
-  by reader, writer/decoder, metadata, and test responsibilities. Manifest
-  schema, package access, and hashing are split under `manifest/`; QIF is in
-  `qif/mod.rs`.
+  by reader, writer/decoder, metadata, physical layout, and test
+  responsibilities. Manifest schema, package access, and hashing are split
+  under `manifest/`; QIF is in `qif/mod.rs`.
 - `crates/quantinfer-model` owns model configuration and semantic adapters.
   `ModelSpec` contains only architecture semantics and a tensor-role map; it
   contains no GGUF, SafeTensors, or other storage names. Format readers and

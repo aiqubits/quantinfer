@@ -3,8 +3,7 @@
 use quantinfer_core::{
     QuantizedTensor, QuantizedTensor4, Tensor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
-use quantinfer_format::{GgmlType, GgufReader};
-use quantinfer_model::llama::ggml_qk_channel;
+use quantinfer_format::{qk_channel, GgmlType, GgufReader};
 use quantinfer_quant::{
     dequantize_q4_0, dequantize_q4_k, dequantize_q5_k, dequantize_q6_k, dequantize_q8_0,
 };
@@ -90,7 +89,7 @@ fn rope_head_dim(name: &str, output: usize, rope_heads: Option<usize>) -> Result
 fn reorder_ggml_rows<T: Clone>(blocks: &[T], row_blocks: usize, dim: usize) -> Vec<T> {
     let mut ordered = blocks.to_vec();
     for (row, values) in blocks.chunks_exact(row_blocks).enumerate() {
-        let start = ggml_qk_channel(row, dim) * row_blocks;
+        let start = qk_channel(row, dim) * row_blocks;
         ordered[start..start + row_blocks].clone_from_slice(values);
     }
     ordered
@@ -111,7 +110,7 @@ pub(crate) fn load_ggml_matrix(
     let mut weights = vec![0.0; source.len()];
     let head_dim = rope_head_dim(name, output, rope_heads)?;
     for (output_index, row) in source.chunks_exact(input).enumerate() {
-        let column = head_dim.map_or(output_index, |dim| ggml_qk_channel(output_index, dim));
+        let column = head_dim.map_or(output_index, |dim| qk_channel(output_index, dim));
         for (input_index, &value) in row.iter().enumerate() {
             weights[input_index * output + column] = value;
         }
