@@ -4,21 +4,15 @@ use std::collections::BTreeSet;
 
 use quantinfer_format::{GgufValue, GgufWriter};
 use quantinfer_model::llama::ggml_qk_channel;
-use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelAdapter, Qwen3Adapter, Qwen3Config};
+use quantinfer_model::{LlamaConfig, Qwen3Config};
 use serde_json::Value;
 
 use crate::common::metadata_u32;
 
 #[derive(Debug)]
 pub(crate) enum ConversionModel {
-    Qwen3 {
-        config: Qwen3Config,
-        adapter: Qwen3Adapter,
-    },
-    Llama {
-        config: LlamaConfig,
-        adapter: LlamaAdapter,
-    },
+    Qwen3 { config: Qwen3Config },
+    Llama { config: LlamaConfig },
 }
 
 impl ConversionModel {
@@ -55,9 +49,7 @@ impl ConversionModel {
                 config
                     .validate()
                     .map_err(|error| format!("invalid Qwen3 config: {error}"))?;
-                let adapter = Qwen3Adapter::new(config.clone(), "qwen3")
-                    .map_err(|error| format!("cannot build Qwen3 model adapter: {error}"))?;
-                Ok(Self::Qwen3 { config, adapter })
+                Ok(Self::Qwen3 { config })
             }
             value if value == "llama" || value == "llama2" || value.contains("llama") => {
                 let config = LlamaConfig::from_json(config_json)
@@ -65,9 +57,7 @@ impl ConversionModel {
                 config
                     .validate()
                     .map_err(|error| format!("invalid Llama config: {error}"))?;
-                let adapter = LlamaAdapter::new(config.clone(), "llama")
-                    .map_err(|error| format!("cannot build Llama model adapter: {error}"))?;
-                Ok(Self::Llama { config, adapter })
+                Ok(Self::Llama { config })
             }
             other => Err(format!(
                 "unsupported model architecture {other}; use qwen3 or llama"
@@ -86,29 +76,6 @@ impl ConversionModel {
         match self {
             Self::Qwen3 { config, .. } => config.vocab_size,
             Self::Llama { config, .. } => config.vocab_size,
-        }
-    }
-
-    pub(crate) fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
-        match self {
-            Self::Qwen3 { adapter, .. } => adapter.canonical_tensor_name(source_name),
-            Self::Llama { adapter, .. } => adapter.canonical_tensor_name(source_name),
-        }
-    }
-
-    pub(crate) fn canonicalize_tensor_layout(
-        &self,
-        canonical_name: &str,
-        shape: &[usize],
-        values: Vec<f32>,
-    ) -> Result<(Vec<usize>, Vec<f32>), String> {
-        match self {
-            Self::Qwen3 { adapter, .. } => {
-                adapter.canonicalize_tensor_layout(canonical_name, shape, values)
-            }
-            Self::Llama { adapter, .. } => {
-                adapter.canonicalize_tensor_layout(canonical_name, shape, values)
-            }
         }
     }
 

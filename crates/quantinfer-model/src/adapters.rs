@@ -1,15 +1,14 @@
+//! Architecture adapters that expose validated semantic model specifications.
+//!
+//! Format-specific tensor names and layout transforms live at the format
+//! boundary (for example in the converter), so this module contains no
+//! GGUF/SafeTensors naming rules.
+
 use crate::{LlamaConfig, ModelSpec, Qwen3Config};
 
 pub trait ModelAdapter {
     fn architecture(&self) -> &'static str;
     fn model_spec(&self) -> &ModelSpec;
-    fn canonical_tensor_name(&self, source_name: &str) -> Option<String>;
-    fn canonicalize_tensor_layout(
-        &self,
-        canonical_name: &str,
-        shape: &[usize],
-        values: Vec<f32>,
-    ) -> Result<(Vec<usize>, Vec<f32>), String>;
 }
 
 #[derive(Debug, Clone)]
@@ -44,19 +43,6 @@ impl ModelAdapter for Qwen3Adapter {
 
     fn model_spec(&self) -> &ModelSpec {
         &self.spec
-    }
-
-    fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
-        canonical_dense_tensor_name(source_name)
-    }
-
-    fn canonicalize_tensor_layout(
-        &self,
-        canonical_name: &str,
-        shape: &[usize],
-        values: Vec<f32>,
-    ) -> Result<(Vec<usize>, Vec<f32>), String> {
-        canonicalize_layout(canonical_name, shape, values)
     }
 }
 
@@ -93,102 +79,6 @@ impl ModelAdapter for LlamaAdapter {
     fn model_spec(&self) -> &ModelSpec {
         &self.spec
     }
-
-    fn canonical_tensor_name(&self, source_name: &str) -> Option<String> {
-        canonical_dense_tensor_name(source_name)
-    }
-
-    fn canonicalize_tensor_layout(
-        &self,
-        canonical_name: &str,
-        shape: &[usize],
-        values: Vec<f32>,
-    ) -> Result<(Vec<usize>, Vec<f32>), String> {
-        canonicalize_layout(canonical_name, shape, values)
-    }
-}
-
-/// Map a Hugging Face Llama or Qwen3 weight name to its canonical tensor name.
-pub fn canonical_dense_tensor_name(name: &str) -> Option<String> {
-    let parts: Vec<&str> = name.split('.').collect();
-    match parts.as_slice() {
-        ["model", "embed_tokens", "weight"] | ["model", "token_embeddings", "weight"] => {
-            Some("token_embd.weight".to_owned())
-        }
-        ["model", "norm", "weight"] => Some("output_norm.weight".to_owned()),
-        ["lm_head", "weight"] => Some("output.weight".to_owned()),
-        ["model", "layers", index, "input_layernorm", "weight"] => {
-            Some(format!("blk.{index}.attn_norm.weight"))
-        }
-        ["model", "layers", index, "self_attn", projection, "weight"] => {
-            let suffix = match *projection {
-                "q_proj" => "attn_q",
-                "q_norm" => "attn_q_norm",
-                "k_proj" => "attn_k",
-                "k_norm" => "attn_k_norm",
-                "v_proj" => "attn_v",
-                "o_proj" => "attn_output",
-                _ => return None,
-            };
-            Some(format!("blk.{index}.{suffix}.weight"))
-        }
-        ["model", "layers", index, "post_attention_layernorm", "weight"] => {
-            Some(format!("blk.{index}.ffn_norm.weight"))
-        }
-        ["model", "layers", index, "mlp", projection, "weight"] => {
-            let suffix = match *projection {
-                "gate_proj" => "ffn_gate",
-                "up_proj" => "ffn_up",
-                "down_proj" => "ffn_down",
-                _ => return None,
-            };
-            Some(format!("blk.{index}.{suffix}.weight"))
-        }
-        _ => None,
-    }
-}
-
-fn canonicalize_layout(
-    name: &str,
-    shape: &[usize],
-    values: Vec<f32>,
-) -> Result<(Vec<usize>, Vec<f32>), String> {
-    if !is_matrix_weight(name) {
-        return Ok((shape.to_vec(), values));
-    }
-    if shape.len() != 2 {
-        return Err(format!("linear tensor {name} must be rank 2"));
-    }
-    let rows = shape[0];
-    let columns = shape[1];
-    let elements = rows
-        .checked_mul(columns)
-        .ok_or_else(|| format!("linear tensor {name} shape overflows usize"))?;
-    if values.len() != elements {
-        return Err(format!("linear tensor {name} shape does not match data"));
-    }
-    let mut transposed = vec![0.0; values.len()];
-    for row in 0..rows {
-        for column in 0..columns {
-            transposed[column * rows + row] = values[row * columns + column];
-        }
-    }
-    Ok((vec![columns, rows], transposed))
-}
-
-fn is_matrix_weight(name: &str) -> bool {
-    name == "output.weight"
-        || [
-            "attn_q.weight",
-            "attn_k.weight",
-            "attn_v.weight",
-            "attn_output.weight",
-            "ffn_gate.weight",
-            "ffn_up.weight",
-            "ffn_down.weight",
-        ]
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
 }
 
 #[cfg(test)]
@@ -197,7 +87,7 @@ mod tests {
     use crate::Qwen3Config;
 
     #[test]
-    fn keeps_format_names_out_of_runtime_semantics() {
+    fn adapters_expose_semantics_without_format_names() {
         let config = Qwen3Config {
             vocab_size: 32,
             hidden_size: 16,
@@ -219,14 +109,9 @@ mod tests {
         let adapter = Qwen3Adapter::new(config, "fixture").unwrap();
         assert_eq!(adapter.architecture(), "qwen3");
         assert_eq!(adapter.model_spec().architecture, "qwen3");
-        assert_eq!(
-            adapter.canonical_tensor_name("model.layers.0.self_attn.q_proj.weight"),
-            Some("blk.0.attn_q.weight".to_owned())
-        );
-        let (shape, values) = adapter
-            .canonicalize_tensor_layout("blk.0.attn_q.weight", &[2, 3], vec![1.0; 6])
-            .unwrap();
-        assert_eq!(shape, vec![3, 2]);
-        assert_eq!(values, vec![1.0; 6]);
+        assert!(adapter
+            .model_spec()
+            .tensor(crate::TensorRole::QueryProjection, Some(0))
+            .is_some());
     }
 }

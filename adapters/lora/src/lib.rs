@@ -7,8 +7,10 @@ use std::path::Path;
 
 use quantinfer_core::Tensor;
 use quantinfer_format::{read_file_nofollow, SafeTensorFile};
-use quantinfer_model::{canonical_dense_tensor_name, ModelSpec, TensorRole};
-use quantinfer_runtime::{LoraAdapter, LoraProjection};
+use quantinfer_model::{ModelSpec, TensorRole};
+use quantinfer_runtime::{
+    canonical_dense_tensor_name, dense_storage_name, LoraAdapter, LoraProjection,
+};
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -154,18 +156,21 @@ fn projection_target(
             [spec.hidden_size, spec.vocabulary.size],
         ));
     }
-    let storage = spec
-        .storage_map
+    let (role, layer, tensor) = spec
+        .tensor_map
         .iter()
-        .find(|tensor| tensor.name == name)
-        .ok_or_else(|| format!("PEFT LoRA target {module} is absent from the model"))?;
-    let tensor = spec
-        .tensor(storage.role, storage.layer)
+        .find_map(|tensor| {
+            (dense_storage_name(tensor.role, tensor.layer) == name).then_some((
+                tensor.role,
+                tensor.layer,
+                tensor,
+            ))
+        })
         .ok_or_else(|| format!("PEFT LoRA target {module} is absent from the model"))?;
     let [input, output] = *tensor.logical_shape.dims() else {
         return Err(format!("PEFT LoRA target {module} must be a matrix"));
     };
-    Ok((tensor.role, tensor.layer, [input, output]))
+    Ok((role, layer, [input, output]))
 }
 
 fn factor_tensor(

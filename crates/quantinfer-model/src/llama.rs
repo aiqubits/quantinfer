@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::semantic::{
-    dense_storage_map, ActivationKind, AttentionSpec, EmbeddingSpec, LayerSpec, ModelSpec,
-    NormalizationKind, NormalizationSpec, PositionalEncodingSpec, TensorRole, TensorSemantic,
-    VocabularySpec,
+    ActivationKind, AttentionSpec, EmbeddingSpec, LayerSpec, ModelSpec, NormalizationKind,
+    NormalizationSpec, PositionalEncodingSpec, TensorRole, TensorSemantic, VocabularySpec,
 };
 use quantinfer_core::Shape;
 
@@ -211,7 +210,6 @@ impl LlamaConfig {
                 ),
             ]);
         }
-        let storage_map = dense_storage_map(&tensor_map);
         let spec = ModelSpec {
             model_id: model_id.into(),
             architecture: "llama".to_owned(),
@@ -232,7 +230,6 @@ impl LlamaConfig {
             },
             final_normalization: normalization,
             tensor_map,
-            storage_map,
         };
         spec.validate()?;
         Ok(spec)

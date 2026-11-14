@@ -7,7 +7,7 @@ use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
 use quantinfer::model::TensorRole;
 use quantinfer::quant::ImatrixStatistics;
 use quantinfer_core::Tensor;
-use quantinfer_runtime::{Result as RuntimeResult, RuntimeError};
+use quantinfer_runtime::{dense_storage_name, Result as RuntimeResult, RuntimeError};
 use quantinfer_tokenizer::Tokenizer;
 
 use crate::commands::common::option_value;
@@ -52,13 +52,13 @@ pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
             "--max-sequence-length must be between 1 and {maximum}"
         ));
     }
-    let mut groups = BTreeMap::<Vec<&str>, ImatrixStatistics>::new();
+    let mut groups = BTreeMap::<Vec<String>, ImatrixStatistics>::new();
     let mut observer = |layer, roles: &[TensorRole], activations: &Tensor| -> RuntimeResult<()> {
         let names = roles
             .iter()
             .map(|&role| {
-                spec.storage_tensor(role, Some(layer))
-                    .map(|tensor| tensor.name.as_str())
+                spec.tensor(role, Some(layer))
+                    .map(|_| dense_storage_name(role, Some(layer)))
                     .ok_or_else(|| {
                         calibration_error(format!("layer {layer} has no {role:?} tensor"))
                     })
@@ -132,7 +132,7 @@ pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn write_calibration(path: &Path, weights: &BTreeMap<&str, Vec<f32>>) -> Result<(), String> {
+fn write_calibration(path: &Path, weights: &BTreeMap<String, Vec<f32>>) -> Result<(), String> {
     let parent = path
         .parent()
         .filter(|path| !path.as_os_str().is_empty())

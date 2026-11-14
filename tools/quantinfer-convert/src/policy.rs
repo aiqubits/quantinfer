@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::common::is_quantizable_linear;
 use quantinfer_core::QuantizationScheme;
+use quantinfer_format::{is_embedding_storage_name, is_lm_head_storage_name};
 use quantinfer_quant::{MixedPrecisionPlan, NativeQ8_0Provider, QuantizationProvider};
 
 pub(crate) fn q8_provider(use_ggml: bool) -> Result<&'static dyn QuantizationProvider, String> {
@@ -76,7 +77,9 @@ pub(crate) struct MixedPrecisionPolicy {
 
 impl MixedPrecisionPolicy {
     pub(crate) fn scheme_for(&self, name: &str) -> Option<QuantizationScheme> {
-        if self.preserve_output && matches!(name, "token_embd.weight" | "output.weight") {
+        if self.preserve_output
+            && (is_embedding_storage_name(name) || is_lm_head_storage_name(name))
+        {
             return None;
         }
         if name.ends_with("attn_q.weight")

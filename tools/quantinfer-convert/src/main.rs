@@ -29,7 +29,7 @@ mod tests {
     use super::common::load_imatrix;
     use super::model::ConversionModel;
     use super::tokenizer::load_tokenizer_metadata;
-    use quantinfer_format::{GgufValue, GgufWriter};
+    use quantinfer_format::{canonical_dense_tensor_name, GgufValue, GgufWriter};
 
     #[test]
     fn reads_dense_llama_imatrix_and_normalizes_observations() {
@@ -110,7 +110,7 @@ mod tests {
         assert_eq!(model.architecture(), "llama");
         assert_eq!(model.vocab_size(), 32);
         assert_eq!(
-            model.canonical_tensor_name("model.layers.0.self_attn.q_proj.weight"),
+            canonical_dense_tensor_name("model.layers.0.self_attn.q_proj.weight"),
             Some("blk.0.attn_q.weight".to_owned())
         );
         let names = [

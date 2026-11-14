@@ -87,13 +87,6 @@ pub struct TensorSemantic {
     pub logical_shape: Shape,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TensorStorageMap {
-    pub role: TensorRole,
-    pub layer: Option<usize>,
-    pub name: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSpec {
     pub model_id: String,
@@ -107,7 +100,6 @@ pub struct ModelSpec {
     pub embedding: EmbeddingSpec,
     pub final_normalization: NormalizationSpec,
     pub tensor_map: Vec<TensorSemantic>,
-    pub storage_map: Vec<TensorStorageMap>,
 }
 
 impl ModelSpec {
@@ -145,25 +137,6 @@ impl ModelSpec {
         }) {
             return Err("model tensor semantic roles must be unique and non-empty".to_owned());
         }
-        let mut storage_keys = std::collections::BTreeSet::new();
-        let mut storage_names = std::collections::BTreeSet::new();
-        if self.storage_map.iter().any(|storage| {
-            storage.name.is_empty()
-                || !storage_keys.insert((storage.role, storage.layer))
-                || !storage_names.insert(storage.name.as_str())
-        }) {
-            return Err("model tensor storage mappings must be unique and non-empty".to_owned());
-        }
-        if self.storage_map.len() != self.tensor_map.len()
-            || self.tensor_map.iter().any(|tensor| {
-                !self
-                    .storage_map
-                    .iter()
-                    .any(|storage| storage.role == tensor.role && storage.layer == tensor.layer)
-            })
-        {
-            return Err("model tensor semantics and storage map are inconsistent".to_owned());
-        }
         Ok(())
     }
 
@@ -172,49 +145,6 @@ impl ModelSpec {
             .iter()
             .find(|tensor| tensor.role == role && tensor.layer == layer)
     }
-
-    pub fn storage_tensor(
-        &self,
-        role: TensorRole,
-        layer: Option<usize>,
-    ) -> Option<&TensorStorageMap> {
-        self.storage_map
-            .iter()
-            .find(|tensor| tensor.role == role && tensor.layer == layer)
-    }
-}
-
-pub(crate) fn dense_storage_map(tensor_map: &[TensorSemantic]) -> Vec<TensorStorageMap> {
-    tensor_map
-        .iter()
-        .map(|tensor| {
-            let suffix = match tensor.role {
-                TensorRole::TokenEmbedding => "token_embd",
-                TensorRole::FinalNormalization => "output_norm",
-                TensorRole::LmHead => "output",
-                TensorRole::InputNormalization => "attn_norm",
-                TensorRole::QueryProjection => "attn_q",
-                TensorRole::QueryNormalization => "attn_q_norm",
-                TensorRole::KeyProjection => "attn_k",
-                TensorRole::KeyNormalization => "attn_k_norm",
-                TensorRole::ValueProjection => "attn_v",
-                TensorRole::OutputProjection => "attn_output",
-                TensorRole::PostAttentionNormalization => "ffn_norm",
-                TensorRole::GateProjection => "ffn_gate",
-                TensorRole::UpProjection => "ffn_up",
-                TensorRole::DownProjection => "ffn_down",
-            };
-            let name = match tensor.layer {
-                Some(layer) => format!("blk.{layer}.{suffix}.weight"),
-                None => format!("{suffix}.weight"),
-            };
-            TensorStorageMap {
-                role: tensor.role,
-                layer: tensor.layer,
-                name,
-            }
-        })
-        .collect()
 }
 
 impl super::Qwen3Config {
@@ -326,7 +256,6 @@ impl super::Qwen3Config {
                 ),
             ]);
         }
-        let storage_map = dense_storage_map(&tensor_map);
         let spec = ModelSpec {
             model_id: model_id.into(),
             architecture: "qwen3".to_owned(),
@@ -347,7 +276,6 @@ impl super::Qwen3Config {
             },
             final_normalization: normalization,
             tensor_map,
-            storage_map,
         };
         spec.validate()?;
         Ok(spec)
@@ -382,11 +310,6 @@ mod tests {
         let spec = config.to_model_spec("fixture").unwrap();
         assert_eq!(spec.layers.len(), 2);
         assert!(spec.tensor(TensorRole::QueryProjection, Some(1)).is_some());
-        assert_eq!(
-            spec.storage_tensor(TensorRole::QueryProjection, Some(1))
-                .map(|tensor| tensor.name.as_str()),
-            Some("blk.1.attn_q.weight")
-        );
         assert!(spec.tensor(TensorRole::LmHead, None).is_none());
         spec.validate().unwrap();
         let encoded = serde_json::to_string(&spec).unwrap();
@@ -395,7 +318,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_semantic_or_storage_roles() {
+    fn rejects_duplicate_semantic_roles() {
         let config = Qwen3Config {
             vocab_size: 32,
             hidden_size: 16,
@@ -416,7 +339,6 @@ mod tests {
         };
         let mut spec = config.to_model_spec("fixture").unwrap();
         spec.tensor_map.push(spec.tensor_map[0].clone());
-        spec.storage_map.push(spec.storage_map[0].clone());
         assert!(spec.validate().is_err());
     }
 }

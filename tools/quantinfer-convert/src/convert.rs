@@ -12,8 +12,9 @@ use quantinfer_core::{
     QuantizationAxis, QuantizationScheme, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::{
-    qif::import_gguf, sha256_hex, sha256_reader, ExecutionVariant, GgufReader, GgufSpool,
-    GgufValue, GgufWriter, ModelManifest, TensorManifest,
+    canonical_dense_tensor_name, is_embedding_storage_name, qif::import_gguf, sha256_hex,
+    sha256_reader, transpose_dense_layout, ExecutionVariant, GgufReader, GgufSpool, GgufValue,
+    GgufWriter, ModelManifest, TensorManifest,
 };
 use quantinfer_quant::{
     FloatProvider, ImatrixQ4_0Provider, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
@@ -249,7 +250,7 @@ pub(crate) fn run() -> Result<(), String> {
         let values = weights
             .tensor_f32(&name)
             .map_err(|error| format!("cannot decode tensor {name}: {error}"))?;
-        let canonical_name = model.canonical_tensor_name(&name);
+        let canonical_name = canonical_dense_tensor_name(&name);
         if ggml_layout && canonical_name.is_none() {
             return Err(format!("unsupported source tensor {name} for GGML export"));
         }
@@ -262,7 +263,7 @@ pub(crate) fn run() -> Result<(), String> {
         let (shape, values) = if ggml_layout {
             model.ggml_tensor_layout(output_name, &shape, values)?
         } else {
-            model.canonicalize_tensor_layout(output_name, &shape, values)?
+            transpose_dense_layout(output_name, &shape, values)?
         };
         let quantizable_width = if ggml_layout {
             shape.first().copied().unwrap_or(0)
@@ -338,7 +339,7 @@ pub(crate) fn run() -> Result<(), String> {
             .storage_descriptor(Shape::from(shape.clone()))
             .map_err(|error| format!("cannot describe tensor {name}: {error}"))?;
         if ggml_layout && shape.len() == 2 {
-            if output_name == "token_embd.weight" {
+            if is_embedding_storage_name(output_name) {
                 descriptor.logical_shape = Shape::from(vec![shape[1], shape[0]]);
             } else {
                 descriptor.physical_layout = GGML_OUTPUT_ROWS_LAYOUT.to_owned();

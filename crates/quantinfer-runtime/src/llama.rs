@@ -1,12 +1,13 @@
 use quantinfer_core::{DType, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelSpec, TensorRole};
+use quantinfer_model::{LlamaConfig, ModelSpec, TensorRole};
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
 use crate::ggml::{load_ggml_as_float, load_ggml_linear, load_ggml_matrix};
 use crate::linear::{add, load_linear, transpose_matrix, LinearWeight};
+use crate::storage::dense_storage_name;
 use crate::{DecodeBatchItem, KvCache, LoraAdapter, LoraProjection, Result, RuntimeError};
 
 #[derive(Debug, Clone)]
@@ -354,14 +355,14 @@ impl<B: KernelBackend> LlamaModel<B> {
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         let ggml_layout = uses_ggml_layout(reader)?;
         let config = config_from_gguf(reader, ggml_layout)?;
-        let adapter =
-            LlamaAdapter::from_config(config.clone()).map_err(RuntimeError::InvalidInput)?;
-        let spec = adapter.spec();
-        let embedding_name = crate::tensor_source(spec, TensorRole::TokenEmbedding, None)?;
+        let spec = config
+            .to_model_spec("llama")
+            .map_err(RuntimeError::InvalidInput)?;
+        let embedding_name = crate::tensor_source(&spec, TensorRole::TokenEmbedding, None)?;
         let mut embedding = if ggml_layout {
-            load_ggml_as_float(reader, embedding_name)?
+            load_ggml_as_float(reader, &embedding_name)?
         } else {
-            reader.tensor_f32(embedding_name)?
+            reader.tensor_f32(&embedding_name)?
         };
         if ggml_layout {
             expect_shape(
@@ -371,12 +372,9 @@ impl<B: KernelBackend> LlamaModel<B> {
             )?;
             embedding = embedding.reshape(spec.embedding.shape.clone())?;
         }
-        let final_norm = reader.tensor_f32(crate::tensor_source(
-            spec,
-            TensorRole::FinalNormalization,
-            None,
-        )?)?;
-        let head_name = crate::lm_head_source(&adapter)?;
+        let final_norm_name = crate::tensor_source(&spec, TensorRole::FinalNormalization, None)?;
+        let final_norm = reader.tensor_f32(&final_norm_name)?;
+        let head_name = crate::lm_head_source(&spec)?;
         let lm_head = match reader.tensor_info(&head_name) {
             Ok(_) if ggml_layout => load_ggml_matrix(reader, &head_name, None)?,
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
@@ -392,19 +390,19 @@ impl<B: KernelBackend> LlamaModel<B> {
         };
         let mut layers = Vec::with_capacity(spec.layers.len());
         for layer in &spec.layers {
-            let name = |role| crate::tensor_source(spec, role, Some(layer.index));
-            let float = |role| Ok::<_, RuntimeError>(reader.tensor_f32(name(role)?)?);
+            let name = |role| crate::tensor_source(&spec, role, Some(layer.index));
+            let float = |role| Ok::<_, RuntimeError>(reader.tensor_f32(&name(role)?)?);
             let linear = |role| {
                 let name = name(role)?;
                 if !ggml_layout {
-                    return load_linear(reader, name);
+                    return load_linear(reader, &name);
                 }
                 let heads = match role {
                     TensorRole::QueryProjection => Some(config.num_attention_heads),
                     TensorRole::KeyProjection => Some(config.num_key_value_heads()),
                     _ => None,
                 };
-                load_ggml_linear(reader, name, heads)
+                load_ggml_linear(reader, &name, heads)
             };
             layers.push(LlamaLayerWeights {
                 input_layernorm: float(TensorRole::InputNormalization)?,
@@ -427,7 +425,8 @@ pub fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
 }
 
 fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfig> {
-    let embedding = reader.tensor_info("token_embd.weight")?;
+    let embedding_name = dense_storage_name(TensorRole::TokenEmbedding, None);
+    let embedding = reader.tensor_info(&embedding_name)?;
     let (hidden_axis, vocab_axis) = if ggml_layout { (0, 1) } else { (1, 0) };
     let vocab_size = metadata_usize(reader, "llama.vocab_size")?
         .unwrap_or_else(|| embedding.shape.get(vocab_axis).copied().unwrap_or_default());
@@ -443,7 +442,7 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfi
     let num_key_value_heads = metadata_usize(reader, "llama.attention.head_count_kv")?;
     let intermediate_size = metadata_usize(reader, "llama.feed_forward_length")?.or_else(|| {
         reader
-            .tensor_info("blk.0.ffn_gate.weight")
+            .tensor_info(&dense_storage_name(TensorRole::GateProjection, Some(0)))
             .ok()
             .and_then(|info| info.shape.get(1).copied())
     });
@@ -458,8 +457,9 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfi
     let rms_norm_eps =
         metadata_f32(reader, "llama.attention.layer_norm_rms_epsilon")?.unwrap_or(1e-5);
     let rope_theta = metadata_f32(reader, "llama.rope.freq_base")?.unwrap_or(10_000.0);
+    let lm_head_name = dense_storage_name(TensorRole::LmHead, None);
     let tie_word_embeddings = metadata_bool(reader, "llama.tie_word_embeddings")?
-        .unwrap_or_else(|| ggml_layout && reader.tensor_info("output.weight").is_err());
+        .unwrap_or_else(|| ggml_layout && reader.tensor_info(&lm_head_name).is_err());
     let config = LlamaConfig {
         vocab_size,
         hidden_size,

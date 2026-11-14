@@ -16,19 +16,25 @@ first implementation file lands.
 - `crates/quantinfer-kernel` owns operator and backend contracts.
 - `crates/quantinfer-format` owns GGUF, SafeTensors, manifests, and QIF. The
   facade is in `src/lib.rs`; GGUF and SafeTensors are directory modules split
-  by reader, writer/decoder, metadata, and test responsibilities. Manifests
-  remain in `manifest.rs`, and QIF is in `qif/mod.rs`.
+  by reader, writer/decoder, metadata, and test responsibilities. Manifest
+  schema, package access, and hashing are split under `manifest/`; QIF is in
+  `qif/mod.rs`.
 - `crates/quantinfer-model` owns model configuration and semantic adapters.
-  `ModelSpec` keeps architecture semantics separate from its storage-name map;
-  format readers do not define model roles.
+  `ModelSpec` contains only architecture semantics and a tensor-role map; it
+  contains no GGUF, SafeTensors, or other storage names. Format readers and
+  conversion boundaries resolve storage names after the semantic model is
+  built.
 - `crates/quantinfer-quant` owns offline quantization. Its public facade
   delegates to `types.rs`, `schemes.rs`, `providers.rs`, and
   `imatrix.rs`.
 - `crates/quantinfer-runtime` owns model execution, batching, scheduling,
   sessions, KV state, profiles, and generation. Shared linear, GGML-layout,
-  and attention helpers live in `linear.rs`, `ggml.rs`, and `attention.rs`;
+  attention, and format-storage helpers live in `linear.rs`, `ggml.rs`,
+  `attention.rs`, and `storage.rs`; execution contracts, errors, cache,
+  generation, and model lookup helpers are split into their own modules.
   Llama and Qwen3 execution remain separate modules.
-- `crates/quantinfer-tokenizer` owns tokenizer boundaries and chat templates.
+- `crates/quantinfer-tokenizer` owns tokenizer boundaries and chat templates;
+  BPE, byte-level, Qwen chat, shared types, and tests are separate modules.
 
 ## Applications and integrations
 
@@ -47,6 +53,9 @@ first implementation file lands.
   runtime dependencies. `quantinfer-convert` is split into source loading,
   model adapters, quantization policy, tokenizer metadata, conversion
   orchestration, and shared parsing helpers.
+- `backends/cpu` keeps the safe scalar backend split into configuration,
+  operator implementations, matmul helpers, and tests; optional SIMD code
+  remains in `backends/cpu-simd`.
 
 ## Non-code artifacts
 

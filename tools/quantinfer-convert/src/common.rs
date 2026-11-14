@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use quantinfer_format::{GgufReader, GgufValue};
+use quantinfer_format::{is_linear_projection_storage_name, GgufReader, GgufValue};
 
 pub(crate) fn load_checksums(path: &Path) -> Result<BTreeMap<String, String>, String> {
     let content = fs::read_to_string(path)
@@ -60,17 +60,7 @@ pub(crate) fn metadata_u32(value: usize, name: &str) -> Result<u32, String> {
 }
 
 pub(crate) fn is_quantizable_linear(name: &str) -> bool {
-    [
-        "attn_q.weight",
-        "attn_k.weight",
-        "attn_v.weight",
-        "attn_output.weight",
-        "ffn_gate.weight",
-        "ffn_up.weight",
-        "ffn_down.weight",
-    ]
-    .iter()
-    .any(|suffix| name.ends_with(suffix))
+    is_linear_projection_storage_name(name)
 }
 
 pub(crate) fn load_imatrix(bytes: Vec<u8>) -> Result<BTreeMap<String, Vec<f32>>, String> {
