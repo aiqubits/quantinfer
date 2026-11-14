@@ -49,7 +49,9 @@ mod tests {
     #[test]
     #[cfg(feature = "ggml")]
     fn selects_the_external_q8_provider_explicitly() {
-        use super::{q8_provider, QuantizedData, Tensor};
+        use super::policy::q8_provider;
+        use quantinfer_core::Tensor;
+        use quantinfer_quant::QuantizedData;
 
         let zeros = Tensor::from_f32(vec![32], vec![0.0; 32]).unwrap();
         for (use_ggml, expected_scale) in [(false, 1.0), (true, 0.0)] {
