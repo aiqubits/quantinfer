@@ -10,7 +10,7 @@ use quantinfer_core::Tensor;
 use quantinfer_runtime::{Result as RuntimeResult, RuntimeError};
 use quantinfer_tokenizer::Tokenizer;
 
-use crate::option_value;
+use crate::commands::common::option_value;
 
 pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
     let path = |flag| {
