@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 
 use quantinfer_core::{QuantizationAxis, QuantizationScheme, Shape, Tensor};
 use quantinfer_format::{
-    canonical_dense_tensor_name, is_embedding_storage_name, qif::import_gguf, sha256_hex,
-    sha256_reader, transpose_dense_layout, ExecutionVariant, GgufReader, GgufSpool, GgufValue,
-    GgufWriter, ModelManifest, TensorManifest, GGML_OUTPUT_ROWS_LAYOUT,
+    canonical_dense_tensor_name, is_embedding_storage_name, sha256_hex, sha256_reader,
+    transpose_dense_layout, ExecutionVariant, GgufSpool, GgufValue, GgufWriter, ModelManifest,
+    TensorManifest, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_quant::{
     FloatProvider, ImatrixQ4_0Provider, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
@@ -20,16 +20,16 @@ use quantinfer_quant::{
 };
 use serde_json::Value;
 
-use super::common::{
+use crate::common::{
     is_quantizable_linear, load_imatrix, metadata_u32, optional_value, required_path,
 };
-use super::model::ConversionModel;
-use super::policy::{
+use crate::model::ConversionModel;
+use crate::policy::{
     load_mixed_precision, load_mixed_precision_policy, parse_quantization, q8_provider,
 };
-use super::source::WeightSource;
-use super::tokenizer::load_tokenizer_metadata;
 use crate::print_help;
+use crate::source::WeightSource;
+use crate::tokenizer::load_tokenizer_metadata;
 
 pub(crate) fn run() -> Result<(), String> {
     let arguments: Vec<String> = env::args().skip(1).collect();
@@ -44,7 +44,7 @@ pub(crate) fn run() -> Result<(), String> {
         .first()
         .is_some_and(|argument| argument == "from-gguf")
     {
-        return convert_qif(&arguments[1..]);
+        return super::qif::convert_qif(&arguments[1..]);
     }
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
@@ -470,31 +470,5 @@ pub(crate) fn run() -> Result<(), String> {
         weights.tensor_count(),
         output_path.display()
     );
-    Ok(())
-}
-
-pub(crate) fn convert_qif(arguments: &[String]) -> Result<(), String> {
-    let input = required_path(arguments, "--input")?;
-    let output = required_path(arguments, "--output")?;
-    let model_id = optional_value(arguments, "--model-id").unwrap_or_else(|| {
-        input
-            .file_stem()
-            .unwrap_or(input.as_os_str())
-            .to_string_lossy()
-            .into_owned()
-    });
-    let bytes =
-        fs::read(&input).map_err(|error| format!("cannot read {}: {error}", input.display()))?;
-    let reader = GgufReader::open(bytes).map_err(|error| error.to_string())?;
-    let directory = output
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)
-        .map_err(|error| format!("cannot prepare {}: {error}", output.display()))?;
-    import_gguf(&reader, model_id, temporary.as_file_mut()).map_err(|error| error.to_string())?;
-    temporary
-        .persist_noclobber(&output)
-        .map_err(|error| format!("cannot publish {}: {error}", output.display()))?;
     Ok(())
 }

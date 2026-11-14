@@ -53,7 +53,9 @@ first implementation file lands.
 - `tools/` contains conversion and repository-task executables; they are not
   runtime dependencies. `quantinfer-convert` is split into source loading,
   model adapters, quantization policy, tokenizer metadata, conversion
-  orchestration, and shared parsing helpers.
+  orchestration, QIF transcoding, and shared parsing helpers. The two
+  conversion workflows live in separate `convert/gguf.rs` and `convert/qif.rs`
+  modules.
 - `backends/cpu` keeps the safe scalar backend split into configuration,
   operator implementations, matmul helpers, and tests; optional SIMD code
   remains in `backends/cpu-simd`.
