@@ -1,8 +1,6 @@
 //! CPU ISA, runtime configuration, and shared tensor validation.
 
 use quantinfer_core::Tensor;
-#[cfg(feature = "simd")]
-use quantinfer_core::{Q4_0Block, Q8_0Block};
 use quantinfer_kernel::{KernelError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +23,7 @@ impl CpuIsa {
     }
 
     #[cfg(feature = "simd")]
-    fn scaled_add(self) -> Option<quantinfer_backend_cpu_simd::ScaledAdd> {
+    pub(crate) fn scaled_add(self) -> Option<quantinfer_backend_cpu_simd::ScaledAdd> {
         use quantinfer_backend_cpu_simd::{ScaledAdd, SimdIsa};
 
         let isa = match self {
@@ -38,7 +36,7 @@ impl CpuIsa {
     }
 
     #[cfg(feature = "simd")]
-    fn quantized_dot(self) -> Option<quantinfer_backend_cpu_simd::QuantizedDot> {
+    pub(crate) fn quantized_dot(self) -> Option<quantinfer_backend_cpu_simd::QuantizedDot> {
         use quantinfer_backend_cpu_simd::{QuantizedDot, SimdIsa};
 
         let isa = match self {
