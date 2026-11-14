@@ -1,7 +1,7 @@
 use quantinfer_core::{DType, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::{ModelSpec, Qwen3Config, TensorRole};
+use quantinfer_model::{ModelSpec, Qwen3Adapter, Qwen3Config, TensorRole};
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
@@ -202,9 +202,12 @@ pub struct Qwen3Model<B> {
 
 impl<B: KernelBackend> Qwen3Model<B> {
     pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
-        config_from_gguf(reader, reader.uses_ggml_output_rows()?)?
-            .to_model_spec("qwen3")
-            .map_err(RuntimeError::InvalidInput)
+        Qwen3Adapter::new(
+            config_from_gguf(reader, reader.uses_ggml_output_rows()?)?,
+            "qwen3",
+        )
+        .map(|adapter| adapter.spec().clone())
+        .map_err(RuntimeError::InvalidInput)
     }
 
     pub fn new(
@@ -369,10 +372,10 @@ impl<B: KernelBackend> Qwen3Model<B> {
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         let ggml_layout = reader.uses_ggml_output_rows()?;
-        let config = config_from_gguf(reader, ggml_layout)?;
-        let spec = config
-            .to_model_spec("qwen3")
+        let adapter = Qwen3Adapter::new(config_from_gguf(reader, ggml_layout)?, "qwen3")
             .map_err(RuntimeError::InvalidInput)?;
+        let config = adapter.config().clone();
+        let spec = adapter.spec().clone();
         let embedding_name = crate::tensor_source(&spec, TensorRole::TokenEmbedding, None)?;
         let embedding = if ggml_layout {
             let embedding = load_ggml_as_float(reader, &embedding_name)?;

@@ -197,61 +197,45 @@ impl super::Qwen3Config {
             });
         }
         for index in 0..self.num_hidden_layers {
-            let add = |role, _suffix, shape: Vec<usize>| TensorSemantic {
+            let add = |role, shape: Vec<usize>| TensorSemantic {
                 role,
                 layer: Some(index),
                 logical_shape: Shape::from(shape),
             };
             tensor_map.extend([
-                add(
-                    TensorRole::InputNormalization,
-                    "attn_norm",
-                    vec![self.hidden_size],
-                ),
+                add(TensorRole::InputNormalization, vec![self.hidden_size]),
                 add(
                     TensorRole::QueryProjection,
-                    "attn_q",
                     vec![self.hidden_size, self.query_projection_size()],
                 ),
-                add(
-                    TensorRole::QueryNormalization,
-                    "attn_q_norm",
-                    vec![head_dim],
-                ),
+                add(TensorRole::QueryNormalization, vec![head_dim]),
                 add(
                     TensorRole::KeyProjection,
-                    "attn_k",
                     vec![self.hidden_size, self.key_value_projection_size()],
                 ),
-                add(TensorRole::KeyNormalization, "attn_k_norm", vec![head_dim]),
+                add(TensorRole::KeyNormalization, vec![head_dim]),
                 add(
                     TensorRole::ValueProjection,
-                    "attn_v",
                     vec![self.hidden_size, self.key_value_projection_size()],
                 ),
                 add(
                     TensorRole::OutputProjection,
-                    "attn_output",
                     vec![self.query_projection_size(), self.hidden_size],
                 ),
                 add(
                     TensorRole::PostAttentionNormalization,
-                    "ffn_norm",
                     vec![self.hidden_size],
                 ),
                 add(
                     TensorRole::GateProjection,
-                    "ffn_gate",
                     vec![self.hidden_size, self.intermediate_size],
                 ),
                 add(
                     TensorRole::UpProjection,
-                    "ffn_up",
                     vec![self.hidden_size, self.intermediate_size],
                 ),
                 add(
                     TensorRole::DownProjection,
-                    "ffn_down",
                     vec![self.intermediate_size, self.hidden_size],
                 ),
             ]);

@@ -1,7 +1,7 @@
 use quantinfer_core::{DType, Shape, Tensor};
 use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_kernel::KernelBackend;
-use quantinfer_model::{LlamaConfig, ModelSpec, TensorRole};
+use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelSpec, TensorRole};
 
 use crate::batch::{last_hidden_rows, DenseAttention, DenseBatchLimits};
 use crate::calibration::{ProjectionObserver, ProjectionTrace};
@@ -187,9 +187,12 @@ pub struct LlamaModel<B> {
 
 impl<B: KernelBackend> LlamaModel<B> {
     pub fn spec_from_gguf(reader: &GgufReader) -> Result<ModelSpec> {
-        config_from_gguf(reader, uses_ggml_layout(reader)?)?
-            .to_model_spec("llama")
-            .map_err(RuntimeError::InvalidInput)
+        LlamaAdapter::new(
+            config_from_gguf(reader, uses_ggml_layout(reader)?)?,
+            "llama",
+        )
+        .map(|adapter| adapter.spec().clone())
+        .map_err(RuntimeError::InvalidInput)
     }
 
     pub fn new(
@@ -354,10 +357,10 @@ impl<B: KernelBackend> LlamaModel<B> {
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         let ggml_layout = uses_ggml_layout(reader)?;
-        let config = config_from_gguf(reader, ggml_layout)?;
-        let spec = config
-            .to_model_spec("llama")
+        let adapter = LlamaAdapter::new(config_from_gguf(reader, ggml_layout)?, "llama")
             .map_err(RuntimeError::InvalidInput)?;
+        let config = adapter.config().clone();
+        let spec = adapter.spec().clone();
         let embedding_name = crate::tensor_source(&spec, TensorRole::TokenEmbedding, None)?;
         let mut embedding = if ggml_layout {
             load_ggml_as_float(reader, &embedding_name)?
