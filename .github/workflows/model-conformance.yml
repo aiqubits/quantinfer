@@ -257,7 +257,7 @@ jobs:
           python3 -m pip install --no-deps --target "$RUNNER_TEMP/quantinfer-python" ./bindings/python
           PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
             python3 bindings/python/tests/smoke.py smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
       - name: Verify WebAssembly generation against the native CPU runtime
