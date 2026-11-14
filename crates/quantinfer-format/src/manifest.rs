@@ -168,7 +168,15 @@ impl ModelPackage {
             ))
         })?;
         let manifest_path = root.join("manifest.json");
-        let manifest_bytes = read_file_nofollow(&manifest_path).map_err(|error| {
+        let manifest_resolved = fs::canonicalize(&manifest_path).map_err(|error| {
+            FormatError::Io(format!("cannot read {}: {error}", manifest_path.display()))
+        })?;
+        if !manifest_resolved.starts_with(&root) {
+            return Err(FormatError::Invalid(
+                "manifest.json resolves outside the package root".to_owned(),
+            ));
+        }
+        let manifest_bytes = read_file_nofollow(&manifest_resolved).map_err(|error| {
             FormatError::Io(format!("cannot read {}: {error}", manifest_path.display()))
         })?;
         let manifest_text = String::from_utf8(manifest_bytes).map_err(|error| {
@@ -354,6 +362,31 @@ mod tests {
         let error = package.verify_all().unwrap_err().to_string();
         assert!(error.contains("outside the package root"));
         std::fs::remove_file(root.join("model.gguf")).unwrap();
+        std::fs::remove_file(outside).unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_manifests_that_escape_through_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "quantinfer-manifest-symlink-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let outside = root.with_file_name(format!(
+            "quantinfer-manifest-outside-{}",
+            std::process::id()
+        ));
+        std::fs::write(
+            &outside,
+            ModelManifest::new("outside", "qwen3").to_json().unwrap(),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("manifest.json")).unwrap();
+        let error = ModelPackage::open(&root).unwrap_err().to_string();
+        assert!(error.contains("outside the package root"));
+        std::fs::remove_file(root.join("manifest.json")).unwrap();
         std::fs::remove_file(outside).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

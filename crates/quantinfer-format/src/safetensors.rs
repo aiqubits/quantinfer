@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 
 use super::{sha256_reader, FormatError, Result};
 use half::{bf16, f16};
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
+use serde_json::Value;
+use std::fmt;
 
 const MAX_HEADER_BYTES: usize = 64 * 1024 * 1024;
 
@@ -573,7 +577,8 @@ fn parse_header(
     data_start: usize,
     file_len: usize,
 ) -> Result<(BTreeMap<String, SafeTensorInfo>, BTreeMap<String, String>)> {
-    let value: serde_json::Value = serde_json::from_slice(header)
+    let value: Value = serde_json::from_slice::<DuplicateFreeJson>(header)
+        .map(|value| value.0)
         .map_err(|error| FormatError::Invalid(format!("invalid SafeTensors JSON: {error}")))?;
     let object = value
         .as_object()
@@ -684,6 +689,103 @@ fn parse_header(
     Ok((tensors, metadata))
 }
 
+/// JSON objects are maps in `serde_json::Value`, so duplicate keys would
+/// otherwise be silently replaced by the last entry. SafeTensors metadata and
+/// tensor names must be unambiguous across readers.
+struct DuplicateFreeJson(Value);
+
+impl<'de> Deserialize<'de> for DuplicateFreeJson {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct JsonVisitor;
+
+        impl<'de> Visitor<'de> for JsonVisitor {
+            type Value = DuplicateFreeJson;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a JSON value without duplicate object keys")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> std::result::Result<Self::Value, E> {
+                Ok(DuplicateFreeJson(Value::Bool(value)))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(DuplicateFreeJson(Value::Number(value.into())))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(DuplicateFreeJson(Value::Number(value.into())))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                let number = serde_json::Number::from_f64(value)
+                    .ok_or_else(|| E::custom("invalid JSON number"))?;
+                Ok(DuplicateFreeJson(Value::Number(number)))
+            }
+
+            fn visit_str<E>(self, value: &str) -> std::result::Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(DuplicateFreeJson(Value::String(value.to_owned())))
+            }
+
+            fn visit_string<E>(self, value: String) -> std::result::Result<Self::Value, E> {
+                Ok(DuplicateFreeJson(Value::String(value)))
+            }
+
+            fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(DuplicateFreeJson(Value::Null))
+            }
+
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(DuplicateFreeJson(Value::Null))
+            }
+
+            fn visit_seq<A>(self, mut sequence: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<DuplicateFreeJson>()? {
+                    values.push(value.0);
+                }
+                Ok(DuplicateFreeJson(Value::Array(values)))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut object = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let value = map.next_value::<DuplicateFreeJson>()?;
+                    if object.insert(key.clone(), value.0).is_some() {
+                        return Err(de::Error::custom(format!(
+                            "duplicate JSON object key {key}"
+                        )));
+                    }
+                }
+                Ok(DuplicateFreeJson(Value::Object(object)))
+            }
+        }
+
+        deserializer.deserialize_any(JsonVisitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SafeTensorDType, SafeTensorFile, SafeTensorShards};
@@ -710,6 +812,16 @@ mod tests {
         bytes.extend_from_slice(&f32::NAN.to_le_bytes());
         let file = SafeTensorFile::open(bytes).unwrap();
         assert!(file.tensor_f32("weight").is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_json_tensor_keys() {
+        let header = br#"{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(header);
+        bytes.extend_from_slice(&1.0_f32.to_le_bytes());
+        assert!(SafeTensorFile::open(bytes).is_err());
     }
 
     #[test]

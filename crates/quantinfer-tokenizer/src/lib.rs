@@ -74,9 +74,7 @@ impl GgufBpeTokenizer {
         pre_tokenizer: Option<&str>,
     ) -> Result<Self> {
         let pre_tokenizer = match pre_tokenizer.unwrap_or("default") {
-            "default" | "gpt2" | "llama-bpe" | "llama3" | "qwen2" | "qwen2new" | "smollm" => {
-                GgufPreTokenizer::ByteLevel
-            }
+            "default" | "gpt2" | "qwen2" | "qwen2new" | "smollm" => GgufPreTokenizer::ByteLevel,
             value => {
                 return Err(TokenizerError::InvalidInput(format!(
                     "unsupported GGUF pre-tokenizer {value:?}"

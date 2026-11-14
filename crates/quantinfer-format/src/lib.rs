@@ -609,6 +609,30 @@ impl PackedTensorReader {
         }
         let data_start = usize::try_from(align_up(cursor.position() as u64, alignment)?)
             .map_err(|_| FormatError::Invalid("GGUF data offset overflows usize".to_owned()))?;
+        let mut ranges: Vec<(u64, u64)> = Vec::with_capacity(tensors.len());
+        for tensor in &tensors {
+            if !tensor.offset.is_multiple_of(alignment) {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {} offset is not aligned",
+                    tensor.name
+                )));
+            }
+            let end = tensor
+                .offset
+                .checked_add(u64::try_from(tensor.size).map_err(|_| {
+                    FormatError::Invalid("GGUF tensor size overflows u64".to_owned())
+                })?)
+                .ok_or_else(|| {
+                    FormatError::Invalid("GGUF tensor range overflows u64".to_owned())
+                })?;
+            ranges.push((tensor.offset, end));
+        }
+        ranges.sort_unstable_by_key(|(start, _)| *start);
+        if ranges.windows(2).any(|pair| pair[1].0 < pair[0].1) {
+            return Err(FormatError::Invalid(
+                "GGUF tensor payloads overlap".to_owned(),
+            ));
+        }
         Ok(Self {
             bytes,
             metadata,
