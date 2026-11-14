@@ -4,7 +4,7 @@ use quantinfer_core::{Shape, Tensor};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::TensorRole;
 
-use crate::qwen3::{transpose_matrix, LinearWeight};
+use crate::linear::{transpose_matrix, LinearWeight};
 use crate::{Result, RuntimeError};
 
 const ROLES: [TensorRole; 7] = [

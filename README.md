@@ -75,6 +75,6 @@ cargo run --locked -p quantinfer-cli -- generate \
   --eos-token-id 2
 ```
 
-The GGUF reader accepts F32, F16, BF16, Q8_0, Q4_0, and standard Q4_K tensors. Linear quantized weights execute through the CPU reference kernel, while floating point tensors are normalized to F32 at load time. `--temperature` and `--seed` enable deterministic seeded sampling. `ByteTokenizer` remains a deterministic fixture for unit tests.
+The GGUF reader accepts F32, F16, BF16, Q8_0, Q4_0, Q4_K, Q5_K, and Q6_K tensors. Linear quantized weights execute through the CPU reference kernel, while floating point tensors are normalized to F32 at load time. `--temperature` and `--seed` enable deterministic seeded sampling. `ByteTokenizer` remains a deterministic fixture for unit tests.
 
 The CPU runtime also supports Q4_0 linear weights and Llama-style Dense models with GQA. A model package directory containing `manifest.json` and its checksummed `model.gguf` can be passed directly to `quantinfer-cli`.

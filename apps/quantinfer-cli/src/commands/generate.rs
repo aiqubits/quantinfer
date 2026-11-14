@@ -323,7 +323,7 @@ fn check_memory_plan(
     let weights = quantinfer::cpu::estimated_weight_bytes(reader, spec)
         .map_err(|error| format!("cannot estimate CPU weight memory: {error}"))?;
     let workspace = if reader
-        .uses_ggml_output_rows(&spec.architecture)
+        .uses_ggml_output_rows()
         .map_err(|error| error.to_string())?
     {
         // GGML weights can coexist with a decoded or reordered copy during loading.

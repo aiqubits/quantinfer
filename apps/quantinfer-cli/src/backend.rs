@@ -105,7 +105,7 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     let manifest = manifest.or(reader.embedded_manifest());
     let architecture = model_architecture(reader, manifest).map_err(|error| error.to_string())?;
     let ggml = reader
-        .uses_ggml_output_rows(architecture)
+        .uses_ggml_output_rows()
         .map_err(|error| error.to_string())?;
     let backend = open().map_err(|error| error.to_string())?;
     let request = ExecutionRequest {

@@ -50,11 +50,6 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         return Err(invalid("metadata architecture disagrees with the manifest"));
     }
     let ggml = uses_ggml_dimension_order(&metadata)?;
-    if ggml && !matches!(manifest.architecture.as_str(), "llama" | "qwen3") {
-        return Err(invalid(
-            "GGML dimension order requires a Llama or Qwen3 model",
-        ));
-    }
     let tensors = manifest
         .tensors
         .iter()
@@ -91,11 +86,11 @@ pub fn import_gguf(
     let mut metadata = reader.metadata().clone();
     let architecture = match metadata.get("general.architecture") {
         Some(GgufValue::String(architecture)) => architecture.as_str(),
-        None => "qwen3",
+        None => return Err(invalid("source GGUF is missing general.architecture")),
         Some(_) => return Err(invalid("source architecture must be a string")),
     };
     let mut manifest = ModelManifest::new(model_id, architecture);
-    let ggml = reader.uses_ggml_output_rows(architecture)?;
+    let ggml = reader.uses_ggml_output_rows()?;
     metadata.insert(GGML_DIMENSION_ORDER.to_owned(), GgufValue::Bool(ggml));
     let mut payloads = BTreeMap::new();
     let mut schemes = Vec::new();
@@ -540,6 +535,11 @@ mod tests {
         };
         let tensor = QuantizedTensor4::from_blocks(vec![1, 32], vec![block.clone()]).unwrap();
         let mut writer = GgufWriter::new();
+        writer.insert_metadata(
+            "general.architecture",
+            GgufValue::String("qwen3".to_owned()),
+        );
+        writer.insert_metadata("qwen3.tie_word_embeddings", GgufValue::Bool(true));
         writer.add_q4_0_tensor("weight", &tensor);
         writer.metadata.remove(QUANT_BLOCK_LAYOUT);
         for (index, pair) in block.values.as_chunks::<2>().0.iter().enumerate() {

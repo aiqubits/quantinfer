@@ -1,7 +1,7 @@
 use quantinfer_core::Tensor;
 use quantinfer_kernel::KernelBackend;
 
-use crate::qwen3::{gqa_attention, rope_tables};
+use crate::attention::{gqa_attention, rope_tables};
 use crate::{KvCache, Result, RuntimeError};
 
 /// A sequence's input tokens and its private attention state for one batch step.

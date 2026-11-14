@@ -82,7 +82,7 @@ impl Shape {
         self.0.last().copied()
     }
 
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.0.contains(&0) {
             return Err(CoreError::InvalidShape(
                 "tensor dimensions must be greater than zero".to_owned(),

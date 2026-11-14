@@ -334,6 +334,16 @@ pub struct SafeTensorShards {
 impl SafeTensorShards {
     pub fn open(index_path: impl AsRef<Path>) -> Result<Self> {
         let index_path = index_path.as_ref().to_path_buf();
+        let index_size = fs::metadata(&index_path)
+            .map_err(|error| {
+                FormatError::Io(format!("cannot stat {}: {error}", index_path.display()))
+            })?
+            .len();
+        if index_size > MAX_HEADER_BYTES as u64 {
+            return Err(FormatError::Invalid(
+                "SafeTensors index exceeds the size limit".to_owned(),
+            ));
+        }
         let index_bytes = super::read_file_nofollow(&index_path).map_err(|error| {
             FormatError::Io(format!("cannot read {}: {error}", index_path.display()))
         })?;
@@ -623,6 +633,11 @@ fn parse_header(
                     })
             })
             .collect::<Result<Vec<_>>>()?;
+        if shape.contains(&0) {
+            return Err(FormatError::Invalid(format!(
+                "tensor {name} dimensions must be greater than zero"
+            )));
+        }
         let offsets = entry
             .get("data_offsets")
             .and_then(serde_json::Value::as_array)

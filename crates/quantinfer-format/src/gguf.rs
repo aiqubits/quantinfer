@@ -24,6 +24,7 @@ const DEFAULT_ALIGNMENT: u64 = 32;
 pub(crate) const QUANT_BLOCK_LAYOUT: &str = "quantinfer.ggml.block_layout";
 const MAX_GGUF_HEADER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_GGUF_ARRAY_ITEMS: usize = 1_048_576;
+const MAX_GGUF_TENSOR_RANK: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatError {
@@ -140,6 +141,11 @@ impl GgufWriter {
         values: &[f32],
     ) -> Result<()> {
         let shape = shape.into();
+        if shape.contains(&0) {
+            return Err(FormatError::Invalid(
+                "F32 tensor dimensions must be greater than zero".to_owned(),
+            ));
+        }
         let elements = shape.iter().try_fold(1usize, |product, dimension| {
             product
                 .checked_mul(*dimension)
@@ -174,6 +180,11 @@ impl GgufWriter {
         values: &[f32],
     ) -> Result<()> {
         let shape = shape.into();
+        if shape.contains(&0) {
+            return Err(FormatError::Invalid(
+                "F16 tensor dimensions must be greater than zero".to_owned(),
+            ));
+        }
         let elements = shape.iter().try_fold(1usize, |product, dimension| {
             product
                 .checked_mul(*dimension)
@@ -204,6 +215,11 @@ impl GgufWriter {
         values: &[f32],
     ) -> Result<()> {
         let shape = shape.into();
+        if shape.contains(&0) {
+            return Err(FormatError::Invalid(
+                "BF16 tensor dimensions must be greater than zero".to_owned(),
+            ));
+        }
         let elements = shape.iter().try_fold(1usize, |product, dimension| {
             product
                 .checked_mul(*dimension)
@@ -459,36 +475,28 @@ impl PackedTensorReader {
         self.embedded_manifest.as_ref()
     }
 
-    /// Llama GGML files store output rows and use fastest-axis-first dimensions.
-    pub fn llama_uses_ggml_layout(&self) -> Result<bool> {
-        self.uses_ggml_output_rows("llama")
-    }
-
-    /// Detect GGML dimension order and packed projection rows for a Dense model.
-    pub fn uses_ggml_output_rows(&self, architecture: &str) -> Result<bool> {
-        if !matches!(architecture, "llama" | "qwen3") {
-            return Ok(false);
-        }
+    /// Detect GGML dimension order and packed projection rows from generic
+    /// GGUF metadata. Architecture-specific interpretation belongs to model
+    /// adapters, not the format reader.
+    pub fn uses_ggml_output_rows(&self) -> Result<bool> {
         if self.embedded_manifest.is_some() {
             return qif::uses_ggml_dimension_order(&self.metadata);
         }
         if self
             .metadata
-            .contains_key(&format!("{architecture}.tie_word_embeddings"))
+            .keys()
+            .any(|key| key.ends_with(".tie_word_embeddings"))
         {
             return Ok(false);
         }
-        let length_key = format!("{architecture}.embedding_length");
-        if architecture == "qwen3"
-            && !self.metadata.contains_key(&length_key)
-            && !self.metadata.contains_key("general.file_type")
-        {
+        let length = self
+            .metadata
+            .iter()
+            .find(|(key, _)| key.ends_with(".embedding_length"));
+        let Ok(embedding) = self.tensor_info("token_embd.weight") else {
             return Ok(false);
-        }
-        let embedding = self.tensor_info("token_embd.weight")?;
-        if let (Some(value), [first, second]) =
-            (self.metadata.get(&length_key), embedding.shape.as_slice())
-        {
+        };
+        if let (Some((length_key, value)), [first, second]) = (length, embedding.shape.as_slice()) {
             let hidden = match value {
                 GgufValue::U32(value) => u64::from(*value),
                 GgufValue::U64(value) => *value,
@@ -578,11 +586,22 @@ impl PackedTensorReader {
                 )));
             }
             let dimensions = cursor.read_u32()? as usize;
+            let remaining = bytes.len().saturating_sub(cursor.position());
+            if dimensions > MAX_GGUF_TENSOR_RANK || dimensions > remaining / 8 {
+                return Err(FormatError::Invalid(
+                    "GGUF tensor rank exceeds the supported header capacity".to_owned(),
+                ));
+            }
             let mut shape = Vec::with_capacity(dimensions);
             for _ in 0..dimensions {
                 shape.push(usize::try_from(cursor.read_u64()?).map_err(|_| {
                     FormatError::Invalid("GGUF tensor dimension overflows usize".to_owned())
                 })?);
+            }
+            if shape.contains(&0) {
+                return Err(FormatError::Invalid(
+                    "GGUF tensor dimensions must be greater than zero".to_owned(),
+                ));
             }
             let dtype = GgmlType::try_from(cursor.read_u32()?)?;
             let offset = cursor.read_u64()?;
@@ -1058,6 +1077,11 @@ fn encode_scalar(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
 }
 
 pub(crate) fn tensor_byte_size(dtype: GgmlType, shape: &[usize]) -> Result<usize> {
+    if shape.contains(&0) {
+        return Err(FormatError::Invalid(
+            "tensor dimensions must be greater than zero".to_owned(),
+        ));
+    }
     let elements = shape.iter().try_fold(1usize, |product, dimension| {
         product
             .checked_mul(*dimension)
@@ -1295,6 +1319,26 @@ mod tests {
             reader.tensor_f32("bf16.weight").unwrap(),
             Tensor::from_f32(vec![2], vec![3.0, 4.0]).unwrap()
         );
+    }
+
+    #[test]
+    fn rejects_zero_dimension_gguf_tensors_before_quantized_decode() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"GGUF");
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&1_u64.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&4_u64.to_le_bytes());
+        bytes.extend_from_slice(b"zero");
+        bytes.extend_from_slice(&1_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.extend_from_slice(&(GgmlType::Q8_0 as u32).to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        bytes.resize(bytes.len().next_multiple_of(32), 0);
+        assert!(matches!(
+            GgufReader::open(bytes),
+            Err(FormatError::Invalid(message)) if message.contains("dimensions")
+        ));
     }
 
     #[test]

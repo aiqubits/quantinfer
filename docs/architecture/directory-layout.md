@@ -33,9 +33,9 @@ first implementation file lands.
   `src/commands/`.
 - `apps/quantinfer-server` separates configuration, shared state, HTTP routes,
   rate limiting, registry, and the decode engine under `src/`.
-- `backends/` contains CPU, SIMD, WGPU, CUDA, Metal, Ascend, T-MAC, KleidiAI,
-  and mock implementations. Shader and kernel directories are retained only
-  where source artifacts exist.
+- `backends/` contains CPU, SIMD, WGPU, CUDA, Metal, Ascend, T-MAC, and KleidiAI
+  implementations. Shader and kernel directories are retained only where
+  source artifacts exist.
 - `adapters/` contains optional checkpoint and interoperability crates.
 - `bindings/` and `targets/` contain the C, WebAssembly, and WASI-NN
   integration crates.

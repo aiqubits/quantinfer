@@ -35,8 +35,8 @@ fn resolve_backend_impl(
 ) -> Result<CpuScalar> {
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
-    let architecture = model_architecture(reader, manifest)?;
-    let ggml_layout = reader.uses_ggml_output_rows(architecture)?;
+    let _architecture = model_architecture(reader, manifest)?;
+    let ggml_layout = reader.uses_ggml_output_rows()?;
     request.tensor_layout = "row_major".to_owned();
     request.operation = Some(Operation::Matmul);
     if let Some(manifest) = manifest {
@@ -154,7 +154,7 @@ fn ggml_float_weight(name: &str) -> bool {
 pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<usize> {
     let invalid = || RuntimeError::InvalidInput("CPU weight size overflows usize".to_owned());
     let mut bytes = 0usize;
-    let ggml_layout = reader.uses_ggml_output_rows(&spec.architecture)?;
+    let ggml_layout = reader.uses_ggml_output_rows()?;
     for tensor in reader.tensors() {
         let elements: usize = tensor.shape.iter().product();
         let (block_size, native_bytes) = match tensor.dtype {
@@ -209,7 +209,7 @@ mod tests {
             kernel_provider: "cuda".to_owned(),
         });
         assert!(resolve_backend(&reader, Some(&manifest)).is_err());
-        assert!(resolve_backend(&reader, None).is_ok());
+        assert!(resolve_backend(&reader, None).is_err());
     }
 
     #[test]

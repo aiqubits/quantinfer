@@ -154,10 +154,13 @@ fn projection_target(
             [spec.hidden_size, spec.vocabulary.size],
         ));
     }
-    let tensor = spec
-        .tensor_map
+    let storage = spec
+        .storage_map
         .iter()
-        .find(|tensor| tensor.source_name == name)
+        .find(|tensor| tensor.name == name)
+        .ok_or_else(|| format!("PEFT LoRA target {module} is absent from the model"))?;
+    let tensor = spec
+        .tensor(storage.role, storage.layer)
         .ok_or_else(|| format!("PEFT LoRA target {module} is absent from the model"))?;
     let [input, output] = *tensor.logical_shape.dims() else {
         return Err(format!("PEFT LoRA target {module} must be a matrix"));

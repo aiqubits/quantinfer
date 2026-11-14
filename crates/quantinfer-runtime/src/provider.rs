@@ -37,6 +37,7 @@ impl KernelCapability {
             && request
                 .operation
                 .is_none_or(|operation| self.supported_operations.contains(&operation))
+            && self.alignment > 0
             && request
                 .alignment
                 .is_none_or(|alignment| alignment % self.alignment == 0)

@@ -57,8 +57,8 @@ pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
         let names = roles
             .iter()
             .map(|&role| {
-                spec.tensor(role, Some(layer))
-                    .map(|tensor| tensor.source_name.as_str())
+                spec.storage_tensor(role, Some(layer))
+                    .map(|tensor| tensor.name.as_str())
                     .ok_or_else(|| {
                         calibration_error(format!("layer {layer} has no {role:?} tensor"))
                     })

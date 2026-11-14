@@ -184,7 +184,12 @@ pub fn model_architecture<'a>(
             }
             Ok(&manifest.architecture)
         }
-        None => Ok(archive_architecture.unwrap_or("qwen3")),
+        None => archive_architecture.ok_or_else(|| {
+            RuntimeError::InvalidInput(
+                "model architecture is missing; provide a manifest or GGUF general.architecture"
+                    .to_owned(),
+            )
+        }),
     }
 }
 
@@ -220,19 +225,21 @@ impl ModelSource {
     pub fn open_reader(&self, budget: Option<usize>) -> Result<GgufReader> {
         match self {
             Self::Package(package) => {
-                let model_name = package
+                let mut declared_models = package
                     .manifest
                     .checksums
                     .keys()
-                    .find(|name| name.ends_with(".gguf"))
-                    .or_else(|| {
-                        package
-                            .manifest
-                            .checksums
-                            .keys()
-                            .find(|name| name.ends_with(".qif"))
-                    })
+                    .filter(|name| name.ends_with(".gguf") || name.ends_with(".qif"))
                     .map(String::as_str)
+                    .collect::<Vec<_>>();
+                if declared_models.len() > 1 {
+                    return Err(RuntimeError::InvalidInput(
+                        "model package declares multiple GGUF/QIF artifacts; select one explicitly"
+                            .to_owned(),
+                    ));
+                }
+                let model_name = declared_models
+                    .pop()
                     .or_else(|| {
                         package
                             .root()

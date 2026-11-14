@@ -2,8 +2,11 @@
 
 #![forbid(unsafe_code)]
 
+mod attention;
 mod batch;
 mod calibration;
+mod ggml;
+mod linear;
 pub mod llama;
 mod lora;
 pub mod profile;
@@ -14,11 +17,12 @@ pub mod session;
 
 pub use batch::DecodeBatchItem;
 pub use calibration::ProjectionObserver;
+pub use linear::LinearWeight;
 pub use llama::{LlamaLayerWeights, LlamaModel};
 pub use lora::{LoraAdapter, LoraProjection};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
-pub use qwen3::{LinearWeight, Qwen3LayerWeights, Qwen3Model};
+pub use qwen3::{Qwen3LayerWeights, Qwen3Model};
 pub use scheduler::{DecodeEvent, DecodeScheduler};
 pub use session::{DecodeSession, DecodeStopReason};
 
@@ -121,8 +125,8 @@ impl From<quantinfer_kernel::KernelError> for RuntimeError {
 }
 
 fn tensor_source(spec: &ModelSpec, role: TensorRole, layer: Option<usize>) -> Result<&str> {
-    spec.tensor(role, layer)
-        .map(|tensor| tensor.source_name.as_str())
+    spec.storage_tensor(role, layer)
+        .map(|tensor| tensor.name.as_str())
         .ok_or_else(|| {
             RuntimeError::InvalidInput(format!(
                 "{} model spec is missing tensor role {role:?} for layer {layer:?}",
@@ -149,20 +153,20 @@ fn lm_head_source(adapter: &impl ModelAdapter) -> Result<String> {
 }
 
 #[derive(Debug, Clone)]
-struct LayerKvCache {
-    keys: Vec<f32>,
-    values: Vec<f32>,
-    sequence_length: usize,
+pub(crate) struct LayerKvCache {
+    pub(crate) keys: Vec<f32>,
+    pub(crate) values: Vec<f32>,
+    pub(crate) sequence_length: usize,
 }
 
 /// Per-layer KV storage and attention scratch space for single-sequence inference.
 #[derive(Debug, Clone)]
 pub struct KvCache {
-    layers: Vec<LayerKvCache>,
-    attention_scores: Vec<f32>,
-    max_sequence_length: usize,
-    num_key_value_heads: usize,
-    head_dim: usize,
+    pub(crate) layers: Vec<LayerKvCache>,
+    pub(crate) attention_scores: Vec<f32>,
+    pub(crate) max_sequence_length: usize,
+    pub(crate) num_key_value_heads: usize,
+    pub(crate) head_dim: usize,
 }
 
 impl KvCache {

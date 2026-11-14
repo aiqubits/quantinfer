@@ -84,8 +84,14 @@ pub enum TensorRole {
 pub struct TensorSemantic {
     pub role: TensorRole,
     pub layer: Option<usize>,
-    pub source_name: String,
     pub logical_shape: Shape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TensorStorageMap {
+    pub role: TensorRole,
+    pub layer: Option<usize>,
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -101,6 +107,7 @@ pub struct ModelSpec {
     pub embedding: EmbeddingSpec,
     pub final_normalization: NormalizationSpec,
     pub tensor_map: Vec<TensorSemantic>,
+    pub storage_map: Vec<TensorStorageMap>,
 }
 
 impl ModelSpec {
@@ -130,6 +137,16 @@ impl ModelSpec {
         }) {
             return Err("model layer specifications are inconsistent".to_owned());
         }
+        if self.storage_map.len() != self.tensor_map.len()
+            || self.tensor_map.iter().any(|tensor| {
+                !self
+                    .storage_map
+                    .iter()
+                    .any(|storage| storage.role == tensor.role && storage.layer == tensor.layer)
+            })
+        {
+            return Err("model tensor semantics and storage map are inconsistent".to_owned());
+        }
         Ok(())
     }
 
@@ -138,6 +155,49 @@ impl ModelSpec {
             .iter()
             .find(|tensor| tensor.role == role && tensor.layer == layer)
     }
+
+    pub fn storage_tensor(
+        &self,
+        role: TensorRole,
+        layer: Option<usize>,
+    ) -> Option<&TensorStorageMap> {
+        self.storage_map
+            .iter()
+            .find(|tensor| tensor.role == role && tensor.layer == layer)
+    }
+}
+
+pub(crate) fn dense_storage_map(tensor_map: &[TensorSemantic]) -> Vec<TensorStorageMap> {
+    tensor_map
+        .iter()
+        .map(|tensor| {
+            let suffix = match tensor.role {
+                TensorRole::TokenEmbedding => "token_embd",
+                TensorRole::FinalNormalization => "output_norm",
+                TensorRole::LmHead => "output",
+                TensorRole::InputNormalization => "attn_norm",
+                TensorRole::QueryProjection => "attn_q",
+                TensorRole::QueryNormalization => "attn_q_norm",
+                TensorRole::KeyProjection => "attn_k",
+                TensorRole::KeyNormalization => "attn_k_norm",
+                TensorRole::ValueProjection => "attn_v",
+                TensorRole::OutputProjection => "attn_output",
+                TensorRole::PostAttentionNormalization => "ffn_norm",
+                TensorRole::GateProjection => "ffn_gate",
+                TensorRole::UpProjection => "ffn_up",
+                TensorRole::DownProjection => "ffn_down",
+            };
+            let name = match tensor.layer {
+                Some(layer) => format!("blk.{layer}.{suffix}.weight"),
+                None => format!("{suffix}.weight"),
+            };
+            TensorStorageMap {
+                role: tensor.role,
+                layer: tensor.layer,
+                name,
+            }
+        })
+        .collect()
 }
 
 impl super::Qwen3Config {
@@ -174,13 +234,11 @@ impl super::Qwen3Config {
             TensorSemantic {
                 role: TensorRole::TokenEmbedding,
                 layer: None,
-                source_name: "token_embd.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.vocab_size, self.hidden_size]),
             },
             TensorSemantic {
                 role: TensorRole::FinalNormalization,
                 layer: None,
-                source_name: "output_norm.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.hidden_size]),
             },
         ];
@@ -188,15 +246,13 @@ impl super::Qwen3Config {
             tensor_map.push(TensorSemantic {
                 role: TensorRole::LmHead,
                 layer: None,
-                source_name: "output.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.hidden_size, self.vocab_size]),
             });
         }
         for index in 0..self.num_hidden_layers {
-            let add = |role, suffix, shape: Vec<usize>| TensorSemantic {
+            let add = |role, _suffix, shape: Vec<usize>| TensorSemantic {
                 role,
                 layer: Some(index),
-                source_name: format!("blk.{index}.{suffix}.weight"),
                 logical_shape: Shape::from(shape),
             };
             tensor_map.extend([
@@ -253,6 +309,7 @@ impl super::Qwen3Config {
                 ),
             ]);
         }
+        let storage_map = dense_storage_map(&tensor_map);
         let spec = ModelSpec {
             model_id: model_id.into(),
             architecture: "qwen3".to_owned(),
@@ -273,6 +330,7 @@ impl super::Qwen3Config {
             },
             final_normalization: normalization,
             tensor_map,
+            storage_map,
         };
         spec.validate()?;
         Ok(spec)
@@ -307,6 +365,11 @@ mod tests {
         let spec = config.to_model_spec("fixture").unwrap();
         assert_eq!(spec.layers.len(), 2);
         assert!(spec.tensor(TensorRole::QueryProjection, Some(1)).is_some());
+        assert_eq!(
+            spec.storage_tensor(TensorRole::QueryProjection, Some(1))
+                .map(|tensor| tensor.name.as_str()),
+            Some("blk.1.attn_q.weight")
+        );
         assert!(spec.tensor(TensorRole::LmHead, None).is_none());
         spec.validate().unwrap();
         let encoded = serde_json::to_string(&spec).unwrap();

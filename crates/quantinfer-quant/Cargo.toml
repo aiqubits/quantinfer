@@ -7,6 +7,3 @@ license.workspace = true
 [dependencies]
 half.workspace = true
 quantinfer-core = { workspace = true }
-quantinfer-format = { workspace = true }
-quantinfer-model = { workspace = true }
-quantinfer-kernel = { workspace = true }

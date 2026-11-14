@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::semantic::{
-    ActivationKind, AttentionSpec, EmbeddingSpec, LayerSpec, ModelSpec, NormalizationKind,
-    NormalizationSpec, PositionalEncodingSpec, TensorRole, TensorSemantic, VocabularySpec,
+    dense_storage_map, ActivationKind, AttentionSpec, EmbeddingSpec, LayerSpec, ModelSpec,
+    NormalizationKind, NormalizationSpec, PositionalEncodingSpec, TensorRole, TensorSemantic,
+    VocabularySpec,
 };
 use quantinfer_core::Shape;
 
@@ -141,13 +142,11 @@ impl LlamaConfig {
             TensorSemantic {
                 role: TensorRole::TokenEmbedding,
                 layer: None,
-                source_name: "token_embd.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.vocab_size, self.hidden_size]),
             },
             TensorSemantic {
                 role: TensorRole::FinalNormalization,
                 layer: None,
-                source_name: "output_norm.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.hidden_size]),
             },
         ];
@@ -155,15 +154,13 @@ impl LlamaConfig {
             tensor_map.push(TensorSemantic {
                 role: TensorRole::LmHead,
                 layer: None,
-                source_name: "output.weight".to_owned(),
                 logical_shape: Shape::from(vec![self.hidden_size, self.vocab_size]),
             });
         }
         for index in 0..self.num_hidden_layers {
-            let add = |role, suffix, shape: Vec<usize>| TensorSemantic {
+            let add = |role, _suffix, shape: Vec<usize>| TensorSemantic {
                 role,
                 layer: Some(index),
-                source_name: format!("blk.{index}.{suffix}.weight"),
                 logical_shape: Shape::from(shape),
             };
             tensor_map.extend([
@@ -214,6 +211,7 @@ impl LlamaConfig {
                 ),
             ]);
         }
+        let storage_map = dense_storage_map(&tensor_map);
         let spec = ModelSpec {
             model_id: model_id.into(),
             architecture: "llama".to_owned(),
@@ -234,6 +232,7 @@ impl LlamaConfig {
             },
             final_normalization: normalization,
             tensor_map,
+            storage_map,
         };
         spec.validate()?;
         Ok(spec)

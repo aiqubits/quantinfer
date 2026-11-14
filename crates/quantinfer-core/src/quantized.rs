@@ -22,6 +22,7 @@ pub struct QuantizedTensor {
 impl QuantizedTensor {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q8_0Block>) -> Result<Self> {
         let shape = shape.into();
+        shape.validate()?;
         let elements = shape.num_elements()?;
         if !elements.is_multiple_of(Q8_0_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
@@ -256,6 +257,7 @@ pub struct QuantizedTensor4 {
 impl QuantizedTensor4 {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4_0Block>) -> Result<Self> {
         let shape = shape.into();
+        shape.validate()?;
         let elements = shape.num_elements()?;
         if !elements.is_multiple_of(Q4_0_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
@@ -315,6 +317,7 @@ pub struct QuantizedTensorQ4K {
 impl QuantizedTensorQ4K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q4KBlock>) -> Result<Self> {
         let shape = shape.into();
+        shape.validate()?;
         let elements = shape.num_elements()?;
         if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) {
             return Err(CoreError::InvalidData(
@@ -376,6 +379,7 @@ pub struct QuantizedTensorQ5K {
 impl QuantizedTensorQ5K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q5KBlock>) -> Result<Self> {
         let shape = shape.into();
+        shape.validate()?;
         let elements = shape.num_elements()?;
         if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) || blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
@@ -414,6 +418,7 @@ pub struct QuantizedTensorQ6K {
 impl QuantizedTensorQ6K {
     pub fn from_blocks(shape: impl Into<Shape>, blocks: Vec<Q6KBlock>) -> Result<Self> {
         let shape = shape.into();
+        shape.validate()?;
         let elements = shape.num_elements()?;
         if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) || blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(

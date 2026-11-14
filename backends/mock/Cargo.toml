@@ -1,9 +1,0 @@
-[package]
-name = "quantinfer-backend-mock"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-quantinfer-core = { workspace = true }
-quantinfer-kernel = { workspace = true }

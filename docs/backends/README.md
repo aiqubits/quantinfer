@@ -37,7 +37,7 @@ let plan = registry.resolve(&quantinfer_runtime::ExecutionRequest::cpu(
 | WGPU | `quantinfer-backend-wgpu/native` | Optional portable GPU F32/Q4_0/Q8_0 tiled projections |
 | Ascend | `quantinfer-backend-ascend/native` | Optional CANN ACL probe and ACLNN MatMul workspace/execute plan |
 | T-MAC | `quantinfer-backend-tmac` | Explicit CPU Q4_0 capability contract for a linked LUT kernel |
-| KleidiAI | `quantinfer-backend-kleidiai` | Explicit Arm CPU Q8_0 capability contract for a linked micro-kernel |
+| KleidiAI | `quantinfer-backend-kleidiai` | Explicit Arm CPU Q4_0 capability contract for a linked micro-kernel |
 
 GPU and NPU crates are optional workspace members. They must not become
 dependencies of `quantinfer-core`, the scalar CPU backend, or format readers.

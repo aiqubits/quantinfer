@@ -2011,14 +2011,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quantinfer-backend-mock"
-version = "0.1.0"
-dependencies = [
- "quantinfer-core",
- "quantinfer-kernel",
-]
-
-[[package]]
 name = "quantinfer-backend-tmac"
 version = "0.1.0"
 dependencies = [
@@ -2119,8 +2111,6 @@ name = "quantinfer-model"
 version = "0.1.0"
 dependencies = [
  "quantinfer-core",
- "quantinfer-format",
- "quantinfer-tokenizer",
  "serde",
  "serde_json",
 ]
@@ -2131,9 +2121,6 @@ version = "0.1.0"
 dependencies = [
  "half",
  "quantinfer-core",
- "quantinfer-format",
- "quantinfer-kernel",
- "quantinfer-model",
 ]
 
 [[package]]
