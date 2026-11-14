@@ -29,17 +29,16 @@ impl DenseAttention {
     ) -> Result<Tensor> {
         let tables = |request: &DecodeBatchItem<'_>| {
             let start = request.cache.sequence_length(layer)?;
-            Ok::<_, RuntimeError>(rope_tables(
-                self.rope_theta,
-                self.head_dim,
-                start,
-                request.tokens.len(),
-            ))
+            rope_tables(self.rope_theta, self.head_dim, start, request.tokens.len())
         };
         let (cos, sin) = if let [request] = batch {
             tables(request)?
         } else {
-            let entries = query.shape().dims()[0] * (self.head_dim / 2);
+            let entries = query.shape().dims()[0]
+                .checked_mul(self.head_dim / 2)
+                .ok_or_else(|| {
+                    RuntimeError::InvalidInput("batched RoPE table size overflows usize".to_owned())
+                })?;
             let mut cos = Vec::with_capacity(entries);
             let mut sin = Vec::with_capacity(entries);
             for request in batch.iter() {
@@ -81,7 +80,9 @@ impl DenseAttention {
                 request.cache,
             )?;
             output.extend_from_slice(attended.as_f32()?);
-            offset += count;
+            offset = offset.checked_add(count).ok_or_else(|| {
+                RuntimeError::InvalidInput("batched attention offset overflows usize".to_owned())
+            })?;
         }
         Ok(Tensor::from_f32(query.shape().clone(), output)?)
     }
@@ -98,8 +99,22 @@ fn token_rows(tensor: &Tensor, offset: usize, count: usize) -> Result<Tensor> {
             "batched attention rows are missing".to_owned(),
         ));
     }
-    let width = heads * head_dim;
-    let values = &tensor.as_f32()?[offset * width..(offset + count) * width];
+    let width = heads.checked_mul(head_dim).ok_or_else(|| {
+        RuntimeError::InvalidInput("attention row width overflows usize".to_owned())
+    })?;
+    let start = offset.checked_mul(width).ok_or_else(|| {
+        RuntimeError::InvalidInput("attention row offset overflows usize".to_owned())
+    })?;
+    let end = offset
+        .checked_add(count)
+        .and_then(|rows| rows.checked_mul(width))
+        .ok_or_else(|| {
+            RuntimeError::InvalidInput("attention row end overflows usize".to_owned())
+        })?;
+    let values = tensor
+        .as_f32()?
+        .get(start..end)
+        .ok_or_else(|| RuntimeError::InvalidInput("attention row data is truncated".to_owned()))?;
     Ok(Tensor::from_f32(
         vec![count, heads, head_dim],
         values.to_vec(),
@@ -208,7 +223,12 @@ impl DenseBatchLimits {
             Err(error) => {
                 // A failure in a shared operator must leave each request's KV state retryable.
                 for (request, start) in accepted.into_iter().zip(starts) {
-                    let elements = start * self.key_value_heads * self.head_dim;
+                    let Some(elements) = start
+                        .checked_mul(self.key_value_heads)
+                        .and_then(|size| size.checked_mul(self.head_dim))
+                    else {
+                        continue;
+                    };
                     for layer in &mut request.cache.layers {
                         layer.keys.truncate(elements);
                         layer.values.truncate(elements);
@@ -233,19 +253,37 @@ pub(crate) fn last_hidden_rows(hidden: &Tensor, batch: &[DecodeBatchItem<'_>]) -
     if rows
         != batch
             .iter()
-            .map(|request| request.tokens.len())
-            .sum::<usize>()
+            .try_fold(0usize, |total, request| {
+                total.checked_add(request.tokens.len())
+            })
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("batched token count overflows usize".to_owned())
+            })?
     {
         return Err(RuntimeError::InvalidInput(
             "batched hidden rows are missing".to_owned(),
         ));
     }
     let values = hidden.as_f32()?;
-    let mut output = Vec::with_capacity(batch.len() * width);
-    let mut end = 0;
+    let output_capacity = batch.len().checked_mul(width).ok_or_else(|| {
+        RuntimeError::InvalidInput("batched logits size overflows usize".to_owned())
+    })?;
+    let mut output = Vec::with_capacity(output_capacity);
+    let mut end = 0usize;
     for request in batch {
-        end += request.tokens.len() * width;
-        output.extend_from_slice(&values[end - width..end]);
+        end = end
+            .checked_add(request.tokens.len().checked_mul(width).ok_or_else(|| {
+                RuntimeError::InvalidInput("batched hidden row size overflows usize".to_owned())
+            })?)
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("batched hidden offset overflows usize".to_owned())
+            })?;
+        let start = end
+            .checked_sub(width)
+            .ok_or_else(|| RuntimeError::InvalidInput("batched hidden row is empty".to_owned()))?;
+        output.extend_from_slice(values.get(start..end).ok_or_else(|| {
+            RuntimeError::InvalidInput("batched hidden rows are missing".to_owned())
+        })?);
     }
     Ok(Tensor::from_f32(vec![batch.len(), width], output)?)
 }

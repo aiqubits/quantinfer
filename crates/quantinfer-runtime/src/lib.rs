@@ -228,7 +228,13 @@ impl KvCache {
                 "KV tensors must have shape [tokens, num_kv_heads, head_dim]".to_owned(),
             ));
         }
-        if layer_cache.sequence_length + key_dims[0] > self.max_sequence_length {
+        let new_length = layer_cache
+            .sequence_length
+            .checked_add(key_dims[0])
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("KV cache sequence length overflows usize".to_owned())
+            })?;
+        if new_length > self.max_sequence_length {
             return Err(RuntimeError::InvalidInput(
                 "KV cache capacity is smaller than the requested sequence".to_owned(),
             ));
@@ -237,7 +243,7 @@ impl KvCache {
         let value_values = value.as_f32()?;
         layer_cache.keys.extend_from_slice(key_values);
         layer_cache.values.extend_from_slice(value_values);
-        layer_cache.sequence_length += key_dims[0];
+        layer_cache.sequence_length = new_length;
         Ok(())
     }
 

@@ -15,15 +15,19 @@ first implementation file lands.
   is split into `error.rs`, `tensor.rs`, and `quantized.rs`.
 - `crates/quantinfer-kernel` owns operator and backend contracts.
 - `crates/quantinfer-format` owns GGUF, SafeTensors, manifests, and QIF. The
-  facade is in `src/lib.rs`; the format implementations are in `gguf.rs`,
-  `safetensors.rs`, `manifest.rs`, and `qif/mod.rs`.
+  facade is in `src/lib.rs`; GGUF and SafeTensors are directory modules split
+  by reader, writer/decoder, metadata, and test responsibilities. Manifests
+  remain in `manifest.rs`, and QIF is in `qif/mod.rs`.
 - `crates/quantinfer-model` owns model configuration and semantic adapters.
+  `ModelSpec` keeps architecture semantics separate from its storage-name map;
+  format readers do not define model roles.
 - `crates/quantinfer-quant` owns offline quantization. Its public facade
   delegates to `types.rs`, `schemes.rs`, `providers.rs`, and
   `imatrix.rs`.
 - `crates/quantinfer-runtime` owns model execution, batching, scheduling,
-  sessions, KV state, profiles, and generation. Llama and Qwen3 execution are
-  separate modules.
+  sessions, KV state, profiles, and generation. Shared linear, GGML-layout,
+  and attention helpers live in `linear.rs`, `ggml.rs`, and `attention.rs`;
+  Llama and Qwen3 execution remain separate modules.
 - `crates/quantinfer-tokenizer` owns tokenizer boundaries and chat templates.
 
 ## Applications and integrations
@@ -40,7 +44,9 @@ first implementation file lands.
 - `bindings/` and `targets/` contain the C, WebAssembly, and WASI-NN
   integration crates.
 - `tools/` contains conversion and repository-task executables; they are not
-  runtime dependencies.
+  runtime dependencies. `quantinfer-convert` is split into source loading,
+  model adapters, quantization policy, tokenizer metadata, conversion
+  orchestration, and shared parsing helpers.
 
 ## Non-code artifacts
 

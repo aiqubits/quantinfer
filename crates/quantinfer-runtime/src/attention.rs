@@ -9,19 +9,30 @@ pub(crate) fn rope_tables(
     head_dim: usize,
     start: usize,
     length: usize,
-) -> (Vec<f32>, Vec<f32>) {
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    if head_dim == 0 || !head_dim.is_multiple_of(2) || !theta.is_finite() || theta <= 0.0 {
+        return Err(RuntimeError::InvalidInput(
+            "invalid RoPE dimensions or frequency base".to_owned(),
+        ));
+    }
     let pair_count = head_dim / 2;
-    let mut cos = Vec::with_capacity(length * pair_count);
-    let mut sin = Vec::with_capacity(length * pair_count);
-    for position in start..start + length {
+    let entries = length
+        .checked_mul(pair_count)
+        .ok_or_else(|| RuntimeError::InvalidInput("RoPE table size overflows usize".to_owned()))?;
+    let end = start.checked_add(length).ok_or_else(|| {
+        RuntimeError::InvalidInput("RoPE position range overflows usize".to_owned())
+    })?;
+    let mut cos = Vec::with_capacity(entries);
+    let mut sin = Vec::with_capacity(entries);
+    for position in start..end {
         for pair in 0..pair_count {
-            let exponent = (2 * pair) as f32 / head_dim as f32;
+            let exponent = (2.0 * pair as f32) / head_dim as f32;
             let angle = position as f32 * theta.powf(-exponent);
             cos.push(angle.cos());
             sin.push(angle.sin());
         }
     }
-    (cos, sin)
+    Ok((cos, sin))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -48,7 +59,10 @@ pub(crate) fn gqa_attention(
         || query_dims[2] != head_dim
         || key_tokens == 0
         || key_value_heads == 0
-        || key_values.len() != key_tokens * key_value_heads * head_dim
+        || key_tokens
+            .checked_mul(key_value_heads)
+            .and_then(|size| size.checked_mul(head_dim))
+            != Some(key_values.len())
         || value_values.len() != key_values.len()
         || !query_heads.is_multiple_of(key_value_heads)
     {
@@ -58,14 +72,23 @@ pub(crate) fn gqa_attention(
     }
     let query_values = query.as_f32()?;
     let query_tokens = query_dims[0];
-    if key_tokens < start_position + query_tokens {
+    let query_end = start_position.checked_add(query_tokens).ok_or_else(|| {
+        RuntimeError::InvalidInput("attention position range overflows usize".to_owned())
+    })?;
+    if key_tokens < query_end {
         return Err(RuntimeError::InvalidInput(
             "KV cache does not contain all causal attention keys".to_owned(),
         ));
     }
     let group_size = query_heads / key_value_heads;
     let scale = (head_dim as f32).sqrt().recip();
-    let mut output = vec![0.0; query_tokens * query_heads * head_dim];
+    let output_elements = query_tokens
+        .checked_mul(query_heads)
+        .and_then(|size| size.checked_mul(head_dim))
+        .ok_or_else(|| {
+            RuntimeError::InvalidInput("attention output size overflows usize".to_owned())
+        })?;
+    let mut output = vec![0.0; output_elements];
     let mut local_scores = Vec::new();
     let scores = if reuse_workspace {
         &mut cache.attention_scores

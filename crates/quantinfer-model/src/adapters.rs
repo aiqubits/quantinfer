@@ -161,7 +161,10 @@ fn canonicalize_layout(
     }
     let rows = shape[0];
     let columns = shape[1];
-    if values.len() != rows * columns {
+    let elements = rows
+        .checked_mul(columns)
+        .ok_or_else(|| format!("linear tensor {name} shape overflows usize"))?;
+    if values.len() != elements {
         return Err(format!("linear tensor {name} shape does not match data"));
     }
     let mut transposed = vec![0.0; values.len()];

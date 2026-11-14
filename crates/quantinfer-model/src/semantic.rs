@@ -62,7 +62,7 @@ pub struct EmbeddingSpec {
     pub tied_lm_head: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum TensorRole {
     TokenEmbedding,
     FinalNormalization,
@@ -136,6 +136,23 @@ impl ModelSpec {
                     .is_multiple_of(layer.attention.num_key_value_heads)
         }) {
             return Err("model layer specifications are inconsistent".to_owned());
+        }
+        let mut semantic_keys = std::collections::BTreeSet::new();
+        if self.tensor_map.iter().any(|tensor| {
+            tensor.logical_shape.dims().contains(&0)
+                || tensor.logical_shape.num_elements().is_err()
+                || !semantic_keys.insert((tensor.role, tensor.layer))
+        }) {
+            return Err("model tensor semantic roles must be unique and non-empty".to_owned());
+        }
+        let mut storage_keys = std::collections::BTreeSet::new();
+        let mut storage_names = std::collections::BTreeSet::new();
+        if self.storage_map.iter().any(|storage| {
+            storage.name.is_empty()
+                || !storage_keys.insert((storage.role, storage.layer))
+                || !storage_names.insert(storage.name.as_str())
+        }) {
+            return Err("model tensor storage mappings must be unique and non-empty".to_owned());
         }
         if self.storage_map.len() != self.tensor_map.len()
             || self.tensor_map.iter().any(|tensor| {
@@ -375,5 +392,31 @@ mod tests {
         let encoded = serde_json::to_string(&spec).unwrap();
         let decoded: ModelSpec = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, spec);
+    }
+
+    #[test]
+    fn rejects_duplicate_semantic_or_storage_roles() {
+        let config = Qwen3Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: Some(4),
+            rms_norm_eps: 1e-6,
+            rope_theta: 1e6,
+            max_position_embeddings: 64,
+            tie_word_embeddings: true,
+            sliding_window: None,
+            max_window_layers: None,
+            use_sliding_window: false,
+            rope_scaling: None,
+            architectures: vec!["Qwen3ForCausalLM".to_owned()],
+        };
+        let mut spec = config.to_model_spec("fixture").unwrap();
+        spec.tensor_map.push(spec.tensor_map[0].clone());
+        spec.storage_map.push(spec.storage_map[0].clone());
+        assert!(spec.validate().is_err());
     }
 }

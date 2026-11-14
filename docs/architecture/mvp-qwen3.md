@@ -36,11 +36,10 @@ and package behavior is covered by focused conformance tests.
 
 ## Repository workflow
 
-Changes are developed on branches and integrated through pull requests. Each
-change should represent one reviewable capability, pass formatting,
-workspace compilation, tests, and Clippy, and be pushed only after local
-validation. Hardware-specific vendor measurements remain separate from the
-portable workspace gates.
+Every change is reviewed against the implemented boundaries and must pass
+formatting, workspace compilation, tests, and Clippy before it is published.
+Hardware-specific vendor measurements remain separate from the portable
+workspace gates.
 
 The implementation history progressed through dependency boundaries, core
 tensor and kernel types, CPU execution, model loading, quantization, tokenizer

@@ -156,7 +156,11 @@ pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<u
     let mut bytes = 0usize;
     let ggml_layout = reader.uses_ggml_output_rows()?;
     for tensor in reader.tensors() {
-        let elements: usize = tensor.shape.iter().product();
+        let elements = tensor
+            .shape
+            .iter()
+            .try_fold(1usize, |product, dimension| product.checked_mul(*dimension))
+            .ok_or_else(invalid)?;
         let (block_size, native_bytes) = match tensor.dtype {
             GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => (1, size_of::<f32>()),
             GgmlType::Q8_0 => (Q8_0_BLOCK_SIZE, size_of::<Q8_0Block>()),

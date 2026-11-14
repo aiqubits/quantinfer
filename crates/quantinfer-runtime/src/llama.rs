@@ -279,7 +279,13 @@ impl<B: KernelBackend> LlamaModel<B> {
                 "Llama forward requires at least one token".to_owned(),
             ));
         }
-        if cache.sequence_length(0)? + token_ids.len() > self.config.max_position_embeddings {
+        let requested_length = cache
+            .sequence_length(0)?
+            .checked_add(token_ids.len())
+            .ok_or_else(|| {
+                RuntimeError::InvalidInput("Llama sequence length overflows usize".to_owned())
+            })?;
+        if requested_length > self.config.max_position_embeddings {
             return Err(RuntimeError::InvalidInput(
                 "input exceeds Llama max_position_embeddings".to_owned(),
             ));

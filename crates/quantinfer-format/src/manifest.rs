@@ -99,6 +99,14 @@ impl ModelManifest {
                 ));
             }
             tensor.descriptor.validate()?;
+            if let Some(checksum) = &tensor.checksum_sha256 {
+                if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(FormatError::Invalid(format!(
+                        "invalid SHA-256 checksum for tensor {}",
+                        tensor.name
+                    )));
+                }
+            }
         }
         for variant in &self.execution_variants {
             if variant.name.is_empty()
@@ -108,6 +116,46 @@ impl ModelManifest {
                 return Err(FormatError::Invalid(
                     "execution variant identity fields must not be empty".to_owned(),
                 ));
+            }
+            if variant.quantization != self.quantization {
+                return Err(FormatError::Invalid(format!(
+                    "execution variant {} has quantization {} but manifest declares {}",
+                    variant.name,
+                    variant.quantization.name(),
+                    self.quantization.name()
+                )));
+            }
+        }
+        if self
+            .execution_variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != self.execution_variants.len()
+        {
+            return Err(FormatError::Invalid(
+                "execution variant names must be unique".to_owned(),
+            ));
+        }
+        for (path, checksum) in &self.checksums {
+            let components = Path::new(path).components();
+            if path.is_empty()
+                || components.clone().any(|part| {
+                    matches!(
+                        part,
+                        Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                    )
+                })
+                || !components
+                    .clone()
+                    .any(|part| matches!(part, Component::Normal(_)))
+                || checksum.len() != 64
+                || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err(FormatError::Invalid(format!(
+                    "invalid SHA-256 checksum entry for {path}"
+                )));
             }
         }
         Ok(())
@@ -346,6 +394,35 @@ mod tests {
             sha256_reader(&mut Cursor::new(b"fixture")).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn rejects_malformed_checksums_and_duplicate_variants() {
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.insert_checksum("model.gguf", b"fixture");
+        manifest
+            .checksums
+            .insert("../escape".to_owned(), "00".to_owned());
+        assert!(manifest.to_json().is_err());
+
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.execution_variants.extend([
+            super::ExecutionVariant {
+                name: "cpu".to_owned(),
+                quantization: QuantizationScheme::None,
+                dtype: "f32".to_owned(),
+                runtime_provider: "cpu".to_owned(),
+                kernel_provider: "cpu".to_owned(),
+            },
+            super::ExecutionVariant {
+                name: "cpu".to_owned(),
+                quantization: QuantizationScheme::None,
+                dtype: "f32".to_owned(),
+                runtime_provider: "cpu".to_owned(),
+                kernel_provider: "cpu".to_owned(),
+            },
+        ]);
+        assert!(manifest.to_json().is_err());
     }
 
     #[test]
