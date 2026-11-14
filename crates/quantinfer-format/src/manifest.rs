@@ -276,13 +276,30 @@ fn verify_digest(path: &str, expected: &str, actual: &str) -> Result<()> {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    hex_encode(Sha256::digest(bytes).as_ref())
 }
 
 pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut digest = Sha256::new();
-    io::copy(reader, &mut digest)?;
-    Ok(format!("{:x}", digest.finalize()))
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(hex_encode(digest.finalize().as_ref()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(HEX[(byte >> 4) as usize] as char);
+        encoded.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 /// Resolve a path once, then read the resolved regular file without following
@@ -297,9 +314,11 @@ pub fn read_file_nofollow(path: impl AsRef<Path>) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use quantinfer_core::{DType, QuantizationScheme, Shape, TensorStorageDescriptor};
 
-    use super::{sha256_hex, ModelManifest, ModelPackage, TensorManifest};
+    use super::{sha256_hex, sha256_reader, ModelManifest, ModelPackage, TensorManifest};
 
     #[test]
     fn round_trips_manifest_and_verifies_checksum() {
@@ -317,6 +336,16 @@ mod tests {
         assert_eq!(decoded.quantization, QuantizationScheme::None);
         assert_eq!(sha256_hex(b"fixture").len(), 64);
         assert!(decoded.checksums_sha256().ends_with("  model.gguf\n"));
+    }
+
+    #[test]
+    fn hashes_known_bytes_and_streams_identically() {
+        let expected = "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
+        assert_eq!(sha256_hex(b"fixture"), expected);
+        assert_eq!(
+            sha256_reader(&mut Cursor::new(b"fixture")).unwrap(),
+            expected
+        );
     }
 
     #[test]
