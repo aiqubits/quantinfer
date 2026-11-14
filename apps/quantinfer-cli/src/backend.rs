@@ -97,13 +97,11 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     manifest: Option<&ModelManifest>,
     open: impl FnOnce() -> quantinfer::kernel::Result<B>,
 ) -> Result<Box<dyn Generator>, String> {
-    use quantinfer::cpu::model_architecture;
     use quantinfer_core::{DType, Device, QuantizationScheme, GGML_OUTPUT_ROWS_LAYOUT};
     use quantinfer_format::GgmlType;
     use quantinfer_runtime::{ExecutionRequest, Operation};
 
     let manifest = manifest.or(reader.embedded_manifest());
-    let architecture = model_architecture(reader, manifest).map_err(|error| error.to_string())?;
     let ggml = reader
         .uses_ggml_output_rows()
         .map_err(|error| error.to_string())?;
