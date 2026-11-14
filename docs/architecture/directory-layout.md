@@ -32,7 +32,8 @@ first implementation file lands.
   attention, and format-storage helpers live in `linear.rs`, `ggml.rs`,
   `attention.rs`, and `storage.rs`; execution contracts, errors, cache,
   generation, and model lookup helpers are split into their own modules.
-  Llama and Qwen3 execution remain separate modules.
+  Llama and Qwen3 each use a directory module with separate execution,
+  GGUF-loader, and test files.
 - `crates/quantinfer-tokenizer` owns tokenizer boundaries and chat templates;
   BPE, byte-level, Qwen chat, shared types, and tests are separate modules.
 
