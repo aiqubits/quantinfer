@@ -8,13 +8,11 @@ use std::io::Seek;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use quantinfer_core::{
-    QuantizationAxis, QuantizationScheme, Shape, Tensor, GGML_OUTPUT_ROWS_LAYOUT,
-};
+use quantinfer_core::{QuantizationAxis, QuantizationScheme, Shape, Tensor};
 use quantinfer_format::{
     canonical_dense_tensor_name, is_embedding_storage_name, qif::import_gguf, sha256_hex,
     sha256_reader, transpose_dense_layout, ExecutionVariant, GgufReader, GgufSpool, GgufValue,
-    GgufWriter, ModelManifest, TensorManifest,
+    GgufWriter, ModelManifest, TensorManifest, GGML_OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_quant::{
     FloatProvider, ImatrixQ4_0Provider, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,

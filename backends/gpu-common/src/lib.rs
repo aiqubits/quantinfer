@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use quantinfer_core::{
     DType, Device, QuantizationScheme, QuantizedTensor, QuantizedTensor4, Shape, Tensor,
-    GGML_OUTPUT_ROWS_LAYOUT,
+    OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_kernel::{KernelError, Result};
 use quantinfer_runtime::{KernelCapability, Operation};
@@ -103,7 +103,7 @@ pub fn projection_capabilities() -> Vec<KernelCapability> {
         (DType::Q4_0, QuantizationScheme::Q4_0),
         (DType::Q8_0, QuantizationScheme::Q8_0),
     ] {
-        for layout in ["row_major", GGML_OUTPUT_ROWS_LAYOUT] {
+        for layout in ["row_major", OUTPUT_ROWS_LAYOUT] {
             capabilities.push(capability(
                 dtype,
                 scheme,

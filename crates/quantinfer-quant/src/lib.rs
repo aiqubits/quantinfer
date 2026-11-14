@@ -71,7 +71,7 @@ mod tests {
                 < 0.4
         );
         assert_eq!(restored.shape(), input.shape());
-        assert_eq!(provider.export_layout(), "ggml_q4_0");
+        assert_eq!(provider.export_layout(), "q4_0");
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
         let quantized = provider.quantize(&input).unwrap();
         let report = provider.error_report(&input, &quantized).unwrap();
         assert!(report.max_absolute_error < 0.2);
-        assert_eq!(provider.export_layout(), "ggml_q4_k");
+        assert_eq!(provider.export_layout(), "q4_k");
     }
 
     #[test]

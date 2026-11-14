@@ -205,7 +205,7 @@ impl QuantizationProvider for NativeQ8_0Provider {
     }
 
     fn export_layout(&self) -> &'static str {
-        "ggml_q8_0"
+        "q8_0"
     }
 }
 
@@ -283,7 +283,7 @@ impl QuantizationProvider for NativeQ4_0Provider {
     }
 
     fn export_layout(&self) -> &'static str {
-        "ggml_q4_0"
+        "q4_0"
     }
 }
 
@@ -330,7 +330,7 @@ impl QuantizationProvider for NativeQ4KProvider {
     }
 
     fn export_layout(&self) -> &'static str {
-        "ggml_q4_k"
+        "q4_k"
     }
 }
 
@@ -372,7 +372,7 @@ impl QuantizationProvider for NativeQ5KProvider {
         }
     }
     fn export_layout(&self) -> &'static str {
-        "ggml_q5_k"
+        "q5_k"
     }
 }
 
@@ -414,6 +414,6 @@ impl QuantizationProvider for NativeQ6KProvider {
         }
     }
     fn export_layout(&self) -> &'static str {
-        "ggml_q6_k"
+        "q6_k"
     }
 }

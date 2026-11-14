@@ -10,6 +10,7 @@ pub type Result<T> = std::result::Result<T, types::FormatError>;
 
 const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 const GGUF_VERSION: u32 = 3;
+pub const GGML_OUTPUT_ROWS_LAYOUT: &str = "ggml_output_rows";
 const DEFAULT_ALIGNMENT: u64 = 32;
 pub(crate) const QUANT_BLOCK_LAYOUT: &str = "quantinfer.ggml.block_layout";
 const MAX_GGUF_HEADER_BYTES: usize = 64 * 1024 * 1024;

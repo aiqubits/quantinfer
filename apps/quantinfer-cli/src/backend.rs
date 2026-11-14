@@ -97,8 +97,9 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     manifest: Option<&ModelManifest>,
     open: impl FnOnce() -> quantinfer::kernel::Result<B>,
 ) -> Result<Box<dyn Generator>, String> {
-    use quantinfer_core::{DType, Device, QuantizationScheme, GGML_OUTPUT_ROWS_LAYOUT};
+    use quantinfer_core::{DType, Device, QuantizationScheme, OUTPUT_ROWS_LAYOUT};
     use quantinfer_format::GgmlType;
+    use quantinfer_format::GGML_OUTPUT_ROWS_LAYOUT;
     use quantinfer_runtime::{ExecutionRequest, Operation};
 
     let manifest = manifest.or(reader.embedded_manifest());
@@ -145,7 +146,7 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     ] {
         if reader.tensors().iter().any(|tensor| tensor.dtype == kind) {
             let tensor_layout = if ggml {
-                GGML_OUTPUT_ROWS_LAYOUT
+                OUTPUT_ROWS_LAYOUT
             } else {
                 "row_major"
             };

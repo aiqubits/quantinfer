@@ -1,12 +1,12 @@
 use half::f16;
 use quantinfer_core::{
     Q4_0Block, QuantizationAxis, QuantizationScheme, QuantizedTensor4, Shape, Tensor,
-    TensorStorageDescriptor, GGML_OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE,
+    TensorStorageDescriptor, OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE,
 };
 
 use crate::{NativeQ4_0Provider, QuantizationError, QuantizationProvider, QuantizedData, Result};
 
-/// Calibrate a GGML output-row matrix using mean-square input activations.
+/// Calibrate an output-row matrix using mean-square input activations.
 /// The logical tensor shape is [input, output]. Data is stored by output row.
 pub struct ImatrixQ4_0Provider<'a> {
     importance: &'a [f32],
@@ -43,7 +43,7 @@ impl QuantizationProvider for ImatrixQ4_0Provider<'_> {
     fn storage_descriptor(&self, shape: Shape) -> Result<TensorStorageDescriptor> {
         self.check_shape(&shape)?;
         let mut descriptor = NativeQ4_0Provider.storage_descriptor(shape)?;
-        descriptor.physical_layout = GGML_OUTPUT_ROWS_LAYOUT.to_owned();
+        descriptor.physical_layout = OUTPUT_ROWS_LAYOUT.to_owned();
         descriptor.quantization_axis = QuantizationAxis::Axis(0);
         Ok(descriptor)
     }

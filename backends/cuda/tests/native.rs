@@ -2,7 +2,7 @@
 
 use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_backend_cuda::CudaBackend;
-use quantinfer_core::{DType, Device, QuantizationScheme, Tensor, GGML_OUTPUT_ROWS_LAYOUT};
+use quantinfer_core::{DType, Device, QuantizationScheme, Tensor, OUTPUT_ROWS_LAYOUT};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_quant::{quantize_q4_0, quantize_q8_0};
 use quantinfer_runtime::{ExecutionRequest, Operation, RuntimeProviderRegistry};
@@ -50,7 +50,7 @@ fn matches_cpu_for_dense_and_packed_projections() {
     registry.register(gpu);
     let mut request = ExecutionRequest {
         device: Device::Gpu,
-        tensor_layout: GGML_OUTPUT_ROWS_LAYOUT.to_owned(),
+        tensor_layout: OUTPUT_ROWS_LAYOUT.to_owned(),
         operation: Some(Operation::QuantizedMatmul),
         alignment: Some(32),
         ..ExecutionRequest::cpu(DType::Q4_0, QuantizationScheme::Q4_0)

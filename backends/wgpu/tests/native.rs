@@ -4,7 +4,7 @@ use quantinfer_backend_cpu::CpuScalar;
 use quantinfer_backend_wgpu::WgpuBackend;
 use quantinfer_core::{
     DType, Device, Q4_0Block, Q8_0Block, QuantizationScheme, QuantizedTensor, QuantizedTensor4,
-    Tensor, GGML_OUTPUT_ROWS_LAYOUT,
+    Tensor, OUTPUT_ROWS_LAYOUT,
 };
 use quantinfer_format::PackedTensorReader;
 use quantinfer_kernel::KernelBackend;
@@ -111,7 +111,7 @@ fn matches_cpu_for_partial_tiles_and_packed_weights() {
     registry.register(gpu);
     let mut request = ExecutionRequest {
         device: Device::Gpu,
-        tensor_layout: GGML_OUTPUT_ROWS_LAYOUT.to_owned(),
+        tensor_layout: OUTPUT_ROWS_LAYOUT.to_owned(),
         operation: Some(Operation::QuantizedMatmul),
         alignment: Some(32),
         ..ExecutionRequest::cpu(DType::Q4_0, QuantizationScheme::Q4_0)

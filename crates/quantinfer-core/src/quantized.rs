@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{CoreError, DType, Result, Shape};
 
 pub const Q8_0_BLOCK_SIZE: usize = 32;
-pub const GGML_OUTPUT_ROWS_LAYOUT: &str = "ggml_output_rows";
+/// Logical output-row storage layout used by quantized matrix providers.
+pub const OUTPUT_ROWS_LAYOUT: &str = "output_rows";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q8_0Block {
@@ -243,7 +244,7 @@ pub const Q4_K_BLOCK_SIZE: usize = 256;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Q4_0Block {
     pub scale: f32,
-    /// Unpacked values in the GGML range 0..=15. The format writer packs two
+    /// Unpacked four-bit values in the range 0..=15. A format writer packs two
     /// values per byte, while kernels consume this logical representation.
     pub values: [u8; Q4_0_BLOCK_SIZE],
 }

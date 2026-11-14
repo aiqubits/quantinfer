@@ -11,7 +11,7 @@ pub use quantized::{
     Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizationAxis, QuantizationScheme,
     QuantizedTensor, QuantizedTensor4, QuantizedTensorDescriptor, QuantizedTensorQ4K,
     QuantizedTensorQ5K, QuantizedTensorQ6K, ScaleType, StorageType, TensorStorageDescriptor,
-    ZeroPointType, GGML_OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    ZeroPointType, OUTPUT_ROWS_LAYOUT, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 pub use tensor::{DType, Device, Shape, Storage, Strides, Tensor, TensorView};
 
