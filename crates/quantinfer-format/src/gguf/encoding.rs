@@ -314,7 +314,13 @@ impl<'a> Cursor<'a> {
                 }
                 Ok(GgufValue::F32(value))
             }
-            7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
+            7 => match self.read_exact(1)?[0] {
+                0 => Ok(GgufValue::Bool(false)),
+                1 => Ok(GgufValue::Bool(true)),
+                value => Err(FormatError::Invalid(format!(
+                    "invalid GGUF boolean value {value}"
+                ))),
+            },
             8 => Ok(GgufValue::String(self.read_string()?)),
             12 => {
                 let value = f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap());

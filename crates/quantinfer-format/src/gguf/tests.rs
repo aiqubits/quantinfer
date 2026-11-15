@@ -275,6 +275,23 @@ fn reads_all_standard_scalar_metadata_kinds() {
 }
 
 #[test]
+fn rejects_noncanonical_boolean_metadata() {
+    let mut raw = Vec::new();
+    raw.extend_from_slice(b"GGUF");
+    raw.extend_from_slice(&3_u32.to_le_bytes());
+    raw.extend_from_slice(&0_u64.to_le_bytes());
+    raw.extend_from_slice(&1_u64.to_le_bytes());
+    raw.extend_from_slice(&4_u64.to_le_bytes());
+    raw.extend_from_slice(b"flag");
+    raw.extend_from_slice(&7_u32.to_le_bytes());
+    raw.push(2);
+    assert!(matches!(
+        GgufReader::open(raw),
+        Err(FormatError::Invalid(message)) if message.contains("boolean")
+    ));
+}
+
+#[test]
 fn rejects_empty_tensor_names() {
     let mut writer = GgufWriter::new();
     writer
