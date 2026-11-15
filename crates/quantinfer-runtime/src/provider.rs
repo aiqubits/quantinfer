@@ -210,9 +210,8 @@ pub struct CpuScalarProvider {
 
 impl Default for CpuScalarProvider {
     fn default() -> Self {
-        let operations: BTreeSet<Operation> = [
+        let floating_operations: BTreeSet<Operation> = [
             Operation::Matmul,
-            Operation::QuantizedMatmul,
             Operation::Attention,
             Operation::RmsNorm,
             Operation::Activation,
@@ -221,29 +220,33 @@ impl Default for CpuScalarProvider {
         ]
         .into_iter()
         .collect();
-        let base = |dtype, quantization, alignment| KernelCapability {
+        let floating = |dtype, quantization, alignment| KernelCapability {
             device: Device::Cpu,
             dtype,
             quantization,
             tensor_layout: "row_major".to_owned(),
-            supported_operations: operations.clone(),
+            supported_operations: floating_operations.clone(),
             alignment,
             head_dimension: None,
             maximum_sequence_length: None,
         };
+        let quantized = |dtype, quantization, alignment| KernelCapability {
+            supported_operations: BTreeSet::from([Operation::QuantizedMatmul]),
+            ..floating(dtype, quantization, alignment)
+        };
         let output_rows = |dtype, quantization, alignment| KernelCapability {
             tensor_layout: OUTPUT_ROWS_LAYOUT.to_owned(),
             supported_operations: BTreeSet::from([Operation::QuantizedMatmul]),
-            ..base(dtype, quantization, alignment)
+            ..quantized(dtype, quantization, alignment)
         };
         Self {
             capabilities: vec![
-                base(DType::F32, QuantizationScheme::None, 1),
-                base(DType::Q8_0, QuantizationScheme::Q8_0, 32),
-                base(DType::Q4_0, QuantizationScheme::Q4_0, 32),
-                base(DType::Q4_K, QuantizationScheme::Q4_K, 256),
-                base(DType::Q5_K, QuantizationScheme::Q5_K, 256),
-                base(DType::Q6_K, QuantizationScheme::Q6_K, 256),
+                floating(DType::F32, QuantizationScheme::None, 1),
+                quantized(DType::Q8_0, QuantizationScheme::Q8_0, 32),
+                quantized(DType::Q4_0, QuantizationScheme::Q4_0, 32),
+                quantized(DType::Q4_K, QuantizationScheme::Q4_K, 256),
+                quantized(DType::Q5_K, QuantizationScheme::Q5_K, 256),
+                quantized(DType::Q6_K, QuantizationScheme::Q6_K, 256),
                 output_rows(DType::Q8_0, QuantizationScheme::Q8_0, 32),
                 output_rows(DType::Q4_0, QuantizationScheme::Q4_0, 32),
                 output_rows(DType::Q4_K, QuantizationScheme::Q4_K, 256),
@@ -291,6 +294,17 @@ mod tests {
         let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
         request.tensor_layout = "blocked".to_owned();
         assert!(default_registry().resolve(&request).is_err());
+    }
+
+    #[test]
+    fn rejects_operations_that_do_not_match_the_tensor_dtype() {
+        let mut floating = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
+        floating.operation = Some(Operation::QuantizedMatmul);
+        assert!(default_registry().resolve(&floating).is_err());
+
+        let mut quantized = ExecutionRequest::cpu(DType::Q4_0, QuantizationScheme::Q4_0);
+        quantized.operation = Some(Operation::Attention);
+        assert!(default_registry().resolve(&quantized).is_err());
     }
 
     #[test]
