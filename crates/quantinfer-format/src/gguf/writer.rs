@@ -53,6 +53,11 @@ impl GgufWriter {
                 "F32 tensor shape does not match data length".to_owned(),
             ));
         }
+        if values.iter().any(|value| !value.is_finite()) {
+            return Err(FormatError::Invalid(
+                "F32 tensor values must be finite".to_owned(),
+            ));
+        }
         let data_size = values
             .len()
             .checked_mul(4)
@@ -98,6 +103,14 @@ impl GgufWriter {
                 "F16 tensor shape does not match data length".to_owned(),
             ));
         }
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || !f16::from_f32(*value).is_finite())
+        {
+            return Err(FormatError::Invalid(
+                "F16 tensor values must be finite".to_owned(),
+            ));
+        }
         let data_size = values
             .len()
             .checked_mul(std::mem::size_of::<f16>())
@@ -141,6 +154,14 @@ impl GgufWriter {
         if elements != values.len() {
             return Err(FormatError::Invalid(
                 "BF16 tensor shape does not match data length".to_owned(),
+            ));
+        }
+        if values
+            .iter()
+            .any(|value| !value.is_finite() || !bf16::from_f32(*value).is_finite())
+        {
+            return Err(FormatError::Invalid(
+                "BF16 tensor values must be finite".to_owned(),
             ));
         }
         let data_size = values
@@ -300,9 +321,28 @@ impl GgufHeader {
     }
 
     fn encode(self, mut metadata: BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
-        metadata
-            .entry("general.alignment".to_owned())
-            .or_insert(GgufValue::U32(self.alignment as u32));
+        if self.alignment == 0 || !self.alignment.is_power_of_two() {
+            return Err(FormatError::Invalid(
+                "GGUF alignment must be a non-zero power of two".to_owned(),
+            ));
+        }
+        if let Some(value) = metadata.get("general.alignment") {
+            let matches = match value {
+                GgufValue::U32(value) => u64::from(*value) == self.alignment,
+                GgufValue::U64(value) => *value == self.alignment,
+                _ => false,
+            };
+            if !matches {
+                return Err(FormatError::Invalid(
+                    "GGUF general.alignment metadata disagrees with the writer alignment"
+                        .to_owned(),
+                ));
+            }
+        }
+        let alignment_value = u32::try_from(self.alignment)
+            .map(GgufValue::U32)
+            .unwrap_or(GgufValue::U64(self.alignment));
+        metadata.insert("general.alignment".to_owned(), alignment_value);
         let mut output = Vec::new();
         output.extend_from_slice(GGUF_MAGIC);
         output.extend_from_slice(&GGUF_VERSION.to_le_bytes());

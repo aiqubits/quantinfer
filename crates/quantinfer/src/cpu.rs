@@ -40,6 +40,30 @@ fn resolve_backend_impl(
     request.tensor_layout = "row_major".to_owned();
     request.operation = Some(Operation::Matmul);
     if let Some(manifest) = manifest {
+        for tensor in &manifest.tensors {
+            let info = reader.tensor_info(&tensor.name).map_err(|_| {
+                RuntimeError::InvalidInput(format!(
+                    "model manifest tensor {} is missing from the tensor file",
+                    tensor.name
+                ))
+            })?;
+            let expected_dtype = match tensor.descriptor.dtype {
+                DType::F32 => GgmlType::F32,
+                DType::F16 => GgmlType::F16,
+                DType::BF16 => GgmlType::BF16,
+                DType::Q8_0 => GgmlType::Q8_0,
+                DType::Q4_0 => GgmlType::Q4_0,
+                DType::Q4_K => GgmlType::Q4_K,
+                DType::Q5_K => GgmlType::Q5_K,
+                DType::Q6_K => GgmlType::Q6_K,
+            };
+            if info.dtype != expected_dtype {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "model manifest tensor {} declares {:?}, but the tensor file stores {:?}",
+                    tensor.name, expected_dtype, info.dtype
+                )));
+            }
+        }
         request.head_dimension = manifest.kernel_requirements.head_dimension;
         request.maximum_sequence_length = manifest.kernel_requirements.maximum_sequence_length;
         request.alignment = manifest.kernel_requirements.alignment;
@@ -197,7 +221,9 @@ pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<u
 
 #[cfg(test)]
 mod tests {
-    use quantinfer_format::{ExecutionVariant, GgufReader, GgufWriter, ModelManifest};
+    use quantinfer_format::{
+        ExecutionVariant, GgufReader, GgufWriter, ModelManifest, TensorManifest,
+    };
 
     use super::*;
 
@@ -232,6 +258,17 @@ mod tests {
         let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
         let mut manifest = ModelManifest::new("fixture", "qwen3");
         manifest.quantization = QuantizationScheme::Q8_0;
+        manifest.tensors.push(TensorManifest {
+            name: "blk.0.attn_q.weight".to_owned(),
+            descriptor: quantinfer_core::TensorStorageDescriptor::quantized(
+                DType::Q8_0,
+                QuantizationScheme::Q8_0,
+                quantinfer_core::Shape::from(vec![32, 1]),
+                Q8_0_BLOCK_SIZE,
+            )
+            .unwrap(),
+            checksum_sha256: None,
+        });
         manifest.execution_variants.push(ExecutionVariant {
             name: "q8-cpu".to_owned(),
             quantization: QuantizationScheme::Q8_0,
@@ -239,6 +276,8 @@ mod tests {
             runtime_provider: "cpu-scalar".to_owned(),
             kernel_provider: "cpu-scalar".to_owned(),
         });
+        let empty_reader = GgufReader::open(GgufWriter::new().finish().unwrap()).unwrap();
+        assert!(resolve_backend(&empty_reader, Some(&manifest)).is_err());
         let mut profile = InferenceProfile {
             model_variant: "q8-cpu".to_owned(),
             quantization_variant: "q8_0".to_owned(),
@@ -259,5 +298,13 @@ mod tests {
         manifest.quantization = QuantizationScheme::None;
         manifest.execution_variants[0].quantization = QuantizationScheme::None;
         assert!(resolve_profiled_backend(&reader, &manifest, &profile).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_manifest_before_resolving_cpu_capabilities() {
+        let reader = GgufReader::open(GgufWriter::new().finish().unwrap()).unwrap();
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.quantization = QuantizationScheme::Q4_0;
+        assert!(resolve_backend(&reader, Some(&manifest)).is_err());
     }
 }

@@ -301,6 +301,25 @@ fn loads_k_quantized_output_rows_from_gguf() {
 }
 
 #[test]
+fn rejects_k_quantized_ggml_rows_with_non_block_aligned_input() {
+    let input = filled(vec![128, 2], 0.25);
+    let mut writer = GgufWriter::new();
+    writer.add_q4_k_tensor("blk.0.attn_q.weight", &quantize_q4_k(&input).unwrap());
+    let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+    assert!(crate::ggml::load_ggml_linear(&reader, "blk.0.attn_q.weight", Some(1)).is_err());
+
+    let mut writer = GgufWriter::new();
+    writer.add_q5_k_tensor("blk.0.attn_q.weight", &quantize_q5_k(&input).unwrap());
+    let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+    assert!(crate::ggml::load_ggml_linear(&reader, "blk.0.attn_q.weight", Some(1)).is_err());
+
+    let mut writer = GgufWriter::new();
+    writer.add_q6_k_tensor("blk.0.attn_q.weight", &quantize_q6_k(&input).unwrap());
+    let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+    assert!(crate::ggml::load_ggml_linear(&reader, "blk.0.attn_q.weight", Some(1)).is_err());
+}
+
+#[test]
 fn loads_q4_k_linear_weight_from_gguf() {
     let mut writer = GgufWriter::new();
     writer.add_q4_k_tensor(

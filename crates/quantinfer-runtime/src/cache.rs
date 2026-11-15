@@ -64,6 +64,33 @@ impl KvCache {
             .ok_or_else(|| RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned()))
     }
 
+    pub(crate) fn validate_layout(
+        &self,
+        layers: usize,
+        num_key_value_heads: usize,
+        head_dim: usize,
+    ) -> Result<usize> {
+        if self.layers.len() != layers
+            || self.num_key_value_heads != num_key_value_heads
+            || self.head_dim != head_dim
+        {
+            return Err(RuntimeError::InvalidInput(
+                "KV cache layout differs from model".to_owned(),
+            ));
+        }
+        let sequence_length = self.sequence_length(0)?;
+        if self
+            .layers
+            .iter()
+            .any(|layer| layer.sequence_length != sequence_length)
+        {
+            return Err(RuntimeError::InvalidInput(
+                "KV cache layers have different sequence lengths".to_owned(),
+            ));
+        }
+        Ok(sequence_length)
+    }
+
     pub fn append(&mut self, layer: usize, key: &Tensor, value: &Tensor) -> Result<()> {
         let layer_cache = self.layers.get_mut(layer).ok_or_else(|| {
             RuntimeError::InvalidInput("KV layer index is out of bounds".to_owned())
@@ -163,5 +190,19 @@ impl KvCache {
             * self.head_dim
             * 2
             * std::mem::size_of::<f32>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::KvCache;
+    use quantinfer_core::Tensor;
+
+    #[test]
+    fn rejects_partially_advanced_kv_layers() {
+        let mut cache = KvCache::new(2, 4, 1, 2).unwrap();
+        let kv = Tensor::from_f32(vec![1, 1, 2], vec![0.0, 0.0]).unwrap();
+        cache.append(0, &kv, &kv).unwrap();
+        assert!(cache.validate_layout(2, 1, 2).is_err());
     }
 }

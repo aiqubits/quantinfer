@@ -96,8 +96,22 @@ fn encode_scalar(output: &mut Vec<u8>, value: &GgufValue) -> Result<()> {
         GgufValue::U64(value) => output.extend_from_slice(&value.to_le_bytes()),
         GgufValue::I32(value) => output.extend_from_slice(&value.to_le_bytes()),
         GgufValue::I64(value) => output.extend_from_slice(&value.to_le_bytes()),
-        GgufValue::F32(value) => output.extend_from_slice(&value.to_le_bytes()),
-        GgufValue::F64(value) => output.extend_from_slice(&value.to_le_bytes()),
+        GgufValue::F32(value) => {
+            if !value.is_finite() {
+                return Err(FormatError::Invalid(
+                    "GGUF metadata floating-point values must be finite".to_owned(),
+                ));
+            }
+            output.extend_from_slice(&value.to_le_bytes());
+        }
+        GgufValue::F64(value) => {
+            if !value.is_finite() {
+                return Err(FormatError::Invalid(
+                    "GGUF metadata floating-point values must be finite".to_owned(),
+                ));
+            }
+            output.extend_from_slice(&value.to_le_bytes());
+        }
         GgufValue::Bool(value) => output.push(u8::from(*value)),
         GgufValue::String(value) => write_string(output, value)?,
         GgufValue::Array(_) => {
@@ -288,16 +302,29 @@ impl<'a> Cursor<'a> {
             10 => Ok(GgufValue::U64(self.read_u64()?)),
             5 => Ok(GgufValue::I32(self.read_u32()? as i32)),
             11 => Ok(GgufValue::I64(self.read_u64()? as i64)),
-            6 => Ok(GgufValue::F32(f32::from_le_bytes(
-                self.read_exact(4)?
-                    .try_into()
-                    .map_err(|_| FormatError::Invalid("invalid F32 metadata value".to_owned()))?,
-            ))),
+            6 => {
+                let value =
+                    f32::from_le_bytes(self.read_exact(4)?.try_into().map_err(|_| {
+                        FormatError::Invalid("invalid F32 metadata value".to_owned())
+                    })?);
+                if !value.is_finite() {
+                    return Err(FormatError::Invalid(
+                        "GGUF metadata floating-point values must be finite".to_owned(),
+                    ));
+                }
+                Ok(GgufValue::F32(value))
+            }
             7 => Ok(GgufValue::Bool(self.read_exact(1)?[0] != 0)),
             8 => Ok(GgufValue::String(self.read_string()?)),
-            12 => Ok(GgufValue::F64(f64::from_le_bytes(
-                self.read_exact(8)?.try_into().unwrap(),
-            ))),
+            12 => {
+                let value = f64::from_le_bytes(self.read_exact(8)?.try_into().unwrap());
+                if !value.is_finite() {
+                    return Err(FormatError::Invalid(
+                        "GGUF metadata floating-point values must be finite".to_owned(),
+                    ));
+                }
+                Ok(GgufValue::F64(value))
+            }
             kind => Err(FormatError::Invalid(format!(
                 "unsupported GGUF metadata type {kind}"
             ))),

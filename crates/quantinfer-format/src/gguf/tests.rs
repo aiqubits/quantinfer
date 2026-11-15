@@ -354,12 +354,53 @@ fn rejects_duplicate_metadata_keys_and_non_finite_tensors() {
     ));
 
     let mut writer = GgufWriter::new();
-    writer
-        .add_f32_tensor("non_finite", vec![1], &[f32::NAN])
-        .unwrap();
-    let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
     assert!(matches!(
-        reader.tensor_f32("non_finite"),
-        Err(FormatError::Invalid(message)) if message.contains("non-finite")
+        writer.add_f32_tensor("non_finite", vec![1], &[f32::NAN]),
+        Err(FormatError::Invalid(message)) if message.contains("finite")
     ));
+    assert!(matches!(
+        writer.add_f16_tensor("non_finite_f16", vec![1], &[f32::INFINITY]),
+        Err(FormatError::Invalid(message)) if message.contains("finite")
+    ));
+    assert!(matches!(
+        writer.add_f16_tensor("overflow_f16", vec![1], &[f32::MAX]),
+        Err(FormatError::Invalid(message)) if message.contains("finite")
+    ));
+    assert!(matches!(
+        writer.add_bf16_tensor("non_finite_bf16", vec![1], &[f32::NEG_INFINITY]),
+        Err(FormatError::Invalid(message)) if message.contains("finite")
+    ));
+    assert!(matches!(
+        writer.add_bf16_tensor("overflow_bf16", vec![1], &[f32::MAX]),
+        Err(FormatError::Invalid(message)) if message.contains("finite")
+    ));
+
+    let mut raw = Vec::new();
+    raw.extend_from_slice(b"GGUF");
+    raw.extend_from_slice(&3_u32.to_le_bytes());
+    raw.extend_from_slice(&0_u64.to_le_bytes());
+    raw.extend_from_slice(&1_u64.to_le_bytes());
+    raw.extend_from_slice(&3_u64.to_le_bytes());
+    raw.extend_from_slice(b"nan");
+    raw.extend_from_slice(&6_u32.to_le_bytes());
+    raw.extend_from_slice(&f32::NAN.to_le_bytes());
+    assert!(matches!(
+        GgufReader::open(raw),
+        Err(FormatError::Invalid(message)) if message.contains("metadata floating-point")
+    ));
+}
+
+#[test]
+fn rejects_reserved_alignment_metadata_that_would_corrupt_offsets() {
+    let mut writer = GgufWriter::new();
+    writer.insert_metadata("general.alignment", GgufValue::U32(64));
+    writer.add_f32_tensor("weight", vec![1], &[1.0]).unwrap();
+    assert!(matches!(
+        writer.finish(),
+        Err(FormatError::Invalid(message)) if message.contains("alignment metadata")
+    ));
+
+    let mut writer = GgufWriter::new();
+    writer.insert_metadata("general.alignment", GgufValue::String("invalid".to_owned()));
+    assert!(writer.finish().is_err());
 }

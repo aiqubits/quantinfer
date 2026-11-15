@@ -161,6 +161,11 @@ pub fn model_architecture<'a>(
     reader: &'a GgufReader,
     manifest: Option<&'a ModelManifest>,
 ) -> Result<&'a str> {
+    if let Some(manifest) = manifest {
+        manifest.validate().map_err(|error| {
+            RuntimeError::InvalidInput(format!("invalid model manifest: {error}"))
+        })?;
+    }
     let archive_architecture = match reader.metadata().get("general.architecture") {
         Some(GgufValue::String(value)) => Some(value.as_str()),
         Some(_) => {

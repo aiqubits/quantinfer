@@ -61,7 +61,7 @@ pub(crate) fn load_ggml_linear(
             };
             Ok(LinearWeight::Q4_0OutputRows(weight))
         }
-        GgmlType::Q4_K => {
+        GgmlType::Q4_K if input != 0 && input.is_multiple_of(Q4_K_BLOCK_SIZE) => {
             let weight = reader.tensor_q4_k(name)?;
             let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
                 QuantizedTensorQ4K::from_blocks(
@@ -73,7 +73,7 @@ pub(crate) fn load_ggml_linear(
             };
             Ok(LinearWeight::Q4_KOutputRows(weight))
         }
-        GgmlType::Q5_K => {
+        GgmlType::Q5_K if input != 0 && input.is_multiple_of(Q4_K_BLOCK_SIZE) => {
             let weight = reader.tensor_q5_k(name)?;
             let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
                 QuantizedTensorQ5K::from_blocks(
@@ -85,7 +85,7 @@ pub(crate) fn load_ggml_linear(
             };
             Ok(LinearWeight::Q5_KOutputRows(weight))
         }
-        GgmlType::Q6_K => {
+        GgmlType::Q6_K if input != 0 && input.is_multiple_of(Q4_K_BLOCK_SIZE) => {
             let weight = reader.tensor_q6_k(name)?;
             let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
                 QuantizedTensorQ6K::from_blocks(

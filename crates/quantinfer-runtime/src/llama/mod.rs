@@ -282,12 +282,14 @@ impl<B: KernelBackend> LlamaModel<B> {
                 "Llama forward requires at least one token".to_owned(),
             ));
         }
-        let requested_length = cache
-            .sequence_length(0)?
-            .checked_add(token_ids.len())
-            .ok_or_else(|| {
-                RuntimeError::InvalidInput("Llama sequence length overflows usize".to_owned())
-            })?;
+        let current_length = cache.validate_layout(
+            self.config.num_hidden_layers,
+            self.config.num_key_value_heads(),
+            self.config.effective_head_dim(),
+        )?;
+        let requested_length = current_length.checked_add(token_ids.len()).ok_or_else(|| {
+            RuntimeError::InvalidInput("Llama sequence length overflows usize".to_owned())
+        })?;
         if requested_length > self.config.max_position_embeddings {
             return Err(RuntimeError::InvalidInput(
                 "input exceeds Llama max_position_embeddings".to_owned(),
