@@ -1,7 +1,6 @@
 //! GGUF writer and streaming spool.
 
 use std::collections::BTreeMap;
-use std::io::{self, Read, Seek, Write};
 
 use half::{bf16, f16};
 use quantinfer_core::{
@@ -282,15 +281,15 @@ impl GgufWriter {
     }
 }
 
-struct GgufHeader {
+pub(super) struct GgufHeader {
     names: std::collections::BTreeSet<String>,
     infos: Vec<u8>,
     alignment: u64,
-    data_size: u64,
+    pub(super) data_size: u64,
 }
 
 impl GgufHeader {
-    fn new(alignment: u64) -> Self {
+    pub(super) fn new(alignment: u64) -> Self {
         Self {
             names: Default::default(),
             infos: Vec::new(),
@@ -299,7 +298,7 @@ impl GgufHeader {
         }
     }
 
-    fn append(&mut self, tensor: &PendingTensor) -> Result<usize> {
+    pub(super) fn append(&mut self, tensor: &PendingTensor) -> Result<usize> {
         if tensor.name.is_empty() {
             return Err(FormatError::Invalid(
                 "GGUF tensor names must be non-empty".to_owned(),
@@ -327,7 +326,7 @@ impl GgufHeader {
         Ok(padding)
     }
 
-    fn encode(self, mut metadata: BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
+    pub(super) fn encode(self, mut metadata: BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
         if self.alignment == 0 || !self.alignment.is_power_of_two() {
             return Err(FormatError::Invalid(
                 "GGUF alignment must be a non-zero power of two".to_owned(),
@@ -395,58 +394,4 @@ fn validate_quantized_payload(tensor: &PendingTensor) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Writes tensor payloads to a scratch stream while retaining only the GGUF header.
-pub struct GgufSpool<F> {
-    scratch: F,
-    header: Option<GgufHeader>,
-    writer: GgufWriter,
-}
-
-impl<F: Read + Seek + Write> GgufSpool<F> {
-    /// The scratch stream must be empty and positioned at its beginning.
-    pub fn new(scratch: F, writer: GgufWriter) -> Self {
-        Self {
-            scratch,
-            header: Some(GgufHeader::new(writer.alignment)),
-            writer,
-        }
-    }
-
-    /// Encode a tensor with the usual writer and immediately spool its payload.
-    pub fn append(&mut self, encode: impl FnOnce(&mut GgufWriter) -> Result<()>) -> Result<()> {
-        let mut header = self.header.take().ok_or_else(|| {
-            FormatError::Invalid("cannot continue a failed GGUF stream".to_owned())
-        })?;
-        encode(&mut self.writer)?;
-        for tensor in self.writer.tensors.drain(..) {
-            let padding = header.append(&tensor)?;
-            self.scratch
-                .write_all(&[0; DEFAULT_ALIGNMENT as usize][..padding])
-                .and_then(|()| self.scratch.write_all(&tensor.data))
-                .map_err(|error| FormatError::Io(format!("cannot spool GGUF tensor: {error}")))?;
-        }
-        self.header = Some(header);
-        Ok(())
-    }
-
-    pub fn finish(mut self, output: &mut impl Write) -> Result<()> {
-        self.append(|_| Ok(()))?;
-        let header = self.header.take().expect("append validated the header");
-        let data_size = header.data_size;
-        let bytes = header.encode(self.writer.metadata)?;
-        let copied = self
-            .scratch
-            .rewind()
-            .and_then(|()| output.write_all(&bytes))
-            .and_then(|()| io::copy(&mut self.scratch.take(data_size), output))
-            .map_err(|error| FormatError::Io(format!("cannot write GGUF: {error}")))?;
-        if copied != data_size {
-            return Err(FormatError::Io(
-                "GGUF scratch stream was truncated".to_owned(),
-            ));
-        }
-        Ok(())
-    }
 }

@@ -4,6 +4,7 @@ mod decode;
 mod encoding;
 mod layout;
 mod reader;
+mod spool;
 mod types;
 mod writer;
 
@@ -21,8 +22,8 @@ const MAX_GGUF_TENSOR_RANK: usize = 1024;
 pub(crate) use encoding::{encode_value, tensor_byte_size, write_string, Cursor};
 pub use layout::qk_channel;
 pub use reader::{GgufReader, PackedTensorReader};
+pub use spool::GgufSpool;
 pub use types::{FormatError, GgmlType, GgufTensorInfo, GgufValue, GgufWriter};
-pub use writer::GgufSpool;
 
 #[cfg(test)]
 mod tests;
