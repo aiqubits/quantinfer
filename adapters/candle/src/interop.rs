@@ -160,6 +160,7 @@ mod tests {
     #[cfg(target_endian = "little")]
     fn imports_unaligned_qif_blocks_without_requantizing() {
         let mut manifest = ModelManifest::new("fixture", "llama");
+        manifest.quantization = QuantizationScheme::Q4_0;
         manifest.tensors.push(TensorManifest {
             name: "weight".to_owned(),
             descriptor: TensorStorageDescriptor::quantized(
