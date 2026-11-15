@@ -1,6 +1,6 @@
 //! Command-line configuration for the HTTP server.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -35,11 +35,15 @@ impl Settings {
             request_timeout: Duration::from_secs(60),
             requests_per_second: None,
         };
+        let mut seen = BTreeSet::new();
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
             let value = args
                 .next()
                 .ok_or_else(|| format!("{flag} requires a value"))?;
+            if flag != "--model" && !seen.insert(flag.clone()) {
+                return Err(format!("duplicate server option {flag}"));
+            }
             let number = || {
                 value
                     .parse::<usize>()

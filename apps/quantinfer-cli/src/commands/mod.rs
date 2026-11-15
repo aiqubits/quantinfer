@@ -117,5 +117,15 @@ mod tests {
         assert!(
             super::common::validate_options(&["--input".to_owned()], &[("--input", true)]).is_err()
         );
+        assert!(super::common::validate_options(
+            &[
+                "--input".to_owned(),
+                "one.gguf".to_owned(),
+                "--input".to_owned(),
+                "two.gguf".to_owned(),
+            ],
+            &[("--input", true)],
+        )
+        .is_err());
     }
 }

@@ -123,6 +123,12 @@ mod tests {
         assert_eq!(settings.models.len(), 2);
         assert_eq!(settings.maximum_requests, 4);
         assert!(Settings::parse(["--max-requests", "0"].into_iter().map(str::to_owned)).is_err());
+        assert!(Settings::parse(
+            ["--bind", "127.0.0.1:1", "--bind", "127.0.0.1:2"]
+                .into_iter()
+                .map(str::to_owned),
+        )
+        .is_err());
     }
 
     #[test]

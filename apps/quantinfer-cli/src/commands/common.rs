@@ -47,12 +47,16 @@ pub(crate) fn validate_options(
     arguments: &[String],
     options: &[(&str, bool)],
 ) -> Result<(), String> {
+    let mut seen = std::collections::BTreeSet::new();
     let mut index = 0;
     while index < arguments.len() {
         let flag = arguments[index].as_str();
         let Some((_, takes_value)) = options.iter().find(|(name, _)| *name == flag) else {
             return Err(format!("unknown option {flag}; use --help for usage"));
         };
+        if !seen.insert(flag) {
+            return Err(format!("duplicate option {flag}; specify it only once"));
+        }
         index += 1;
         if *takes_value {
             if index == arguments.len() {
