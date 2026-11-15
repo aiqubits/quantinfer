@@ -7,8 +7,7 @@ artifacts. The historical wire description is preserved in
 The new format is QIF v2.0. Its normative design is documented in
 [qif-v2-final-plan.md](qif-v2-final-plan.md).
 
-The v2 plan is a design contract, not an implementation claim. Until the v2
-reader, writer, converters, and conformance fixtures are implemented, tools
-must not silently label a v1 artifact as QIF v2. Legacy v1 reading and writing
-must be explicitly isolated during migration and removed from the default
-path once QIF v2 is available.
+QIF2-SINGLE v2.0 的 reader、writer、GGUF 转换路径和内存/file-backed 校验器已在
+`quantinfer-format::qif_v2` 实现。当前实现只接受无压缩单文件 profile；QIF2-PACKAGE、
+压缩 codec、签名和跨语言 golden fixtures 仍是后续兼容工作。Legacy v1 reading and
+writing remain explicitly isolated and are not the default conversion path.

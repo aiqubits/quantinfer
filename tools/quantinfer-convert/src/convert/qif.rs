@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use quantinfer_format::{qif::import_gguf, GgufReader};
+use quantinfer_format::{qif_v2::import_gguf, GgufReader};
 
 use crate::common::{optional_value, required_path};
 

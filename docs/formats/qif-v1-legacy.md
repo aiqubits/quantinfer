@@ -8,13 +8,12 @@ QIF is an optional QuantInfer container for a model manifest, typed metadata,
 and tensor payloads. The format crate exposes a streaming writer and a reader
 that verifies the full artifact before returning borrowed tensor bytes.
 
-The converter imports a supported GGUF artifact and preserves its typed
-metadata and quantized weights. CPU generation accepts QIF files directly.
+The historical converter imported a supported GGUF artifact and preserved its
+typed metadata and quantized weights. The current converter writes QIF2-SINGLE;
+the v1 API remains only for reading old fixtures and migration tests.
 
-```sh
-quantinfer-convert from-gguf --input model.gguf --output model.qif
-quantinfer generate --input model.qif --prompt "The capital of France is" --max-new-tokens 8
-```
+The command example from the retired implementation is intentionally omitted;
+running `quantinfer-convert from-gguf` today produces QIF2-SINGLE v2.0.
 
 ## Container
 

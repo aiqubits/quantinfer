@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{manifest::ModelManifest, qif};
+use crate::{manifest::ModelManifest, qif, qif_v2};
 
 use super::encoding::{align_up, tensor_byte_size, Cursor};
 use super::types::{FormatError, GgmlType, GgufTensorInfo, GgufValue};
@@ -26,7 +26,9 @@ pub type GgufReader = PackedTensorReader;
 impl PackedTensorReader {
     /// Open GGUF or QIF based on its file magic.
     pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
-        if qif::has_magic(&bytes) {
+        if qif_v2::has_magic(&bytes) {
+            qif_v2::open_packed(bytes)
+        } else if qif::has_magic(&bytes) {
             qif::open_packed(bytes)
         } else {
             Self::open(bytes)

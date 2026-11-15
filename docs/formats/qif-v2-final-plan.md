@@ -1,10 +1,12 @@
 # QIF v2.0 权重容器标准方案
 
-状态：设计冻结候选，尚未实现。
+状态：QIF v2.0-SINGLE 规范与首个实现已冻结；PACKAGE、压缩和签名仍是后续兼容扩展。
 
-QIF v1 已停止作为 QuantInfer 的目标格式。当前仓库中的 QIF v1 reader、writer、GGUF 转换器和测试只保留为历史参考与迁移输入；新 writer 不得继续生成 QIF v1，新 runtime 不得把 QIF v1 当作新版格式的兼容依据。
+QIF v1 已停止作为 QuantInfer 的目标格式。当前仓库中的 QIF v1 reader、writer 和
+历史测试只保留为旧 artifact 的读取与迁移参考；新 GGUF 转换器写入 QIF2-SINGLE，
+新 runtime 不得把 QIF v1 当作新版格式的兼容依据。
 
-本文定义全新的 QIF v2.0 wire format。文中的 **MUST**、**MUST NOT**、**SHOULD**、**MAY** 具有规范含义：MUST/MUST NOT 是互操作性要求，SHOULD 是默认实现要求，MAY 是可选能力。
+本文定义全新的 QIF v2.0 wire format。当前仓库实现的是 QIF2-SINGLE 的无压缩核心 profile。文中的 **MUST**、**MUST NOT**、**SHOULD**、**MAY** 具有规范含义：MUST/MUST NOT 是互操作性要求，SHOULD 是默认实现要求，MAY 是可选能力。
 
 ## 1. 定位与边界
 
@@ -55,8 +57,8 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 
 - “比 SafeTensors/GGUF/DCP 更快或更轻”是待验证的设计目标，不是规范事实；
 - 当前 QIF v1 没有 file-backed mmap API，v2 把它列为实现要求而不是现状；
-- fixed header 的字段、大小和偏移已固定为可计算的 144 字节基础头；
-- manifest 采用 canonical JSON，metadata 采用 canonical CBOR，避免把可读性和热路径索引混为一谈；
+- fixed header 的字段、大小和偏移固定为 144 字节；v2.0 reader 要求该值精确为 144，扩展头保留给后续版本；
+- manifest 采用 canonical JSON，metadata 采用确定性 QMB typed map，避免把可读性和热路径索引混为一谈，也避免 v2.0 强制引入 CBOR runtime 依赖；
 - SHA-256 是 v2.0 必选 hash；BLAKE3、Ed25519/COSE 不作为 v2.0 的强制依赖；
 - chunk compression 是可选能力，`none` 是唯一必须支持的 codec；
 - 单文件与分片包是两个 profile，不声称所有运行时都支持分片或 resharding；
@@ -64,10 +66,10 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 
 ## 3. QIF v2.0 总体结构
 
-QIF v2 允许两种容器 profile：
+QIF v2 规划两种容器 profile；当前 v2.0 实现只冻结第一种：
 
 - **QIF2-SINGLE**：一个文件，适合本地、边缘和单机服务。
-- **QIF2-PACKAGE**：一个 package manifest 加多个 data shard，适合对象存储、大模型和并行读取。
+- **QIF2-PACKAGE**：一个 package manifest 加多个 data shard，适合对象存储、大模型和并行读取（后续兼容 profile，当前未实现）。
 
 两种 profile 使用同一套 manifest、tensor record、chunk record 和 hash 规则。差异只在 payload 的物理位置与 package manifest。
 
@@ -79,9 +81,7 @@ QIF2-SINGLE 的区域顺序为：
 fixed header
 canonical manifest
 canonical metadata
-string table
-tensor index
-chunk index
+binary index (string table, shape table, tensor records, chunk records)
 optional signature envelope
 aligned payload chunks
 ```
@@ -90,14 +90,14 @@ aligned payload chunks
 
 ### 3.2 固定 header
 
-header 的基础长度为 144 字节；下表字段按文件顺序排列，字段 offset 由前面字段大小累加得到；`header_size` MAY 大于 144，用于向前兼容扩展。所有整数使用 little-endian。
+header 长度为 144 字节；下表字段按文件顺序排列，字段 offset 由前面字段大小累加得到。所有整数使用 little-endian。
 
 | 字段 | 大小 | 约束 |
 | --- | ---: | --- |
 | magic | 4 | 固定为 `QIF\0` |
 | version | 4 | 固定为 `2` |
 | flags | 4 | profile、feature 和必需能力位 |
-| header_size | 4 | `>= 144`，且不超过实现上限 |
+| header_size | 4 | v2.0 固定为 `144` |
 | hash_algorithm | 4 | v2.0 必须支持 SHA-256；其他算法需能力协商 |
 | index_version | 4 | 当前为 `1` |
 | manifest_offset | 8 | 文件绝对偏移 |
@@ -105,24 +105,28 @@ header 的基础长度为 144 字节；下表字段按文件顺序排列，字�
 | metadata_offset | 8 | 文件绝对偏移 |
 | metadata_length | 8 | canonical metadata 长度 |
 | index_offset | 8 | binary index 起始偏移 |
-| index_length | 8 | string/tensor/chunk index 总长度 |
+| index_length | 8 | index header、string/shape table、tensor/chunk records 总长度 |
 | payload_offset | 8 | payload 区域起始偏移 |
 | payload_length | 8 | payload 区域长度 |
 | root_hash | 32 | 对 canonical sections 和 chunk digest 的根校验 |
-| signature_offset | 8 | 没有签名时为 0 |
-| signature_length | 8 | 没有签名时为 0 |
+| signature_offset | 8 | v2.0 必须为 0；签名 profile 保留给后续版本 |
+| signature_length | 8 | v2.0 必须为 0；签名 profile 保留给后续版本 |
 | reserved | 8 | 必须为 0，未来版本可扩展 |
 
 未知的必需 feature bit MUST 拒绝；未知的 advisory bit MAY 忽略。reader MUST 检查所有区域的边界、重叠、整数溢出和文件 EOF。
+
+QIF2-SINGLE v2.0 的 `flags` 固定为 `0`。profile、compression 和 signature
+feature bits 在后续兼容版本中分配；v2.0 reader 遇到非零 flags 必须拒绝。
 
 ## 4. Manifest 与 metadata
 
 ### 4.1 Manifest
 
-manifest 使用 RFC 8785 JSON Canonicalization Scheme 产生的 canonical UTF-8
-JSON。原因是 manifest 主要用于检查、审计、转换和人工诊断，JSON 的可见性
-优于二进制对象格式；高频 tensor 定位由 binary index 完成，不再依赖 JSON
-扫描性能。
+manifest 使用 QuantInfer v2.0 定义的确定性 JSON 编码：由已验证的
+`ModelManifest` 结构按固定字段顺序序列化为 UTF-8 JSON，reader 要求输入字节与
+该序列化结果完全一致。v2.0 不声称实现 RFC 8785 的全部数值规范化规则；若未来
+需要跨实现的 RFC 8785 互操作，必须单独冻结对应 canonicalization profile。JSON
+主要用于检查、审计、转换和人工诊断，高频 tensor 定位由 binary index 完成。
 
 manifest MUST：
 
@@ -131,14 +135,19 @@ manifest MUST：
 - 限制最大字节数、最大深度和最大字符串长度；
 - 使用确定性 key 顺序和数字表示；
 - 记录 `schema_version` 与 `model_id`；
-- 记录 architecture、source revision、tokenizer、compatibility 和 tensor count；
-- 记录每个 tensor 的 `tensor_id`、name、logical shape、logical dtype 和 semantic role。
+- 记录 architecture、source revision、tokenizer、compatibility 和 tensor 列表；
+- 每个 tensor 在 manifest 中记录 name 与完整 logical storage descriptor；稳定的
+  `tensor_id`、shape table 和物理 encoding 由 binary index 记录。semantic role
+  需要时通过受控 metadata key 表达，不能被 reader 当作存储布局。
 
 manifest MUST NOT 保存任意可执行对象。
 
 ### 4.2 Metadata
 
-metadata 使用 canonical CBOR map，采用 definite-length 编码。CBOR 只用于结构化 metadata，不用于大 tensor payload。
+metadata 使用 QuantInfer 定义的 QMB（QIF Metadata Binary）typed map，而不是
+强制引入第三方 object serialization。QMB 的 key 按 UTF-8 编码字节排序，所有
+map/array 使用 definite-length 编码，因此同一逻辑 metadata 只有一种 wire
+表示。`qif inspect --json` 提供 JSON 展示；JSON 不是 payload wire format。
 
 允许的值类型：
 
@@ -149,19 +158,58 @@ metadata 使用 canonical CBOR map，采用 definite-length 编码。CBOR 只用
 - bounded array；
 - bounded map。
 
+QMB v1 tags MUST be stable：`u32=4`、`i32=5`、`f32=6`、`bool=7`、
+`string=8`、`array=9`、`u64=10`、`i64=11`、`f64=12`、`map=13`。数组元素
+必须使用同一 tag；map key 必须是非空 UTF-8 string 并按编码字节排序。
+
+每个整数 tag、array tag 和 map tag 使用 little-endian `u32`；整数和浮点值
+随后使用对应 little-endian 固定宽度。string 使用 `u64 byte_length + UTF-8 bytes`；
+array 使用 `u64 count + count 个带 tag 的 value`；map 使用 `u64 count + count
+个 string key/value 对`。v2.0 reader 限制嵌套深度、项目数、字符串长度和 metadata
+总长度，并拒绝 trailing bytes、重复 key、非有限浮点和未知 tag。
+
 metadata MUST 设置最大深度、最大 map/array 项数和最大字符串字节数。metadata 中的 model/runtime hint 只能影响优化，不能改变 tensor 的正确解释。
 
 ## 5. Binary index
 
-index 由三个确定性区域组成：
+ index 由固定头和四个确定性区域组成：
 
 ```text
+index header
 string table
+shape table
 tensor records
 chunk records
 ```
 
 ### 5.1 Tensor record
+
+index header 固定为 48 字节：`magic[4] = QIDX`、`index_version u32`、
+`tensor_count u32`、`chunk_count u32`，以及 string table、shape table、tensor
+record、chunk record 的四个 `u64` 字节长度。所有表都紧跟 index header，不能有
+隐式尾部数据。
+
+v2.0 tensor record 固定为 120 字节：
+
+```text
+tensor_id u64
+name_ref u32, shape_ref u32
+logical_dtype u32, physical_encoding u32, quantization_scheme u32, layout_id u32
+codec_id u32, flags u32, chunk_start u32, chunk_count u32
+raw_length u64, stored_length u64, data_offset u64
+tensor_sha256[32]
+alias_target u64 (all-ones means none)
+reserved u32, reserved u32
+```
+
+shape table entry 为 `rank u32` 加 `rank` 个 `u64` dimension；string table entry
+为 `length u32` 加 UTF-8 bytes。chunk record 固定为 72 字节：
+
+```text
+shard_id u32, codec_id u32
+raw_offset u64, raw_length u64, stored_offset u64, stored_length u64
+chunk_sha256[32]
+```
 
 每个 tensor record MUST 包含：
 
@@ -174,7 +222,6 @@ quantization_scheme
 layout_id
 rank
 shape_reference
-stride_reference (optional)
 data_offset / chunk_table_reference
 stored_length
 raw_length
@@ -192,12 +239,10 @@ tensor name MUST 是唯一的 UTF-8 字符串。`tensor_id` 在同一 artifact �
 
 rank、shape 和 stride 使用 64 位无符号整数。实现 MUST 限制最大 rank，防止恶意 shape 造成分配或乘法溢出。
 
-v2.0 内建 layout：
+QIF2-SINGLE v2.0 内建 layout：
 
 ```text
 row_major
-column_major
-blocked
 ggml_output_rows
 ```
 
@@ -227,19 +272,22 @@ QIF2-PACKAGE 的 chunk record 还 MUST 包含 `shard_id`；QIF2-SINGLE 使用
 
 v2.0 默认 chunk alignment 为 4096 字节；实现 MAY 使用更大的 64 KiB 或 2 MiB 对齐。alignment 必须是 2 的幂，且不小于 64 字节。
 
-无压缩 chunk MUST 可以通过 offset/length 直接 mmap。压缩 chunk MUST 可以独立解压和独立校验，禁止使用跨 chunk 的连续压缩流。
+无压缩 chunk MUST 可以通过 offset/length 直接读取；v2.0-SINGLE reader 只接受无压缩
+chunk。后续压缩 profile 的 chunk MUST 可以独立解压和独立校验，禁止使用跨 chunk
+的连续压缩流。
 
 ### 6.2 Codec
 
-v2.0 core codec：
+QIF2-SINGLE v2.0 core codec：
 
 ```text
 0 = none       (MUST)
-1 = zstd       (SHOULD)
-2 = lz4        (MAY)
+1 = zstd       (reserved)
+2 = lz4        (reserved)
 ```
 
-默认 encoder SHOULD 对推理热路径使用 `none`，对冷数据、远端对象存储或低带宽传输使用 zstd/lz4。自定义 codec 不属于 v2.0 core，必须通过明确的 extension ID 和能力协商。
+v2.0 encoder 使用 `none`；zstd/lz4 只保留 registry ID，当前 reader 会拒绝它们。
+压缩 codec 必须通过明确的 extension ID、能力协商和独立 golden fixtures 后才能启用。
 
 ### 6.3 量化编码
 
@@ -256,7 +304,9 @@ packing_order
 physical_layout
 ```
 
-v2.0 SHOULD 内建 F32、F16、BF16、FP8、INT8、INT4、NF4 和当前 QuantInfer 使用的 Q4_0/Q4_K/Q5_K/Q6_K/Q8_0。具体内建集合必须通过 golden files 固化，不得只写在文档中。
+QIF2-SINGLE v2.0 实现固化 F32、F16、BF16 和当前 QuantInfer 使用的
+Q4_0/Q4_K/Q5_K/Q6_K/Q8_0。FP8、INT8、INT4、NF4 需要在 descriptor、payload
+大小和 golden fixtures 一起冻结后才能加入兼容集合。
 
 ## 7. 完整性与安全
 
@@ -289,7 +339,7 @@ QIF v2 MUST NOT：
 - 允许 NaN/Infinity 进入标准浮点 payload；
 - 允许未知 mandatory encoding 被当作其他 dtype 读取。
 
-## 8. QIF2-PACKAGE
+## 8. QIF2-PACKAGE（后续 profile，当前未实现）
 
 QIF2-PACKAGE 由一个 package manifest 和多个 shard 构成：
 
@@ -316,25 +366,28 @@ package manifest MUST 为每个 shard 记录：
 
 ## 9. Runtime API
 
-`quantinfer-format` 应新增独立的 file-backed reader，而不是继续把 QIF 伪装成 `Vec<u8>`：
+`quantinfer-format` 的内存和 file-backed reader 已独立于 QIF v1；当前 API 为：
 
 ```rust
-QifFileReader::open(path)
-QifFileReader::manifest()
-QifFileReader::metadata()
-QifFileReader::tensor_info(name)
-QifFileReader::tensor_region(name)
-QifFileReader::read_range(name, range)
-QifFileReader::mmap_range(name)
-QifFileReader::verify(mode)
+QifV2Reader::open(bytes)
+QifV2Reader::manifest()
+QifV2Reader::metadata()
+QifV2Reader::tensor_info(name)
+QifV2Reader::tensor_bytes(name)
+QifV2Reader::read_range(name, range)
+QifV2Reader::verify()
+QifV2FileReader::open(path)
+QifV2FileReader::read_range(name, range)
+QifV2FileReader::verify()
 ```
 
 API 要求：
 
-- 打开 index 不读取全部 payload；
-- uncompressed chunk 可以零拷贝映射；
-- compressed chunk 只分配当前请求所需内存；
-- reader 可选择 eager、lazy、parallel verification；
+- 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
+- `read_range` 只复制请求的 tensor 子范围；
+- v2.0-SINGLE 提供按需 file-backed range read，但尚未提供 `mmap_range`；mmap 需要单独处理
+  Rust unsafe 边界与跨平台文件映射策略，不能在当前版本宣称已经具备；
+- reader 可选择调用 `verify` 执行全 payload 校验；
 - 文件、内存 buffer 和 package shard 使用同一逻辑接口；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
 
@@ -342,12 +395,12 @@ API 要求：
 
 以下是必须验证的工程目标，不是未经测试的既定优势：
 
-1. index open 不读取 payload；
-2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload；
-3. 无压缩路径能返回 mmap/range view；
-4. 压缩路径不会把整个模型解压到内存；
-5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值；
-6. 只改变 shard/rank 布局时无需重新编码 tensor；
+1. file-backed index open 不读取 payload（当前 `QifV2FileReader::open` 已满足）；
+2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload（当前 file-backed `read_range` 已满足）；
+3. 无压缩路径能返回 mmap/range view（range read 已满足，mmap view 待后续实现）；
+4. 压缩路径不会把整个模型解压到内存（待压缩 profile 实现后验收）；
+5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（PACKAGE 尚未实现）；
+6. 只改变 shard/rank 布局时无需重新编码 tensor（PACKAGE 尚未实现）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust、C 和 Python golden readers 对同一 fixtures 得出一致 tensor info 和 bytes；
 9. 与 SafeTensors/GGUF 的 benchmark 必须报告：open latency、first-tensor latency、RSS、page faults、selected-layer read bandwidth、full-load time 和验证吞吐；
@@ -357,14 +410,14 @@ API 要求：
 
 迁移顺序：
 
-1. 新增 `qif-v2` module，禁止在 v2 module 复用 v1 header parser。
-2. 将当前 `qif` module 标记为 legacy-only，停止生成 v1 artifact。
-3. 增加 QIF2 binary index、file-backed reader、single-file writer。
-4. 增加 QIF2 package/shard writer 和 atomic publish。
-5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests。
-6. 新 CLI 默认输出 QIF2；旧 v1 只能通过显式 `--legacy-qif-v1` 读取。
+1. 新增 `qif-v2` module，禁止在 v2 module 复用 v1 header parser（已完成）。
+2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
+3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
+4. 增加 file-backed reader、mmap/range view 和 QIF2 package/shard writer（后续里程碑）。
+5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（后续里程碑）。
+6. 新 CLI 默认输出 QIF2；旧 v1 只能通过显式 `--legacy-qif-v1` 读取（迁移 CLI 仍需补齐显式开关）。
 7. 完成 GGUF/SafeTensors → QIF2 转换后，再删除 v1 writer 和 v1 默认 reader。
-8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式。
+8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论
 

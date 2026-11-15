@@ -6,6 +6,7 @@ pub mod dense;
 pub mod gguf;
 pub mod manifest;
 pub mod qif;
+pub mod qif_v2;
 pub mod safetensors;
 
 mod json;

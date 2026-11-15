@@ -31,9 +31,9 @@ floating point where the model path requires it.
 
 The format layer supports GGUF, SafeTensors, package manifests, and a legacy
 QIF v1 path. QIF v1 is retired and is not the target format for new artifacts.
-The replacement design is documented in `docs/formats/qif-v2-final-plan.md` and
-must be implemented as a separate wire boundary with its own conformance
-fixtures.
+QIF2-SINGLE v2.0 is implemented as a separate wire boundary in
+`quantinfer-format::qif_v2`; package, compressed and cross-language conformance
+profiles remain future work documented in `docs/formats/qif-v2-final-plan.md`.
 
 ## Repository workflow
 
