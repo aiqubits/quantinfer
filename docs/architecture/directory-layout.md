@@ -12,7 +12,8 @@ first implementation file lands.
   model, kernel, quantization, runtime, and tokenizer crates and exposes
   feature-gated backends through the same API.
 - `crates/quantinfer-core` owns backend-independent types. Its implementation
-  is split into `error.rs`, `tensor.rs`, and `quantized.rs`.
+  is split into `error.rs`, `tensor.rs`, and the `quantized/` modules for
+  descriptors, Q8, Q4, and K-quant logical blocks.
 - `crates/quantinfer-kernel` owns operator and backend contracts.
 - `crates/quantinfer-format` owns GGUF, SafeTensors, manifests, and QIF. The
   facade is in `src/lib.rs`; GGUF and SafeTensors are directory modules split

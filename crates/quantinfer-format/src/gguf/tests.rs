@@ -295,6 +295,20 @@ fn rejects_duplicate_tensor_names() {
 }
 
 #[test]
+fn rejects_truncated_tensor_payloads_during_open() {
+    let mut writer = GgufWriter::new();
+    writer
+        .add_f32_tensor("weight", vec![2], &[1.0, 2.0])
+        .unwrap();
+    let mut bytes = writer.finish().unwrap();
+    bytes.pop();
+    assert!(matches!(
+        GgufReader::open(bytes),
+        Err(FormatError::Invalid(message)) if message.contains("data is truncated")
+    ));
+}
+
+#[test]
 fn rejects_duplicate_metadata_keys_and_non_finite_tensors() {
     let mut raw = Vec::new();
     raw.extend_from_slice(b"GGUF");

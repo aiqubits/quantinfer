@@ -129,6 +129,20 @@ pub(crate) fn parse_header(
             },
         );
     }
+    let mut ranges: Vec<(&str, (usize, usize))> = tensors
+        .iter()
+        .map(|(name, info)| (name.as_str(), info.data_offsets))
+        .collect();
+    ranges.sort_unstable_by_key(|(_, (start, _))| *start);
+    if ranges.windows(2).any(|pair| {
+        let previous_end = (pair[0].1).1;
+        let next_start = (pair[1].1).0;
+        next_start < previous_end
+    }) {
+        return Err(FormatError::Invalid(
+            "SafeTensors tensor data ranges overlap".to_owned(),
+        ));
+    }
     Ok((tensors, metadata))
 }
 

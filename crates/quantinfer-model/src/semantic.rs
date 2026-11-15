@@ -115,6 +115,29 @@ impl ModelSpec {
         {
             return Err("model dimensions must be greater than zero".to_owned());
         }
+        if self
+            .vocabulary
+            .bos_token_id
+            .into_iter()
+            .chain(self.vocabulary.eos_token_id)
+            .any(|token| token >= self.vocabulary.size)
+        {
+            return Err("special token IDs must be within the vocabulary".to_owned());
+        }
+        let valid_normalization = |normalization: &NormalizationSpec| {
+            normalization.epsilon.is_finite() && normalization.epsilon > 0.0
+        };
+        if !valid_normalization(&self.final_normalization)
+            || self.layers.iter().any(|layer| {
+                !valid_normalization(&layer.normalization)
+                    || !valid_normalization(&layer.post_attention_normalization)
+            })
+        {
+            return Err("normalization epsilon must be finite and positive".to_owned());
+        }
+        if self.embedding.shape != Shape::from(vec![self.vocabulary.size, self.hidden_size]) {
+            return Err("embedding shape does not match vocabulary and hidden size".to_owned());
+        }
         if self.layers.iter().enumerate().any(|(index, layer)| {
             layer.index != index
                 || layer.hidden_size != self.hidden_size
@@ -136,6 +159,101 @@ impl ModelSpec {
                 || !semantic_keys.insert((tensor.role, tensor.layer))
         }) {
             return Err("model tensor semantic roles must be unique and non-empty".to_owned());
+        }
+        let require_shape = |role: TensorRole, layer: Option<usize>, shape: Vec<usize>| {
+            let tensor = self.tensor(role, layer).ok_or_else(|| {
+                format!("model tensor semantic role {role:?} is missing for layer {layer:?}")
+            })?;
+            if tensor.logical_shape != Shape::from(shape) {
+                return Err(format!(
+                    "model tensor semantic role {role:?} has an invalid shape for layer {layer:?}"
+                ));
+            }
+            Ok::<_, String>(())
+        };
+        require_shape(
+            TensorRole::TokenEmbedding,
+            None,
+            vec![self.vocabulary.size, self.hidden_size],
+        )?;
+        require_shape(TensorRole::FinalNormalization, None, vec![self.hidden_size])?;
+        if let Some(tensor) = self.tensor(TensorRole::LmHead, None) {
+            if tensor.logical_shape != Shape::from(vec![self.hidden_size, self.vocabulary.size]) {
+                return Err("language-model head has an invalid shape".to_owned());
+            }
+        }
+        for layer in &self.layers {
+            let index = Some(layer.index);
+            let head_projection = layer
+                .attention
+                .num_heads
+                .checked_mul(layer.attention.head_dim)
+                .ok_or_else(|| "query projection dimensions overflow usize".to_owned())?;
+            let key_value_projection = layer
+                .attention
+                .num_key_value_heads
+                .checked_mul(layer.attention.head_dim)
+                .ok_or_else(|| "key/value projection dimensions overflow usize".to_owned())?;
+            for role in [
+                TensorRole::InputNormalization,
+                TensorRole::PostAttentionNormalization,
+            ] {
+                require_shape(role, index, vec![self.hidden_size])?;
+            }
+            require_shape(
+                TensorRole::QueryProjection,
+                index,
+                vec![self.hidden_size, head_projection],
+            )?;
+            require_shape(
+                TensorRole::KeyProjection,
+                index,
+                vec![self.hidden_size, key_value_projection],
+            )?;
+            require_shape(
+                TensorRole::ValueProjection,
+                index,
+                vec![self.hidden_size, key_value_projection],
+            )?;
+            require_shape(
+                TensorRole::OutputProjection,
+                index,
+                vec![head_projection, self.hidden_size],
+            )?;
+            require_shape(
+                TensorRole::GateProjection,
+                index,
+                vec![self.hidden_size, self.intermediate_size],
+            )?;
+            require_shape(
+                TensorRole::UpProjection,
+                index,
+                vec![self.hidden_size, self.intermediate_size],
+            )?;
+            require_shape(
+                TensorRole::DownProjection,
+                index,
+                vec![self.intermediate_size, self.hidden_size],
+            )?;
+            if layer.attention.qk_norm {
+                require_shape(
+                    TensorRole::QueryNormalization,
+                    index,
+                    vec![layer.attention.head_dim],
+                )?;
+                require_shape(
+                    TensorRole::KeyNormalization,
+                    index,
+                    vec![layer.attention.head_dim],
+                )?;
+            } else if self.tensor(TensorRole::QueryNormalization, index).is_some()
+                || self.tensor(TensorRole::KeyNormalization, index).is_some()
+            {
+                return Err(format!(
+                    "model layer {} declares Q/K normalization without qk_norm",
+                    layer.index
+                ));
+            }
         }
         Ok(())
     }
@@ -323,6 +441,36 @@ mod tests {
         };
         let mut spec = config.to_model_spec("fixture").unwrap();
         spec.tensor_map.push(spec.tensor_map[0].clone());
+        assert!(spec.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_missing_or_mismatched_tensor_semantics() {
+        let config = Qwen3Config {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: Some(4),
+            rms_norm_eps: 1e-6,
+            rope_theta: 1e6,
+            max_position_embeddings: 64,
+            tie_word_embeddings: true,
+            sliding_window: None,
+            max_window_layers: None,
+            use_sliding_window: false,
+            rope_scaling: None,
+            architectures: vec!["Qwen3ForCausalLM".to_owned()],
+        };
+        let mut spec = config.to_model_spec("fixture").unwrap();
+        spec.tensor_map
+            .retain(|tensor| tensor.role != TensorRole::KeyProjection);
+        assert!(spec.validate().is_err());
+
+        let mut spec = config.to_model_spec("fixture").unwrap();
+        spec.vocabulary.eos_token_id = Some(spec.vocabulary.size);
         assert!(spec.validate().is_err());
     }
 }

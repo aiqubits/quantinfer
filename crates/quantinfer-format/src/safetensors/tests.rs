@@ -67,6 +67,17 @@ fn rejects_tensor_bytes_that_do_not_match_shape() {
 }
 
 #[test]
+fn rejects_overlapping_tensor_ranges() {
+    let header = br#"{"first":{"dtype":"F32","shape":[2],"data_offsets":[0,8]},"second":{"dtype":"F32","shape":[2],"data_offsets":[4,12]}}"#;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(&[0_u8; 12]);
+    let error = SafeTensorFile::open(bytes).unwrap_err().to_string();
+    assert!(error.contains("data ranges overlap"));
+}
+
+#[test]
 fn rejects_oversized_headers_before_allocating_them() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&((64 * 1024 * 1024 + 1) as u64).to_le_bytes());

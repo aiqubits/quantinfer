@@ -206,6 +206,23 @@ impl PackedTensorReader {
                 .ok_or_else(|| {
                     FormatError::Invalid("GGUF tensor range overflows u64".to_owned())
                 })?;
+            let data_end = data_start
+                .checked_add(usize::try_from(tensor.offset).map_err(|_| {
+                    FormatError::Invalid("GGUF tensor offset overflows usize".to_owned())
+                })?)
+                .and_then(|start| start.checked_add(tensor.size))
+                .ok_or_else(|| {
+                    FormatError::Invalid(format!(
+                        "GGUF tensor {} range overflows the file",
+                        tensor.name
+                    ))
+                })?;
+            if data_end > bytes.len() {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {} data is truncated",
+                    tensor.name
+                )));
+            }
             ranges.push((tensor.offset, end));
         }
         ranges.sort_unstable_by_key(|(start, _)| *start);
