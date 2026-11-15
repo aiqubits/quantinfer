@@ -31,8 +31,8 @@ first implementation file lands.
   `imatrix.rs`.
 - `crates/quantinfer-runtime` owns model execution, batching, scheduling,
   sessions, KV state, profiles, and generation. Shared linear, GGML-layout,
-  attention, and format-storage helpers live in `linear.rs`, `ggml.rs`,
-  `attention.rs`, and `storage.rs`; execution contracts, errors, cache,
+  attention, and format-storage helpers live in `linear.rs`, the `ggml/` decoder
+  and layout modules, `attention.rs`, and `storage.rs`; execution contracts, errors, cache,
   generation, and model lookup helpers are split into their own modules.
   Llama and Qwen3 each use a directory module with separate execution,
   GGUF-loader, and test files.
@@ -44,12 +44,15 @@ first implementation file lands.
 - `apps/quantinfer-cli` contains the executable entry point plus
   `backend.rs`, `calibration.rs`, and command modules under
   `src/commands/`.
-- `apps/quantinfer-server` separates configuration, shared state, HTTP routes,
-  rate limiting, registry, and the decode engine under `src/`.
+- `apps/quantinfer-server` separates configuration, shared state, HTTP routes
+  (including generation and the embedded Studio), rate limiting, registry, and
+  the decode engine under `src/`.
 - `backends/` contains CPU, SIMD, WGPU, CUDA, Metal, Ascend, T-MAC, and KleidiAI
   implementations. Shader and kernel directories are retained only where
   source artifacts exist.
-- `adapters/` contains optional checkpoint and interoperability crates.
+- `adapters/` contains optional checkpoint and interoperability crates. Packed
+  checkpoint adapters keep configuration, SafeTensors sources, and decoding in
+  separate modules where those concerns have independent ownership.
 - `bindings/` and `targets/` contain the C, WebAssembly, and WASI-NN
   integration crates.
 - `tools/` contains conversion and repository-task executables; they are not
@@ -57,7 +60,8 @@ first implementation file lands.
   model adapters, quantization policy, tokenizer metadata, conversion
   orchestration, QIF transcoding, and shared parsing helpers. The two
   conversion workflows live in separate `convert/gguf.rs` and `convert/qif.rs`
-  modules.
+  modules; `xtask` keeps benchmark, conformance, and tokenizer-golden tasks in
+  separate task modules.
 - `backends/cpu` keeps the safe scalar backend split into configuration,
   operator implementations, matmul helpers, and tests; optional SIMD code
   remains in `backends/cpu-simd`.
