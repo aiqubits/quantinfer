@@ -275,6 +275,26 @@ fn reads_all_standard_scalar_metadata_kinds() {
 }
 
 #[test]
+fn rejects_empty_tensor_names() {
+    let mut writer = GgufWriter::new();
+    writer
+        .add_f32_tensor("", vec![1], &[1.0])
+        .expect_err("empty names must be rejected by the writer");
+    writer.add_q8_0_tensor(
+        "",
+        &QuantizedTensor::from_blocks(
+            vec![32, 1],
+            vec![Q8_0Block {
+                scale: 1.0,
+                values: [0; 32],
+            }],
+        )
+        .unwrap(),
+    );
+    assert!(writer.finish().is_err());
+}
+
+#[test]
 fn rejects_duplicate_tensor_names() {
     let mut raw = Vec::new();
     raw.extend_from_slice(b"GGUF");

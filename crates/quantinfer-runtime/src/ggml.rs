@@ -1,7 +1,8 @@
 //! Shared GGML output-row decoding and layout transforms.
 
 use quantinfer_core::{
-    QuantizedTensor, QuantizedTensor4, Tensor, Q4_0_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
+    QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K,
+    Tensor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE, Q8_0_BLOCK_SIZE,
 };
 use quantinfer_format::{qk_channel, GgmlType, GgufReader};
 use quantinfer_quant::{
@@ -59,6 +60,42 @@ pub(crate) fn load_ggml_linear(
                 weight
             };
             Ok(LinearWeight::Q4_0OutputRows(weight))
+        }
+        GgmlType::Q4_K => {
+            let weight = reader.tensor_q4_k(name)?;
+            let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
+                QuantizedTensorQ4K::from_blocks(
+                    weight.shape().clone(),
+                    reorder_ggml_rows(weight.blocks(), input / Q4_K_BLOCK_SIZE, dim),
+                )?
+            } else {
+                weight
+            };
+            Ok(LinearWeight::Q4_KOutputRows(weight))
+        }
+        GgmlType::Q5_K => {
+            let weight = reader.tensor_q5_k(name)?;
+            let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
+                QuantizedTensorQ5K::from_blocks(
+                    weight.shape().clone(),
+                    reorder_ggml_rows(weight.blocks(), input / Q4_K_BLOCK_SIZE, dim),
+                )?
+            } else {
+                weight
+            };
+            Ok(LinearWeight::Q5_KOutputRows(weight))
+        }
+        GgmlType::Q6_K => {
+            let weight = reader.tensor_q6_k(name)?;
+            let weight = if let Some(dim) = rope_head_dim(name, output, rope_heads)? {
+                QuantizedTensorQ6K::from_blocks(
+                    weight.shape().clone(),
+                    reorder_ggml_rows(weight.blocks(), input / Q4_K_BLOCK_SIZE, dim),
+                )?
+            } else {
+                weight
+            };
+            Ok(LinearWeight::Q6_KOutputRows(weight))
         }
         GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => Ok(LinearWeight::F32(load_ggml_matrix(
             reader, name, rope_heads,

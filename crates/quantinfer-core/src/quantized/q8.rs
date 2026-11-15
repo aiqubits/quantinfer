@@ -31,6 +31,11 @@ impl QuantizedTensor {
                 "Q8_0 block count does not match tensor shape".to_owned(),
             ));
         }
+        if blocks.iter().any(|block| !block.scale.is_finite()) {
+            return Err(CoreError::InvalidData(
+                "Q8_0 block scales must be finite".to_owned(),
+            ));
+        }
         Ok(Self { shape, blocks })
     }
 

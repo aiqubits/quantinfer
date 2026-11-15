@@ -231,10 +231,10 @@ impl Default for CpuScalarProvider {
             head_dimension: None,
             maximum_sequence_length: None,
         };
-        let output_rows = |dtype, quantization| KernelCapability {
+        let output_rows = |dtype, quantization, alignment| KernelCapability {
             tensor_layout: OUTPUT_ROWS_LAYOUT.to_owned(),
             supported_operations: BTreeSet::from([Operation::QuantizedMatmul]),
-            ..base(dtype, quantization, 32)
+            ..base(dtype, quantization, alignment)
         };
         Self {
             capabilities: vec![
@@ -244,8 +244,11 @@ impl Default for CpuScalarProvider {
                 base(DType::Q4_K, QuantizationScheme::Q4_K, 256),
                 base(DType::Q5_K, QuantizationScheme::Q5_K, 256),
                 base(DType::Q6_K, QuantizationScheme::Q6_K, 256),
-                output_rows(DType::Q8_0, QuantizationScheme::Q8_0),
-                output_rows(DType::Q4_0, QuantizationScheme::Q4_0),
+                output_rows(DType::Q8_0, QuantizationScheme::Q8_0, 32),
+                output_rows(DType::Q4_0, QuantizationScheme::Q4_0, 32),
+                output_rows(DType::Q4_K, QuantizationScheme::Q4_K, 256),
+                output_rows(DType::Q5_K, QuantizationScheme::Q5_K, 256),
+                output_rows(DType::Q6_K, QuantizationScheme::Q6_K, 256),
             ],
         }
     }
@@ -288,5 +291,20 @@ mod tests {
         let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
         request.tensor_layout = "blocked".to_owned();
         assert!(default_registry().resolve(&request).is_err());
+    }
+
+    #[test]
+    fn resolves_cpu_scalar_k_quant_output_rows() {
+        for (dtype, scheme, alignment) in [
+            (DType::Q4_K, QuantizationScheme::Q4_K, 256),
+            (DType::Q5_K, QuantizationScheme::Q5_K, 256),
+            (DType::Q6_K, QuantizationScheme::Q6_K, 256),
+        ] {
+            let mut request = ExecutionRequest::cpu(dtype, scheme);
+            request.tensor_layout = "output_rows".to_owned();
+            request.operation = Some(Operation::QuantizedMatmul);
+            request.alignment = Some(alignment);
+            assert!(default_registry().resolve(&request).is_ok());
+        }
     }
 }

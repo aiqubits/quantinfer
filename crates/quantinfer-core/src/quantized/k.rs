@@ -29,6 +29,14 @@ impl QuantizedTensorQ5K {
                 "Q5_K block count does not match tensor shape".to_owned(),
             ));
         }
+        if blocks
+            .iter()
+            .any(|block| !block.scale.is_finite() || !block.min_scale.is_finite())
+        {
+            return Err(CoreError::InvalidData(
+                "Q5_K block scales must be finite".to_owned(),
+            ));
+        }
         Ok(Self { shape, blocks })
     }
     pub fn shape(&self) -> &Shape {
@@ -66,6 +74,11 @@ impl QuantizedTensorQ6K {
         if !elements.is_multiple_of(Q4_K_BLOCK_SIZE) || blocks.len() * Q4_K_BLOCK_SIZE != elements {
             return Err(CoreError::InvalidData(
                 "Q6_K block count does not match tensor shape".to_owned(),
+            ));
+        }
+        if blocks.iter().any(|block| !block.scale.is_finite()) {
+            return Err(CoreError::InvalidData(
+                "Q6_K block scales must be finite".to_owned(),
             ));
         }
         Ok(Self { shape, blocks })

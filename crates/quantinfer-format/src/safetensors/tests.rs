@@ -25,6 +25,16 @@ fn rejects_non_finite_floating_tensors() {
 }
 
 #[test]
+fn rejects_invalid_metadata_values() {
+    for metadata in [r#"{"__metadata__":[]}"#, r#"{"__metadata__":{"format":1}}"#] {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(metadata.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(metadata.as_bytes());
+        assert!(SafeTensorFile::open(bytes).is_err());
+    }
+}
+
+#[test]
 fn rejects_duplicate_json_tensor_keys() {
     let header = br#"{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
     let mut bytes = Vec::new();

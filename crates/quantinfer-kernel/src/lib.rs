@@ -70,6 +70,27 @@ pub trait KernelBackend {
 
     fn matmul_q6_k(&self, lhs: &Tensor, rhs: &QuantizedTensorQ6K) -> Result<Tensor>;
 
+    /// The RHS has logical shape [input, output] with consecutive K-quant blocks per output.
+    fn matmul_q4_k_output_rows(&self, _lhs: &Tensor, _rhs: &QuantizedTensorQ4K) -> Result<Tensor> {
+        Err(KernelError::Unsupported(
+            "Q4_K output rows are unsupported".to_owned(),
+        ))
+    }
+
+    /// The RHS has logical shape [input, output] with consecutive K-quant blocks per output.
+    fn matmul_q5_k_output_rows(&self, _lhs: &Tensor, _rhs: &QuantizedTensorQ5K) -> Result<Tensor> {
+        Err(KernelError::Unsupported(
+            "Q5_K output rows are unsupported".to_owned(),
+        ))
+    }
+
+    /// The RHS has logical shape [input, output] with consecutive K-quant blocks per output.
+    fn matmul_q6_k_output_rows(&self, _lhs: &Tensor, _rhs: &QuantizedTensorQ6K) -> Result<Tensor> {
+        Err(KernelError::Unsupported(
+            "Q6_K output rows are unsupported".to_owned(),
+        ))
+    }
+
     fn rms_norm(&self, input: &Tensor, weight: &Tensor, epsilon: f32) -> Result<Tensor>;
 
     fn rms_norm_heads(&self, input: &Tensor, weight: &Tensor, epsilon: f32) -> Result<Tensor>;

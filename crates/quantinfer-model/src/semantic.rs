@@ -177,10 +177,23 @@ impl ModelSpec {
             vec![self.vocabulary.size, self.hidden_size],
         )?;
         require_shape(TensorRole::FinalNormalization, None, vec![self.hidden_size])?;
-        if let Some(tensor) = self.tensor(TensorRole::LmHead, None) {
-            if tensor.logical_shape != Shape::from(vec![self.hidden_size, self.vocabulary.size]) {
-                return Err("language-model head has an invalid shape".to_owned());
+        let lm_head = self.tensor(TensorRole::LmHead, None);
+        match (self.embedding.tied_lm_head, lm_head) {
+            (true, Some(_)) => {
+                return Err(
+                    "tied embeddings must not declare a separate language-model head".to_owned(),
+                )
             }
+            (false, None) => {
+                return Err("untied embeddings require a language-model head".to_owned())
+            }
+            (_, Some(tensor))
+                if tensor.logical_shape
+                    != Shape::from(vec![self.hidden_size, self.vocabulary.size]) =>
+            {
+                return Err("language-model head has an invalid shape".to_owned())
+            }
+            _ => {}
         }
         for layer in &self.layers {
             let index = Some(layer.index);
@@ -235,6 +248,22 @@ impl ModelSpec {
                 index,
                 vec![self.intermediate_size, self.hidden_size],
             )?;
+            match &layer.positional_encoding {
+                PositionalEncodingSpec::None => {}
+                PositionalEncodingSpec::Rope { theta, dimension }
+                    if !theta.is_finite()
+                        || *theta <= 0.0
+                        || *dimension == 0
+                        || !dimension.is_multiple_of(2)
+                        || *dimension != layer.attention.head_dim =>
+                {
+                    return Err(format!(
+                        "model layer {} has an invalid RoPE specification",
+                        layer.index
+                    ));
+                }
+                PositionalEncodingSpec::Rope { .. } => {}
+            }
             if layer.attention.qk_norm {
                 require_shape(
                     TensorRole::QueryNormalization,
@@ -386,8 +415,9 @@ impl super::Qwen3Config {
 
 #[cfg(test)]
 mod tests {
-    use super::{ModelSpec, TensorRole};
+    use super::{ModelSpec, PositionalEncodingSpec, TensorRole, TensorSemantic};
     use crate::Qwen3Config;
+    use quantinfer_core::Shape;
 
     #[test]
     fn adapts_qwen3_to_model_semantic_ir() {
@@ -471,6 +501,24 @@ mod tests {
 
         let mut spec = config.to_model_spec("fixture").unwrap();
         spec.vocabulary.eos_token_id = Some(spec.vocabulary.size);
+        assert!(spec.validate().is_err());
+
+        let mut spec = config.to_model_spec("fixture").unwrap();
+        spec.embedding.tied_lm_head = false;
+        assert!(spec.validate().is_err());
+        spec.embedding.tied_lm_head = true;
+        spec.tensor_map.push(TensorSemantic {
+            role: TensorRole::LmHead,
+            layer: None,
+            logical_shape: Shape::from(vec![spec.hidden_size, spec.vocabulary.size]),
+        });
+        assert!(spec.validate().is_err());
+
+        let mut spec = config.to_model_spec("fixture").unwrap();
+        spec.layers[0].positional_encoding = PositionalEncodingSpec::Rope {
+            theta: f32::NAN,
+            dimension: spec.layers[0].attention.head_dim,
+        };
         assert!(spec.validate().is_err());
     }
 }

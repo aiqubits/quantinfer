@@ -70,6 +70,36 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_finite_quantized_scales() {
+        let q8 = super::Q8_0Block {
+            scale: f32::NAN,
+            values: [0; super::Q8_0_BLOCK_SIZE],
+        };
+        assert!(
+            super::QuantizedTensor::from_blocks(vec![super::Q8_0_BLOCK_SIZE], vec![q8]).is_err()
+        );
+
+        let q4 = super::Q4_0Block {
+            scale: f32::INFINITY,
+            values: [0; super::Q4_0_BLOCK_SIZE],
+        };
+        assert!(
+            super::QuantizedTensor4::from_blocks(vec![super::Q4_0_BLOCK_SIZE], vec![q4]).is_err()
+        );
+
+        let q4_k = super::Q4KBlock {
+            scale: 1.0,
+            min_scale: f32::NEG_INFINITY,
+            scales: [0; 12],
+            values: [0; super::Q4_K_BLOCK_SIZE / 2],
+        };
+        assert!(
+            super::QuantizedTensorQ4K::from_blocks(vec![super::Q4_K_BLOCK_SIZE], vec![q4_k])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn rejects_overflowing_shapes() {
         assert!(Shape::new(vec![usize::MAX, 2]).is_err());
         assert!(Tensor::from_f32(Shape::from(vec![usize::MAX, 2]), Vec::new()).is_err());

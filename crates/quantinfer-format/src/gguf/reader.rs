@@ -149,6 +149,11 @@ impl PackedTensorReader {
         let mut tensor_names = BTreeSet::new();
         for _ in 0..tensor_count {
             let name = cursor.read_string()?;
+            if name.is_empty() {
+                return Err(FormatError::Invalid(
+                    "GGUF tensor names must be non-empty".to_owned(),
+                ));
+            }
             if !tensor_names.insert(name.clone()) {
                 return Err(FormatError::Invalid(format!(
                     "duplicate GGUF tensor name {name}"

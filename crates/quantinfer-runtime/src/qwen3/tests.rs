@@ -280,6 +280,27 @@ fn loads_q4_linear_weight_from_gguf() {
 }
 
 #[test]
+fn loads_k_quantized_output_rows_from_gguf() {
+    let mut writer = GgufWriter::new();
+    writer.insert_metadata(
+        "general.architecture",
+        GgufValue::String("qwen3".to_owned()),
+    );
+    writer.insert_metadata("qwen3.embedding_length", GgufValue::U32(8));
+    writer
+        .add_f32_tensor("token_embd.weight", vec![8, 16], &vec![0.0; 128])
+        .unwrap();
+    writer.add_q4_k_tensor(
+        "blk.0.attn_q.weight",
+        &quantize_q4_k(&filled(vec![256, 1], 0.25)).unwrap(),
+    );
+    let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+    assert!(reader.uses_ggml_output_rows().unwrap());
+    let linear = crate::ggml::load_ggml_linear(&reader, "blk.0.attn_q.weight", None).unwrap();
+    assert_eq!(linear.dtype(), DType::Q4_K);
+}
+
+#[test]
 fn loads_q4_k_linear_weight_from_gguf() {
     let mut writer = GgufWriter::new();
     writer.add_q4_k_tensor(

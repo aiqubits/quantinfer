@@ -279,6 +279,58 @@ impl CpuScalar {
         Ok(block.scale * f32::from(block.scales[subblock]) * (i32::from(q) - 32) as f32)
     }
 
+    pub(crate) fn matmul_output_rows_k<F>(
+        &self,
+        lhs: &Tensor,
+        rhs_shape: &Shape,
+        block_count: usize,
+        block_size: usize,
+        value: F,
+    ) -> Result<Tensor>
+    where
+        F: Fn(usize) -> Result<f32>,
+    {
+        let (rows, inner) = self.expect_matrix(lhs, "lhs")?;
+        let &[input, outputs] = rhs_shape.dims() else {
+            return Err(KernelError::InvalidInput(
+                "expected rank-2 quantized matrix".to_owned(),
+            ));
+        };
+        let row_blocks = input
+            .checked_div(block_size)
+            .ok_or_else(|| KernelError::InvalidInput("invalid K-quant block size".to_owned()))?;
+        if input != inner
+            || input == 0
+            || outputs == 0
+            || !input.is_multiple_of(block_size)
+            || block_count
+                != outputs.checked_mul(row_blocks).ok_or_else(|| {
+                    KernelError::InvalidInput("quantized output rows overflow usize".to_owned())
+                })?
+        {
+            return Err(KernelError::InvalidInput(
+                "invalid quantized output rows".to_owned(),
+            ));
+        }
+        let output_elements = rows.checked_mul(outputs).ok_or_else(|| {
+            KernelError::InvalidInput("matmul output size overflows usize".to_owned())
+        })?;
+        let mut result = Vec::with_capacity(output_elements);
+        for left in self.f32_values(lhs, "lhs")?.chunks_exact(inner) {
+            for output_index in 0..outputs {
+                let mut sum = 0.0;
+                for block_index in 0..row_blocks {
+                    let base = (output_index * row_blocks + block_index) * block_size;
+                    for local in 0..block_size {
+                        sum += left[block_index * block_size + local] * value(base + local)?;
+                    }
+                }
+                result.push(sum);
+            }
+        }
+        Ok(Tensor::from_f32(vec![rows, outputs], result)?)
+    }
+
     #[cfg(feature = "simd")]
     pub(crate) fn matmul_output_rows_q8_simd(
         &self,

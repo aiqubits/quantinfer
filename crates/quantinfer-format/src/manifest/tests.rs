@@ -22,6 +22,31 @@ fn round_trips_manifest_and_verifies_checksum() {
 }
 
 #[test]
+fn rejects_manifest_quantization_mismatches() {
+    let mut manifest = ModelManifest::new("fixture", "qwen3");
+    manifest.quantization = QuantizationScheme::Q4_0;
+    manifest.tensors.push(TensorManifest {
+        name: "weight".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![2, 2])).unwrap(),
+        checksum_sha256: None,
+    });
+    assert!(manifest.validate().is_err());
+
+    manifest.quantization = QuantizationScheme::None;
+    manifest.tensors[0].descriptor = TensorStorageDescriptor::quantized(
+        DType::Q4_0,
+        QuantizationScheme::Q4_0,
+        Shape::from(vec![1, 32]),
+        quantinfer_core::Q4_0_BLOCK_SIZE,
+    )
+    .unwrap();
+    assert!(manifest.validate().is_err());
+
+    manifest.quantization = QuantizationScheme::Q8_0;
+    assert!(manifest.validate().is_err());
+}
+
+#[test]
 fn hashes_known_bytes_and_streams_identically() {
     let expected = "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d";
     assert_eq!(sha256_hex(b"fixture"), expected);

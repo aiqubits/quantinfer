@@ -27,7 +27,7 @@ first implementation file lands.
   conversion boundaries resolve storage names after the semantic model is
   built.
 - `crates/quantinfer-quant` owns offline quantization. Its public facade
-  delegates to `types.rs`, `schemes.rs`, `providers.rs`, and
+  delegates to `types.rs`, the `schemes/` and `providers/` modules, and
   `imatrix.rs`.
 - `crates/quantinfer-runtime` owns model execution, batching, scheduling,
   sessions, KV state, profiles, and generation. Shared linear, GGML-layout,

@@ -2,7 +2,7 @@
 
 use quantinfer_core::{
     QuantizedTensor, QuantizedTensor4, QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K,
-    Shape, Tensor,
+    Shape, Tensor, Q4_K_BLOCK_SIZE,
 };
 use quantinfer_kernel::{KernelBackend, KernelError, Result};
 
@@ -133,6 +133,36 @@ impl KernelBackend for CpuScalar {
             self.quantized_value_q6_k(rhs, index)
         })?;
         Ok(Tensor::from_f32(vec![m, n], output)?)
+    }
+
+    fn matmul_q4_k_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor> {
+        self.matmul_output_rows_k(
+            lhs,
+            rhs.shape(),
+            rhs.blocks().len(),
+            Q4_K_BLOCK_SIZE,
+            |index| self.quantized_value_q4_k(rhs, index),
+        )
+    }
+
+    fn matmul_q5_k_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor> {
+        self.matmul_output_rows_k(
+            lhs,
+            rhs.shape(),
+            rhs.blocks().len(),
+            Q4_K_BLOCK_SIZE,
+            |index| self.quantized_value_q5_k(rhs, index),
+        )
+    }
+
+    fn matmul_q6_k_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensorQ6K) -> Result<Tensor> {
+        self.matmul_output_rows_k(
+            lhs,
+            rhs.shape(),
+            rhs.blocks().len(),
+            Q4_K_BLOCK_SIZE,
+            |index| self.quantized_value_q6_k(rhs, index),
+        )
     }
 
     fn rms_norm(&self, input: &Tensor, weight: &Tensor, epsilon: f32) -> Result<Tensor> {

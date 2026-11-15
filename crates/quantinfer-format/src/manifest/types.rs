@@ -90,6 +90,7 @@ impl ModelManifest {
             ));
         }
         let mut names = std::collections::BTreeSet::new();
+        let mut has_quantized_tensor = false;
         for tensor in &self.tensors {
             if tensor.name.is_empty() || !names.insert(&tensor.name) {
                 return Err(FormatError::Invalid(
@@ -97,6 +98,18 @@ impl ModelManifest {
                 ));
             }
             tensor.descriptor.validate()?;
+            if tensor.descriptor.storage_type == quantinfer_core::StorageType::Quantized {
+                has_quantized_tensor = true;
+                if self.quantization == QuantizationScheme::None
+                    || (self.quantization != QuantizationScheme::Mixed
+                        && tensor.descriptor.quantization != self.quantization)
+                {
+                    return Err(FormatError::Invalid(format!(
+                        "tensor {} quantization does not match the manifest variant",
+                        tensor.name
+                    )));
+                }
+            }
             if let Some(checksum) = &tensor.checksum_sha256 {
                 if checksum.len() != 64 || !checksum.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     return Err(FormatError::Invalid(format!(
@@ -105,6 +118,11 @@ impl ModelManifest {
                     )));
                 }
             }
+        }
+        if self.quantization != QuantizationScheme::None && !has_quantized_tensor {
+            return Err(FormatError::Invalid(
+                "a quantized manifest must contain at least one quantized tensor".to_owned(),
+            ));
         }
         for variant in &self.execution_variants {
             if variant.name.is_empty()

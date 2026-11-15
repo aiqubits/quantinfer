@@ -18,6 +18,9 @@ pub enum LinearWeight {
     Q4_K(QuantizedTensorQ4K),
     Q5_K(QuantizedTensorQ5K),
     Q6_K(QuantizedTensorQ6K),
+    Q4_KOutputRows(QuantizedTensorQ4K),
+    Q5_KOutputRows(QuantizedTensorQ5K),
+    Q6_KOutputRows(QuantizedTensorQ6K),
     Q8_0OutputRows(QuantizedTensor),
     Q4_0OutputRows(QuantizedTensor4),
     Lora {
@@ -32,9 +35,9 @@ impl LinearWeight {
             Self::F32(tensor) => tensor.shape(),
             Self::Q8_0(tensor) | Self::Q8_0OutputRows(tensor) => tensor.shape(),
             Self::Q4_0(tensor) | Self::Q4_0OutputRows(tensor) => tensor.shape(),
-            Self::Q4_K(tensor) => tensor.shape(),
-            Self::Q5_K(tensor) => tensor.shape(),
-            Self::Q6_K(tensor) => tensor.shape(),
+            Self::Q4_K(tensor) | Self::Q4_KOutputRows(tensor) => tensor.shape(),
+            Self::Q5_K(tensor) | Self::Q5_KOutputRows(tensor) => tensor.shape(),
+            Self::Q6_K(tensor) | Self::Q6_KOutputRows(tensor) => tensor.shape(),
             Self::Lora { base, .. } => base.shape(),
         }
     }
@@ -44,9 +47,9 @@ impl LinearWeight {
             Self::F32(_) => DType::F32,
             Self::Q8_0(_) | Self::Q8_0OutputRows(_) => DType::Q8_0,
             Self::Q4_0(_) | Self::Q4_0OutputRows(_) => DType::Q4_0,
-            Self::Q4_K(_) => DType::Q4_K,
-            Self::Q5_K(_) => DType::Q5_K,
-            Self::Q6_K(_) => DType::Q6_K,
+            Self::Q4_K(_) | Self::Q4_KOutputRows(_) => DType::Q4_K,
+            Self::Q5_K(_) | Self::Q5_KOutputRows(_) => DType::Q5_K,
+            Self::Q6_K(_) | Self::Q6_KOutputRows(_) => DType::Q6_K,
             Self::Lora { base, .. } => base.dtype(),
         }
     }
@@ -59,6 +62,9 @@ impl LinearWeight {
             Self::Q4_K(weight) => Ok(backend.matmul_q4_k(input, weight)?),
             Self::Q5_K(weight) => Ok(backend.matmul_q5_k(input, weight)?),
             Self::Q6_K(weight) => Ok(backend.matmul_q6_k(input, weight)?),
+            Self::Q4_KOutputRows(weight) => Ok(backend.matmul_q4_k_output_rows(input, weight)?),
+            Self::Q5_KOutputRows(weight) => Ok(backend.matmul_q5_k_output_rows(input, weight)?),
+            Self::Q6_KOutputRows(weight) => Ok(backend.matmul_q6_k_output_rows(input, weight)?),
             Self::Q8_0OutputRows(weight) => Ok(backend.matmul_q8_0_output_rows(input, weight)?),
             Self::Q4_0OutputRows(weight) => Ok(backend.matmul_q4_0_output_rows(input, weight)?),
             Self::Lora { base, projection } => {

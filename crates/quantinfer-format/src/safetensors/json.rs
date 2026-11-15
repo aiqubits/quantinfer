@@ -25,12 +25,16 @@ pub(crate) fn parse_header(
     let mut metadata = BTreeMap::new();
     for (name, entry) in object {
         if name == "__metadata__" {
-            if let Some(entries) = entry.as_object() {
-                for (key, value) in entries {
-                    if let Some(value) = value.as_str() {
-                        metadata.insert(key.clone(), value.to_owned());
-                    }
-                }
+            let entries = entry.as_object().ok_or_else(|| {
+                FormatError::Invalid("SafeTensors __metadata__ must be an object".to_owned())
+            })?;
+            for (key, value) in entries {
+                let value = value.as_str().ok_or_else(|| {
+                    FormatError::Invalid(format!(
+                        "SafeTensors metadata value {key} must be a string"
+                    ))
+                })?;
+                metadata.insert(key.clone(), value.to_owned());
             }
             continue;
         }

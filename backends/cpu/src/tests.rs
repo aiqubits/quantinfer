@@ -1,7 +1,7 @@
 use super::{CpuIsa, CpuRuntimeConfig, CpuScalar};
 use quantinfer_core::{
-    Q4KBlock, Q4_0Block, Q5KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
-    QuantizedTensorQ4K, QuantizedTensorQ5K, Tensor,
+    Q4KBlock, Q4_0Block, Q5KBlock, Q6KBlock, Q8_0Block, QuantizedTensor, QuantizedTensor4,
+    QuantizedTensorQ4K, QuantizedTensorQ5K, QuantizedTensorQ6K, Tensor,
 };
 use quantinfer_kernel::KernelBackend;
 
@@ -58,6 +58,59 @@ fn computes_q4_k_matrix_product() {
     .unwrap();
     let result = backend.matmul_q4_k(&lhs, &rhs).unwrap();
     assert!(result.as_f32().unwrap()[0] > 200.0);
+}
+
+#[test]
+fn computes_k_quantized_output_rows() {
+    let backend = CpuScalar::new();
+    let lhs = Tensor::from_f32(vec![1, 256], vec![1.0; 256]).unwrap();
+    let q4 = QuantizedTensorQ4K::from_blocks(
+        vec![256, 1],
+        vec![Q4KBlock {
+            scale: 0.1,
+            min_scale: 0.0,
+            scales: [63; 12],
+            values: [0x11; 128],
+        }],
+    )
+    .unwrap();
+    let q5 = QuantizedTensorQ5K::from_blocks(
+        vec![256, 1],
+        vec![Q5KBlock {
+            scale: 0.1,
+            min_scale: 0.0,
+            scales: [63; 12],
+            high_bits: [0; 32],
+            values: [0x11; 128],
+        }],
+    )
+    .unwrap();
+    let q6 = QuantizedTensorQ6K::from_blocks(
+        vec![256, 1],
+        vec![Q6KBlock {
+            scale: 0.1,
+            scales: [1; 16],
+            low_bits: [0x11; 128],
+            high_bits: [0; 64],
+        }],
+    )
+    .unwrap();
+    for (actual, expected) in [
+        (
+            backend.matmul_q4_k_output_rows(&lhs, &q4).unwrap(),
+            backend.matmul_q4_k(&lhs, &q4).unwrap(),
+        ),
+        (
+            backend.matmul_q5_k_output_rows(&lhs, &q5).unwrap(),
+            backend.matmul_q5_k(&lhs, &q5).unwrap(),
+        ),
+        (
+            backend.matmul_q6_k_output_rows(&lhs, &q6).unwrap(),
+            backend.matmul_q6_k(&lhs, &q6).unwrap(),
+        ),
+    ] {
+        assert_eq!(actual.as_f32().unwrap(), expected.as_f32().unwrap());
+    }
 }
 
 #[test]

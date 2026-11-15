@@ -42,6 +42,11 @@ impl QuantizedTensor4 {
                 "Q4_0 values must fit in four bits".to_owned(),
             ));
         }
+        if blocks.iter().any(|block| !block.scale.is_finite()) {
+            return Err(CoreError::InvalidData(
+                "Q4_0 block scales must be finite".to_owned(),
+            ));
+        }
         Ok(Self { shape, blocks })
     }
 
@@ -101,6 +106,14 @@ impl QuantizedTensorQ4K {
         {
             return Err(CoreError::InvalidData(
                 "Q4_K values must fit in four bits".to_owned(),
+            ));
+        }
+        if blocks
+            .iter()
+            .any(|block| !block.scale.is_finite() || !block.min_scale.is_finite())
+        {
+            return Err(CoreError::InvalidData(
+                "Q4_K block scales must be finite".to_owned(),
             ));
         }
         Ok(Self { shape, blocks })

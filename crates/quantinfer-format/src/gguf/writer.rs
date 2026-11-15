@@ -279,6 +279,11 @@ impl GgufHeader {
     }
 
     fn append(&mut self, tensor: &PendingTensor) -> Result<usize> {
+        if tensor.name.is_empty() {
+            return Err(FormatError::Invalid(
+                "GGUF tensor names must be non-empty".to_owned(),
+            ));
+        }
         if !self.names.insert(tensor.name.clone()) {
             return Err(FormatError::Invalid(format!(
                 "duplicate GGUF tensor name {}",
