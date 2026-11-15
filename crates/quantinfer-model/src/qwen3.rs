@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+use quantinfer_core::Shape;
+
+use crate::semantic::{
+    ActivationKind, AttentionSpec, EmbeddingSpec, LayerSpec, ModelSpec, NormalizationKind,
+    NormalizationSpec, PositionalEncodingSpec, TensorRole, TensorSemantic, VocabularySpec,
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Qwen3Config {
     pub vocab_size: usize,
@@ -121,6 +128,125 @@ impl Qwen3Config {
 
     pub fn kv_group_size(&self) -> usize {
         self.num_attention_heads / self.num_key_value_heads
+    }
+}
+
+impl super::Qwen3Config {
+    pub fn to_model_spec(&self, model_id: impl Into<String>) -> Result<ModelSpec, String> {
+        self.validate()?;
+        let head_dim = self.effective_head_dim();
+        let normalization = NormalizationSpec {
+            kind: NormalizationKind::RmsNorm,
+            epsilon: self.rms_norm_eps,
+        };
+        let attention = AttentionSpec {
+            num_heads: self.num_attention_heads,
+            num_key_value_heads: self.num_key_value_heads,
+            head_dim,
+            causal: true,
+            qk_norm: true,
+        };
+        let layer_specs = (0..self.num_hidden_layers)
+            .map(|index| LayerSpec {
+                index,
+                hidden_size: self.hidden_size,
+                intermediate_size: self.intermediate_size,
+                attention: attention.clone(),
+                normalization: normalization.clone(),
+                post_attention_normalization: normalization.clone(),
+                activation: ActivationKind::Silu,
+                positional_encoding: PositionalEncodingSpec::Rope {
+                    theta: self.rope_theta,
+                    dimension: head_dim,
+                },
+            })
+            .collect::<Vec<_>>();
+        let mut tensor_map = vec![
+            TensorSemantic {
+                role: TensorRole::TokenEmbedding,
+                layer: None,
+                logical_shape: Shape::from(vec![self.vocab_size, self.hidden_size]),
+            },
+            TensorSemantic {
+                role: TensorRole::FinalNormalization,
+                layer: None,
+                logical_shape: Shape::from(vec![self.hidden_size]),
+            },
+        ];
+        if !self.tie_word_embeddings {
+            tensor_map.push(TensorSemantic {
+                role: TensorRole::LmHead,
+                layer: None,
+                logical_shape: Shape::from(vec![self.hidden_size, self.vocab_size]),
+            });
+        }
+        for index in 0..self.num_hidden_layers {
+            let add = |role, shape: Vec<usize>| TensorSemantic {
+                role,
+                layer: Some(index),
+                logical_shape: Shape::from(shape),
+            };
+            tensor_map.extend([
+                add(TensorRole::InputNormalization, vec![self.hidden_size]),
+                add(
+                    TensorRole::QueryProjection,
+                    vec![self.hidden_size, self.query_projection_size()],
+                ),
+                add(TensorRole::QueryNormalization, vec![head_dim]),
+                add(
+                    TensorRole::KeyProjection,
+                    vec![self.hidden_size, self.key_value_projection_size()],
+                ),
+                add(TensorRole::KeyNormalization, vec![head_dim]),
+                add(
+                    TensorRole::ValueProjection,
+                    vec![self.hidden_size, self.key_value_projection_size()],
+                ),
+                add(
+                    TensorRole::OutputProjection,
+                    vec![self.query_projection_size(), self.hidden_size],
+                ),
+                add(
+                    TensorRole::PostAttentionNormalization,
+                    vec![self.hidden_size],
+                ),
+                add(
+                    TensorRole::GateProjection,
+                    vec![self.hidden_size, self.intermediate_size],
+                ),
+                add(
+                    TensorRole::UpProjection,
+                    vec![self.hidden_size, self.intermediate_size],
+                ),
+                add(
+                    TensorRole::DownProjection,
+                    vec![self.intermediate_size, self.hidden_size],
+                ),
+            ]);
+        }
+        let spec = ModelSpec {
+            model_id: model_id.into(),
+            architecture: "qwen3".to_owned(),
+            source_revision: None,
+            vocabulary: VocabularySpec {
+                size: self.vocab_size,
+                bos_token_id: None,
+                eos_token_id: None,
+                add_bos_token: false,
+            },
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            max_sequence_length: self.max_position_embeddings,
+            layers: layer_specs,
+            embedding: EmbeddingSpec {
+                shape: Shape::from(vec![self.vocab_size, self.hidden_size]),
+                tied_lm_head: self.tie_word_embeddings,
+            },
+            final_normalization: normalization,
+            tensor_map,
+        };
+        spec.validate()?;
+        Ok(spec)
     }
 }
 
