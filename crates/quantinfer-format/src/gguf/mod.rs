@@ -1,5 +1,6 @@
 //! Compatibility format readers and writers.
 
+mod decode;
 mod encoding;
 mod layout;
 mod reader;
