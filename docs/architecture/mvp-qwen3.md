@@ -29,10 +29,11 @@ assignments, and imatrix statistics. Linear projection weights can be
 quantized while embeddings, normalization, and the language-model head remain
 floating point where the model path requires it.
 
-The format layer supports GGUF, SafeTensors, package manifests, and QIF v1.
-Readers validate dimensions, duplicate metadata/tensor names, alignment,
-checksums, package confinement, and finite floating-point payloads. The QIF
-and package behavior is covered by focused conformance tests.
+The format layer supports GGUF, SafeTensors, package manifests, and a legacy
+QIF v1 path. QIF v1 is retired and is not the target format for new artifacts.
+The replacement design is documented in `docs/formats/qif-v2-final-plan.md` and
+must be implemented as a separate wire boundary with its own conformance
+fixtures.
 
 ## Repository workflow
 

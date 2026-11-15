@@ -29,8 +29,10 @@ graph and can be absent from a portable build.
 ### Model packages and QIF
 
 Manifests and checksum-verified packages are the stable deployment boundary.
-QIF is an optional container and is not required by the runtime; GGUF and
-legacy CLI loading remain compatible entry points.
+QIF v1 is retired and remains only as a migration reference. QIF v2 is the
+new optional inference container defined in
+`docs/formats/qif-v2-final-plan.md`; it is not considered implemented until
+its separate reader, writer, converters, and golden fixtures exist.
 
 ### Compatibility and rejection
 

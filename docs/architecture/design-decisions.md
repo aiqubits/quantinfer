@@ -13,9 +13,10 @@
    not definitions of the core runtime.
 6. WASI-NN is a deployment adapter, not a tensor library.
 7. Candle is an optional interoperability adapter, not a core dependency.
-8. GGUF and SafeTensors are compatibility formats. QIF v1 is implemented with
-   round-trip, malformed-input, alignment, and legacy-import coverage; format
-   changes must update its conformance tests and documentation.
+8. GGUF and SafeTensors are compatibility formats. QIF v1 is retired and kept
+   only as a legacy migration reference. New format work targets the QIF v2
+   design in `docs/formats/qif-v2-final-plan.md`; its reader, writer, and
+   conformance fixtures must be implemented as a new wire boundary.
 9. Quantization schemes are selected through logical core descriptors and
    provider contracts. Current native paths include Q8_0, Q4_0, Q4_K, Q5_K,
    Q6_K, mixed-precision plans, and imatrix statistics.
