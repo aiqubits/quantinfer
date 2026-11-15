@@ -32,3 +32,14 @@ fn rejects_non_finite_logits() {
     assert!(argmax(&logits).is_err());
     assert!(select_token(&logits, &GenerationConfig::default()).is_err());
 }
+
+#[test]
+fn handles_subnormal_temperature_without_non_finite_sampling() {
+    let logits = Tensor::from_f32(vec![2], vec![1.0, 0.0]).unwrap();
+    let config = GenerationConfig {
+        temperature: f32::from_bits(1),
+        seed: 7,
+        ..GenerationConfig::default()
+    };
+    assert_eq!(select_token(&logits, &config).unwrap(), 0);
+}

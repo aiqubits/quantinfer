@@ -18,6 +18,7 @@ pub fn write_qif<'a>(
                 tensor.name
             )));
         }
+        validate_payload(tensor.descriptor.dtype, payload, &tensor.name)?;
         tensor.checksum_sha256 = Some(sha256_hex(payload));
         payloads.push(payload);
     }

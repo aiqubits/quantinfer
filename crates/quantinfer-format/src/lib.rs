@@ -8,6 +8,9 @@ pub mod manifest;
 pub mod qif;
 pub mod safetensors;
 
+mod json;
+pub(crate) use json::DuplicateFreeJson;
+
 pub use dense::{
     canonical_dense_tensor_name, is_embedding_storage_name, is_linear_projection_storage_name,
     is_lm_head_storage_name, is_matrix_storage_name, transpose_dense_layout,

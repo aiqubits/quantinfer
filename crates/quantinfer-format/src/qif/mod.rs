@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::ops::Range;
 
+use half::{bf16, f16};
 use quantinfer_core::{
     DType, QuantizationScheme, Shape, TensorStorageDescriptor, Q4_0_BLOCK_SIZE, Q4_K_BLOCK_SIZE,
     Q8_0_BLOCK_SIZE,
@@ -37,6 +38,59 @@ fn payload_size(descriptor: &TensorStorageDescriptor) -> Result<usize> {
         return Err(invalid("unsupported tensor storage descriptor"));
     }
     tensor_byte_size(encoding, descriptor.logical_shape.dims())
+}
+
+fn validate_payload(dtype: DType, bytes: &[u8], name: &str) -> Result<()> {
+    let finite = |value: f32| {
+        if value.is_finite() {
+            Ok(())
+        } else {
+            Err(invalid(format!("tensor {name} contains non-finite values")))
+        }
+    };
+    match dtype {
+        DType::F32 => {
+            for chunk in bytes.as_chunks::<4>().0 {
+                finite(f32::from_le_bytes(*chunk))?;
+            }
+        }
+        DType::F16 => {
+            for chunk in bytes.as_chunks::<2>().0 {
+                finite(f16::from_le_bytes(*chunk).to_f32())?;
+            }
+        }
+        DType::BF16 => {
+            for chunk in bytes.as_chunks::<2>().0 {
+                finite(bf16::from_le_bytes(*chunk).to_f32())?;
+            }
+        }
+        DType::Q8_0 | DType::Q4_0 | DType::Q4_K | DType::Q5_K | DType::Q6_K => {
+            let (block_bytes, scale_offsets): (usize, &[usize]) = match dtype {
+                DType::Q8_0 => (34, &[0]),
+                DType::Q4_0 => (18, &[0]),
+                DType::Q4_K => (144, &[0, 2]),
+                DType::Q5_K => (176, &[0, 2]),
+                DType::Q6_K => (210, &[208]),
+                DType::F32 | DType::F16 | DType::BF16 => unreachable!(),
+            };
+            for block in bytes.chunks_exact(block_bytes) {
+                for &offset in scale_offsets {
+                    let scale = f16::from_le_bytes(
+                        block[offset..offset + 2]
+                            .try_into()
+                            .map_err(|_| invalid(format!("invalid scale in tensor {name}")))?,
+                    )
+                    .to_f32();
+                    if !scale.is_finite() {
+                        return Err(invalid(format!(
+                            "tensor {name} contains a non-finite quantized scale"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn storage_encoding(dtype: DType) -> (GgmlType, QuantizationScheme, usize) {

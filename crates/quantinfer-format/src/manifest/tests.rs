@@ -97,6 +97,15 @@ fn rejects_malformed_checksums_and_duplicate_variants() {
 }
 
 #[test]
+fn rejects_duplicate_manifest_json_keys() {
+    let error =
+        ModelManifest::from_json(r#"{"model_id":"first","model_id":"second"}"#).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("duplicate JSON object key model_id"));
+}
+
+#[test]
 fn opens_a_directory_package_and_reads_verified_model_bytes() {
     let root = std::env::temp_dir().join(format!("quantinfer-package-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();

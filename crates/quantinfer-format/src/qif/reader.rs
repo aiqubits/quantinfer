@@ -1,4 +1,5 @@
 use super::*;
+use crate::DuplicateFreeJson;
 
 pub(crate) fn has_magic(bytes: &[u8]) -> bool {
     bytes.starts_with(MAGIC)
@@ -85,8 +86,12 @@ impl<'a> QifReader<'a> {
             return Err(invalid("header checksum mismatch"));
         }
         let (manifest, metadata) = header.split_at(manifest_size);
-        let manifest: ModelManifest = serde_json::from_slice(manifest)
-            .map_err(|error| invalid(format!("invalid manifest: {error}")))?;
+        let manifest: ModelManifest = serde_json::from_slice::<DuplicateFreeJson>(manifest)
+            .map_err(|error| invalid(format!("invalid manifest: {error}")))
+            .and_then(|value| {
+                serde_json::from_value(value.0)
+                    .map_err(|error| invalid(format!("invalid manifest: {error}")))
+            })?;
         manifest.validate()?;
         let metadata = read_metadata(metadata)
             .map_err(|error| invalid(format!("invalid metadata: {error}")))?;
@@ -105,6 +110,7 @@ impl<'a> QifReader<'a> {
             if tensor.checksum_sha256.as_deref() != Some(&sha256_hex(payload)) {
                 return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
             }
+            validate_payload(tensor.descriptor.dtype, payload, &tensor.name)?;
             tensors.insert(tensor.name.clone(), start..end);
         }
         if end != bytes.len() {

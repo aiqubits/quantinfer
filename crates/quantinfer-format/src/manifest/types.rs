@@ -7,7 +7,7 @@ use quantinfer_core::{QuantizationScheme, TensorStorageDescriptor};
 use serde::{Deserialize, Serialize};
 
 use super::hash::{sha256_hex, verify_digest};
-use crate::{FormatError, Result};
+use crate::{DuplicateFreeJson, FormatError, Result};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorManifest {
@@ -185,7 +185,10 @@ impl ModelManifest {
     }
 
     pub fn from_json(json: &str) -> Result<Self> {
-        let manifest: Self = serde_json::from_str(json).map_err(|error| {
+        let value = serde_json::from_str::<DuplicateFreeJson>(json).map_err(|error| {
+            FormatError::Invalid(format!("cannot parse model manifest: {error}"))
+        })?;
+        let manifest: Self = serde_json::from_value(value.0).map_err(|error| {
             FormatError::Invalid(format!("cannot parse model manifest: {error}"))
         })?;
         manifest.validate()?;

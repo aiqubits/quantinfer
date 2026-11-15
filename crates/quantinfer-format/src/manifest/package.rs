@@ -33,6 +33,16 @@ impl ModelPackage {
                 "manifest.json resolves outside the package root".to_owned(),
             ));
         }
+        let manifest_size = fs::metadata(&manifest_resolved)
+            .map_err(|error| {
+                FormatError::Io(format!("cannot stat {}: {error}", manifest_path.display()))
+            })?
+            .len();
+        if manifest_size > 64 * 1024 * 1024 {
+            return Err(FormatError::Invalid(
+                "manifest.json exceeds the 64 MiB size limit".to_owned(),
+            ));
+        }
         let manifest_bytes = read_file_nofollow(&manifest_resolved).map_err(|error| {
             FormatError::Io(format!("cannot read {}: {error}", manifest_path.display()))
         })?;

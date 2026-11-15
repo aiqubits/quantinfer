@@ -93,34 +93,37 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
         return argmax(logits);
     }
 
+    // Keep the sampling calculation in f64. A positive f32 temperature can be
+    // subnormal, and dividing an ordinary f32 logit by it would otherwise
+    // produce infinities even though both inputs passed validation.
     let temperature = if config.temperature == 0.0 {
         1.0
     } else {
-        config.temperature
+        f64::from(config.temperature)
     };
-    let mut candidates: Vec<(usize, f32)> = values
+    let mut candidates: Vec<(usize, f64)> = values
         .iter()
         .copied()
         .enumerate()
-        .map(|(index, value)| (index, value / temperature))
+        .map(|(index, value)| (index, f64::from(value) / temperature))
         .collect();
     candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
     if let Some(top_k) = config.top_k {
         candidates.truncate(top_k.min(candidates.len()));
     }
     let maximum = candidates[0].1;
-    let weights: Vec<f32> = candidates
+    let weights: Vec<f64> = candidates
         .iter()
         .map(|(_, value)| (*value - maximum).exp())
         .collect();
     if let Some(top_p) = config.top_p {
-        let total = weights.iter().sum::<f32>();
+        let total = weights.iter().sum::<f64>();
         let mut cumulative = 0.0;
         let mut kept = 0;
         for weight in &weights {
             cumulative += *weight;
             kept += 1;
-            if cumulative / total >= top_p {
+            if cumulative / total >= f64::from(top_p) {
                 break;
             }
         }
@@ -132,12 +135,12 @@ pub fn select_token(logits: &Tensor, config: &GenerationConfig) -> Result<usize>
         });
     }
     let maximum = candidates[0].1;
-    let weights: Vec<f32> = candidates
+    let weights: Vec<f64> = candidates
         .iter()
         .map(|(_, value)| (*value - maximum).exp())
         .collect();
-    let total = weights.iter().sum::<f32>();
-    let target = deterministic_unit(config.seed, values);
+    let total = weights.iter().sum::<f64>();
+    let target = f64::from(deterministic_unit(config.seed, values));
     let mut cumulative = 0.0;
     for ((index, _), weight) in candidates.iter().zip(weights) {
         cumulative += weight / total;

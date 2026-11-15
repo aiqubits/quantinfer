@@ -113,6 +113,28 @@ fn validates_all_descriptors_and_lengths_before_writing() {
 }
 
 #[test]
+fn rejects_non_finite_payloads_before_writing() {
+    let (manifest, metadata) = model();
+    let non_finite = f32::NAN.to_le_bytes();
+    let mut bytes = Vec::new();
+    let error = write_qif(
+        manifest,
+        &metadata,
+        |name| {
+            Ok(if name == "norm" {
+                &non_finite[..]
+            } else {
+                &WEIGHT
+            })
+        },
+        &mut bytes,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("non-finite"));
+    assert!(bytes.is_empty());
+}
+
+#[test]
 fn imports_legacy_q4_0_without_changing_decoded_values() {
     let block = Q4_0Block {
         scale: 0.5,

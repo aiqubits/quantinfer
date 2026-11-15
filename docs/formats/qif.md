@@ -51,6 +51,7 @@ contain a 64-bit byte length followed by UTF-8 bytes.
 | 9 | Array with a 32-bit element tag, a 64-bit count, and untagged element values |
 | 10 | Unsigned 64-bit integer |
 | 11 | Signed 64-bit integer |
+| 12 | IEEE-754 binary64 |
 
 Arrays have one scalar element type and contain at most 1,048,576 entries.
 Metadata keys are sorted by the writer.
