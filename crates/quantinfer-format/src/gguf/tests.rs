@@ -292,6 +292,13 @@ fn rejects_empty_tensor_names() {
         .unwrap(),
     );
     assert!(writer.finish().is_err());
+
+    let mut writer = GgufWriter::new();
+    writer.insert_metadata("", GgufValue::U32(1));
+    assert!(matches!(
+        writer.finish(),
+        Err(FormatError::Invalid(message)) if message.contains("metadata keys must be non-empty")
+    ));
 }
 
 #[test]

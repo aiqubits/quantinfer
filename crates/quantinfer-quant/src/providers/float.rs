@@ -17,7 +17,12 @@ impl QuantizationProvider for FloatProvider {
         Ok(TensorStorageDescriptor::floating(DType::F32, shape)?)
     }
 
-    fn validate(&self, _input: &Tensor) -> Result<()> {
+    fn validate(&self, input: &Tensor) -> Result<()> {
+        if input.as_f32()?.iter().any(|value| !value.is_finite()) {
+            return Err(QuantizationError::InvalidInput(
+                "floating-point storage requires finite input values".to_owned(),
+            ));
+        }
         Ok(())
     }
 

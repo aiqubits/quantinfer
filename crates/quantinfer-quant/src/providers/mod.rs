@@ -5,6 +5,7 @@ use quantinfer_core::{
     QuantizedTensorQ6K, Tensor, TensorStorageDescriptor,
 };
 
+use crate::schemes::validate_finite;
 use crate::{QuantizationError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +60,7 @@ impl QuantizationStats {
                 "cannot inspect an empty tensor".to_owned(),
             ));
         }
+        validate_finite(values)?;
         let min = values.iter().copied().fold(f32::INFINITY, f32::min);
         let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
         let sum_abs = values.iter().map(|value| value.abs()).sum::<f32>();
@@ -96,11 +98,18 @@ pub trait QuantizationProvider {
         let restored = self.dequantize(input)?;
         let reference_values = reference.as_f32()?;
         let restored_values = restored.as_f32()?;
+        if reference.shape() != restored.shape() {
+            return Err(QuantizationError::InvalidInput(
+                "error report tensors must have the same shape".to_owned(),
+            ));
+        }
         if reference_values.len() != restored_values.len() {
             return Err(QuantizationError::InvalidInput(
                 "error report tensors must have the same number of elements".to_owned(),
             ));
         }
+        validate_finite(reference_values)?;
+        validate_finite(restored_values)?;
         let mut max_absolute_error: f32 = 0.0;
         let mut sum_absolute_error: f32 = 0.0;
         let mut sum_squared_reference: f32 = 0.0;

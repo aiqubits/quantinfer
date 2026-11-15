@@ -31,6 +31,11 @@ pub(crate) fn encode_tensor_info(
 pub(crate) fn encode_metadata(metadata: &BTreeMap<String, GgufValue>) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     for (key, value) in metadata {
+        if key.is_empty() {
+            return Err(FormatError::Invalid(
+                "GGUF metadata keys must be non-empty".to_owned(),
+            ));
+        }
         write_string(&mut output, key)?;
         encode_value(&mut output, value)?;
     }

@@ -437,7 +437,7 @@ pub(crate) fn run() -> Result<(), String> {
     if let (Some(manifest_path), Some(checksum)) = (manifest_path, checksum) {
         let mut manifest = ModelManifest::new(model.architecture(), model.architecture());
         manifest.source_format = "safetensors-to-gguf".to_owned();
-        manifest.quantization = if mixed_precision.is_some() {
+        manifest.quantization = if mixed_precision.is_some() || mixed_precision_policy.is_some() {
             QuantizationScheme::Mixed
         } else {
             quantization

@@ -24,8 +24,9 @@ pub use types::{CalibrationDataset, ImatrixStatistics, MixedPrecisionPlan, Quant
 #[cfg(test)]
 mod tests {
     use super::{
-        dequantize_q8_0, quantize_q8_0, CalibrationDataset, ImatrixStatistics, MixedPrecisionPlan,
-        NativeQ4KProvider, NativeQ4_0Provider, NativeQ6KProvider, QuantizationProvider,
+        dequantize_q8_0, quantize_q8_0, CalibrationDataset, FloatProvider, ImatrixStatistics,
+        MixedPrecisionPlan, NativeQ4KProvider, NativeQ4_0Provider, NativeQ6KProvider,
+        QuantizationProvider, QuantizationStats,
     };
     use quantinfer_core::{QuantizationScheme, Tensor};
 
@@ -51,6 +52,9 @@ mod tests {
         let input = Tensor::from_f32(vec![32], vec![f32::NAN; 32]).unwrap();
         assert!(quantize_q8_0(&input).is_err());
         assert!(NativeQ4_0Provider.quantize(&input).is_err());
+        assert!(FloatProvider.inspect(&input).is_err());
+        assert!(FloatProvider.quantize(&input).is_err());
+        assert!(QuantizationStats::inspect(&input).is_err());
     }
 
     #[test]
@@ -72,6 +76,8 @@ mod tests {
         );
         assert_eq!(restored.shape(), input.shape());
         assert_eq!(provider.export_layout(), "q4_0");
+        let reshaped = Tensor::from_f32(vec![1, 32], input.as_f32().unwrap().to_vec()).unwrap();
+        assert!(provider.error_report(&reshaped, &quantized).is_err());
     }
 
     #[test]
