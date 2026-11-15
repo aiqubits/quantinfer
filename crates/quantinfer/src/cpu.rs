@@ -63,6 +63,24 @@ fn resolve_backend_impl(
                     tensor.name, expected_dtype, info.dtype
                 )));
             }
+            let declared_shape = tensor.descriptor.logical_shape.dims();
+            let shape_matches = if ggml_layout
+                && (reader.embedded_manifest().is_some() || tensor.name == "token_embd.weight")
+            {
+                if declared_shape.len() == 2 {
+                    info.shape.as_slice() == [declared_shape[1], declared_shape[0]]
+                } else {
+                    info.shape.as_slice() == declared_shape
+                }
+            } else {
+                info.shape.as_slice() == declared_shape
+            };
+            if !shape_matches {
+                return Err(RuntimeError::InvalidInput(format!(
+                    "model manifest tensor {} declares shape {:?}, but the tensor file stores {:?}",
+                    tensor.name, declared_shape, info.shape
+                )));
+            }
         }
         request.head_dimension = manifest.kernel_requirements.head_dimension;
         request.maximum_sequence_length = manifest.kernel_requirements.maximum_sequence_length;
@@ -305,6 +323,35 @@ mod tests {
         let reader = GgufReader::open(GgufWriter::new().finish().unwrap()).unwrap();
         let mut manifest = ModelManifest::new("fixture", "qwen3");
         manifest.quantization = QuantizationScheme::Q4_0;
+        assert!(resolve_backend(&reader, Some(&manifest)).is_err());
+    }
+
+    #[test]
+    fn rejects_manifest_tensor_shape_mismatch() {
+        let mut writer = GgufWriter::new();
+        let weights = quantinfer_core::QuantizedTensor::from_blocks(
+            vec![32, 1],
+            vec![Q8_0Block {
+                scale: 0.5,
+                values: [1; 32],
+            }],
+        )
+        .unwrap();
+        writer.add_q8_0_tensor("blk.0.attn_q.weight", &weights);
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let mut manifest = ModelManifest::new("fixture", "qwen3");
+        manifest.quantization = QuantizationScheme::Q8_0;
+        manifest.tensors.push(TensorManifest {
+            name: "blk.0.attn_q.weight".to_owned(),
+            descriptor: quantinfer_core::TensorStorageDescriptor::quantized(
+                DType::Q8_0,
+                QuantizationScheme::Q8_0,
+                quantinfer_core::Shape::from(vec![1, 32]),
+                Q8_0_BLOCK_SIZE,
+            )
+            .unwrap(),
+            checksum_sha256: None,
+        });
         assert!(resolve_backend(&reader, Some(&manifest)).is_err());
     }
 }
