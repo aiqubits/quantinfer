@@ -9,7 +9,7 @@ use quantinfer_core::{
     Q4_0_BLOCK_SIZE,
 };
 
-use super::encoding::{align_up, encode_metadata, encode_tensor_info};
+use super::encoding::{align_up, encode_metadata, encode_tensor_info, tensor_byte_size};
 use super::types::{FormatError, GgmlType, GgufValue, GgufWriter, PendingTensor};
 use super::{Result, DEFAULT_ALIGNMENT, GGUF_MAGIC, GGUF_VERSION, QUANT_BLOCK_LAYOUT};
 
@@ -305,6 +305,13 @@ impl GgufHeader {
                 "GGUF tensor names must be non-empty".to_owned(),
             ));
         }
+        if tensor_byte_size(tensor.dtype, &tensor.shape)? != tensor.data.len() {
+            return Err(FormatError::Invalid(format!(
+                "GGUF tensor {} has an invalid payload length",
+                tensor.name
+            )));
+        }
+        validate_quantized_payload(tensor)?;
         if !self.names.insert(tensor.name.clone()) {
             return Err(FormatError::Invalid(format!(
                 "duplicate GGUF tensor name {}",
@@ -355,6 +362,39 @@ impl GgufHeader {
         output.resize(data_start, 0);
         Ok(output)
     }
+}
+
+fn validate_quantized_payload(tensor: &PendingTensor) -> Result<()> {
+    let (block_bytes, scale_offsets): (usize, &[usize]) = match tensor.dtype {
+        GgmlType::Q8_0 => (34, &[0]),
+        GgmlType::Q4_0 => (18, &[0]),
+        GgmlType::Q4_K | GgmlType::Q5_K => {
+            let block_bytes = if tensor.dtype == GgmlType::Q4_K {
+                144
+            } else {
+                176
+            };
+            (block_bytes, &[0, 2])
+        }
+        GgmlType::Q6_K => (210, &[208]),
+        GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => return Ok(()),
+    };
+    for block in tensor.data.chunks_exact(block_bytes) {
+        for &offset in scale_offsets {
+            let bits = u16::from_le_bytes(
+                block[offset..offset + 2]
+                    .try_into()
+                    .map_err(|_| FormatError::Invalid("invalid quantized scale".to_owned()))?,
+            );
+            if bits & 0x7c00 == 0x7c00 {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF tensor {} contains a quantized scale that overflows F16",
+                    tensor.name
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Writes tensor payloads to a scratch stream while retaining only the GGUF header.

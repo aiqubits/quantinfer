@@ -404,3 +404,21 @@ fn rejects_reserved_alignment_metadata_that_would_corrupt_offsets() {
     writer.insert_metadata("general.alignment", GgufValue::String("invalid".to_owned()));
     assert!(writer.finish().is_err());
 }
+
+#[test]
+fn rejects_quantized_scales_that_overflow_f16() {
+    let mut writer = GgufWriter::new();
+    let tensor = QuantizedTensor::from_blocks(
+        vec![32],
+        vec![Q8_0Block {
+            scale: f32::MAX,
+            values: [0; 32],
+        }],
+    )
+    .unwrap();
+    writer.add_q8_0_tensor("weight", &tensor);
+    assert!(matches!(
+        writer.finish(),
+        Err(FormatError::Invalid(message)) if message.contains("overflows F16")
+    ));
+}
