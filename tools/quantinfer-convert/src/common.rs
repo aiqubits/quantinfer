@@ -55,6 +55,27 @@ pub(crate) fn optional_value(arguments: &[String], flag: &str) -> Option<String>
         .map(|pair| pair[1].clone())
 }
 
+pub(crate) fn validate_options(
+    arguments: &[String],
+    options: &[(&str, bool)],
+) -> Result<(), String> {
+    let mut index = 0;
+    while index < arguments.len() {
+        let flag = arguments[index].as_str();
+        let Some((_, takes_value)) = options.iter().find(|(name, _)| *name == flag) else {
+            return Err(format!("unknown option {flag}; use --help for usage"));
+        };
+        index += 1;
+        if *takes_value {
+            if index == arguments.len() {
+                return Err(format!("{flag} requires a value"));
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn metadata_u32(value: usize, name: &str) -> Result<u32, String> {
     u32::try_from(value).map_err(|_| format!("{name} does not fit in GGUF u32 metadata"))
 }

@@ -11,11 +11,32 @@ use quantinfer_format::{GgmlType, GgufReader};
 use quantinfer_runtime::{select_token, GenerationConfig, MemoryPlan};
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
 
-use super::common::{has_flag, last_logits, option_value, parse_token_ids};
+use super::common::{has_flag, last_logits, option_value, parse_token_ids, validate_options};
 use super::package::load_inference_profile;
 use crate::backend::Backend;
 
 pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
+    validate_options(
+        arguments,
+        &[
+            ("--backend", true),
+            ("--input", true),
+            ("--lora", true),
+            ("--tokens", true),
+            ("--prompt", true),
+            ("--max-new-tokens", true),
+            ("--temperature", true),
+            ("--eos-token-id", true),
+            ("--seed", true),
+            ("--max-sequence-length", true),
+            ("--memory-budget-bytes", true),
+            ("--profile", false),
+            ("--inference-profile", true),
+            ("--chat", false),
+            ("--role", true),
+            ("--think", false),
+        ],
+    )?;
     let backend = Backend::parse(option_value(arguments, "--backend")?.as_deref())?;
     let path = option_value(arguments, "--input")?
         .map(PathBuf::from)

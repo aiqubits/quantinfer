@@ -43,6 +43,27 @@ pub(crate) fn has_flag(arguments: &[String], flag: &str) -> bool {
     arguments.iter().any(|argument| argument == flag)
 }
 
+pub(crate) fn validate_options(
+    arguments: &[String],
+    options: &[(&str, bool)],
+) -> Result<(), String> {
+    let mut index = 0;
+    while index < arguments.len() {
+        let flag = arguments[index].as_str();
+        let Some((_, takes_value)) = options.iter().find(|(name, _)| *name == flag) else {
+            return Err(format!("unknown option {flag}; use --help for usage"));
+        };
+        index += 1;
+        if *takes_value {
+            if index == arguments.len() {
+                return Err(format!("{flag} requires a value"));
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn print_help() {
     println!(
         "quantinfer commands:\n  render-chat --text TEXT [--role ROLE] [--think]\n  inspect-gguf --input MODEL.gguf|MODEL_DIR [--json]\n  verify-package --input MODEL_DIR [--json]\n  list-profiles --input MODEL_DIR [--json]\n  collect-imatrix --input MODEL.gguf|MODEL.qif|MODEL_DIR --dataset PROMPTS.jsonl --output IMATRIX.json [--max-sequence-length N]\n  generate --input MODEL.gguf|MODEL.qif|MODEL_DIR (--tokens 1,2,3 | --prompt TEXT) [--backend cpu|wgpu|cuda|metal] [--lora ADAPTER_DIR] [--chat] [--role ROLE] [--think] [--max-new-tokens N] [--max-sequence-length N] [--memory-budget-bytes N] [--inference-profile NAME] [--temperature T] [--seed N] [--eos-token-id ID] [--profile]"

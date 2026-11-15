@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::common::{
     is_quantizable_linear, load_imatrix, metadata_u32, optional_value, required_path,
+    validate_options,
 };
 use crate::model::ConversionModel;
 use crate::policy::{
@@ -44,8 +45,31 @@ pub(crate) fn run() -> Result<(), String> {
         .first()
         .is_some_and(|argument| argument == "from-gguf")
     {
+        validate_options(
+            &arguments[1..],
+            &[("--input", true), ("--output", true), ("--model-id", true)],
+        )?;
         return super::qif::convert_qif(&arguments[1..]);
     }
+    validate_options(
+        &arguments,
+        &[
+            ("--config", true),
+            ("--weights", true),
+            ("--output", true),
+            ("--weights-checksums", true),
+            ("--architecture", true),
+            ("--tokenizer", true),
+            ("--manifest", true),
+            ("--quantize", true),
+            ("--mixed-precision", true),
+            ("--mixed-precision-policy", true),
+            ("--imatrix", true),
+            ("--ggml", false),
+            ("--gguf-layout", true),
+            ("--tokenizer-pre", true),
+        ],
+    )?;
     let config_path = required_path(&arguments, "--config")?;
     let weights_path = required_path(&arguments, "--weights")?;
     let weights_checksums = arguments
