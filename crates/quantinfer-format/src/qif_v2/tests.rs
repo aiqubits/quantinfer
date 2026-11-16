@@ -184,9 +184,15 @@ fn round_trips_qif2_package_and_shard_ranges() {
         descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![2])).unwrap(),
         checksum_sha256: None,
     });
+    manifest.tensors.push(TensorManifest {
+        name: "large".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![4])).unwrap(),
+        checksum_sha256: None,
+    });
     let payloads = BTreeMap::from([
         ("weight".to_owned(), vec![0_u8, 0, 128, 63, 0, 0, 0, 64]),
         ("bias".to_owned(), vec![0_u8, 0, 0, 0, 0, 0, 128, 63]),
+        ("large".to_owned(), vec![0_u8; 16]),
     ]);
     let output =
         std::env::temp_dir().join(format!("quantinfer-qif2-package-{}", std::process::id()));
@@ -206,12 +212,16 @@ fn round_trips_qif2_package_and_shard_ranges() {
     )
     .unwrap();
     let mut reader = QifV2PackageReader::open(&output).unwrap();
-    assert_eq!(reader.tensors().len(), 2);
+    assert_eq!(reader.tensors().len(), 3);
     assert_eq!(reader.tensor_shard("weight").unwrap(), "shard-00000.qifd");
     assert_eq!(reader.tensor_shard("bias").unwrap(), "shard-00001.qifd");
     assert_eq!(
         reader.read_range("bias", 4..8).unwrap(),
         payloads["bias"][4..]
+    );
+    assert_eq!(
+        reader.read_range("large", 0..16).unwrap(),
+        payloads["large"]
     );
     reader.verify().unwrap();
     std::fs::remove_dir_all(output).unwrap();
