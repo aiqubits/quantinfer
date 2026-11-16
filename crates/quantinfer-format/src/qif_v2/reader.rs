@@ -23,6 +23,7 @@ const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
 const KNOWN_FLAGS: u32 = 0;
 const MAX_MANIFEST_STRING_BYTES: usize = 16 * 1024 * 1024;
+const MAX_MANIFEST_DEPTH: usize = 32;
 
 type ParsedControl = (
     ModelManifest,
@@ -588,6 +589,11 @@ fn parse_control(
     }
     let manifest_text =
         std::str::from_utf8(manifest_bytes).map_err(|_| invalid("manifest is not UTF-8"))?;
+    let manifest_value: serde_json::Value = serde_json::from_slice(manifest_bytes)
+        .map_err(|error| invalid(format!("invalid manifest JSON: {error}")))?;
+    if json_depth(&manifest_value) > MAX_MANIFEST_DEPTH {
+        return Err(invalid("manifest nesting depth exceeds the limit"));
+    }
     let manifest = ModelManifest::from_json(manifest_text)
         .map_err(|error| invalid(format!("invalid manifest: {error}")))?;
     validate_manifest_limits(&manifest)?;
@@ -633,6 +639,27 @@ fn parse_control(
         }
     }
     Ok((manifest, metadata, tensors, chunks))
+}
+
+fn json_depth(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Array(values) => values
+            .iter()
+            .map(json_depth)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
+        serde_json::Value::Object(values) => values
+            .values()
+            .map(json_depth)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => 0,
+    }
 }
 
 fn validate_manifest_limits(manifest: &ModelManifest) -> Result<()> {
