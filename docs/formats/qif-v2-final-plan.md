@@ -429,7 +429,8 @@ API 要求：
 2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
-5. QIF2 的 Rust fixture、dependency-free Python reader 和 C wire reader smoke test 已完成；fuzz target、更多 malformed corpus 和 benchmark 仍是持续验证工作。
+5. QIF2 的 Rust fixture、dependency-free Python reader、C wire reader smoke test 和
+   `fuzz/qif_v2_reader` target 已完成；更多 malformed corpus 仍是持续验证工作。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif2` 直接发布 QIF2-SINGLE（内部仍复用已验证的 GGUF 语义映射）。

@@ -1,0 +1,21 @@
+[package]
+name = "quantinfer-format-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+quantinfer-format = { path = "../crates/quantinfer-format" }
+
+[[bin]]
+name = "qif_v2_reader"
+path = "fuzz_targets/qif_v2_reader.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
