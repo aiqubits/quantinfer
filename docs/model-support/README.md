@@ -3,10 +3,10 @@
 QuantInfer separates model semantics from file formats. A model adapter reads
 architecture configuration and emits `ModelSpec`, tensor roles, attention,
 normalization, FFN, positional encoding, vocabulary, and LM-head semantics.
-SafeTensors, sharded SafeTensors, and GGUF currently map storage into those
-roles. Retired QIF v1 remains only as an internal historical fixture path;
-QIF2-SINGLE v2.0 is available through the separate `qif_v2` reader. Package and
-compressed profiles remain future work.
+SafeTensors, sharded SafeTensors, GGUF, and the current QIF artifact currently
+map storage into those roles. Historical QIF v1 remains only as an internal
+fixture path. The public QIF API is available through
+`quantinfer_format::qif`, including package and compressed profiles.
 
 ## Supported dense models
 

@@ -26,11 +26,11 @@ pub(crate) fn verify(root_hash: &[u8; 32], envelope: &[u8]) -> Result<()> {
         || u32::from_le_bytes(envelope[4..8].try_into().unwrap()) != VERSION
         || u32::from_le_bytes(envelope[8..12].try_into().unwrap()) != ALGORITHM_ED25519
     {
-        return Err(invalid("invalid QIF2 signature envelope"));
+        return Err(invalid("invalid QIF signature envelope"));
     }
     let key = VerifyingKey::from_bytes(&envelope[12..44].try_into().unwrap())
-        .map_err(|_| invalid("invalid QIF2 signature public key"))?;
+        .map_err(|_| invalid("invalid QIF signature public key"))?;
     let signature = Signature::from_bytes(&envelope[44..108].try_into().unwrap());
     key.verify(root_hash, &signature)
-        .map_err(|_| invalid("QIF2 signature verification failed"))
+        .map_err(|_| invalid("QIF signature verification failed"))
 }

@@ -32,7 +32,7 @@ type ParsedControl = (
     Vec<ChunkInfo>,
 );
 
-/// A tensor entry from the QIF v2 binary index.
+/// A tensor entry from the QIF binary index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QifV2TensorInfo {
     pub tensor_id: u64,
@@ -62,7 +62,7 @@ struct ChunkInfo {
     checksum_sha256: [u8; HASH_SIZE],
 }
 
-/// A fully validated QIF v2 single-file artifact.
+/// A fully validated QIF single-file artifact.
 pub struct QifV2Reader<'a> {
     bytes: &'a [u8],
     manifest: ModelManifest,
@@ -163,7 +163,7 @@ impl<'a> QifV2Reader<'a> {
                 || signature_offset < HEADER_SIZE as u64
                 || !signature_offset.is_multiple_of(ALIGNMENT as u64)
             {
-                return Err(invalid("invalid QIF2 signature range"));
+                return Err(invalid("invalid QIF signature range"));
             }
             let signature_end = signature_offset
                 .checked_add(signature_length)
@@ -383,7 +383,7 @@ impl<'a> QifV2Reader<'a> {
     }
 }
 
-/// File-backed QIF v2 reader. It reads only the fixed header, manifest,
+/// File-backed QIF reader. It reads only the fixed header, manifest,
 /// metadata and index at open time; tensor bytes are fetched on demand.
 pub struct QifV2FileReader {
     file: File,
@@ -397,10 +397,10 @@ pub struct QifV2FileReader {
 impl QifV2FileReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut file = File::open(path.as_ref())
-            .map_err(|error| crate::FormatError::Io(format!("cannot open QIF v2: {error}")))?;
+            .map_err(|error| crate::FormatError::Io(format!("cannot open QIF: {error}")))?;
         let file_length = file
             .metadata()
-            .map_err(|error| crate::FormatError::Io(format!("cannot stat QIF v2: {error}")))?
+            .map_err(|error| crate::FormatError::Io(format!("cannot stat QIF: {error}")))?
             .len();
         let mut header = [0_u8; HEADER_SIZE];
         read_at(&mut file, 0, &mut header)?;
@@ -567,13 +567,13 @@ struct FileHeader {
 
 fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<FileHeader> {
     if &bytes[..4] != MAGIC || u32_at(bytes, 4) != VERSION {
-        return Err(invalid("invalid QIF v2 file header"));
+        return Err(invalid("invalid QIF file header"));
     }
     if u32_at(bytes, 8) & !KNOWN_FLAGS != 0 || u32_at(bytes, 12) != HEADER_SIZE as u32 {
-        return Err(invalid("unsupported QIF v2 header flags or size"));
+        return Err(invalid("unsupported QIF header flags or size"));
     }
     if u32_at(bytes, 16) != HASH_SHA256 || u32_at(bytes, 20) != INDEX_VERSION {
-        return Err(invalid("unsupported QIF v2 header algorithm or index"));
+        return Err(invalid("unsupported QIF header algorithm or index"));
     }
     let signature_offset = u64_at(bytes, 120);
     let signature_length = u64_at(bytes, 128);
@@ -617,7 +617,7 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
             || signature_offset < HEADER_SIZE as u64
             || !signature_offset.is_multiple_of(ALIGNMENT as u64)
         {
-            return Err(invalid("invalid QIF2 signature range"));
+            return Err(invalid("invalid QIF signature range"));
         }
         let signature_end = signature_offset
             .checked_add(signature_length)
@@ -657,9 +657,9 @@ fn read_section(file: &mut File, offset: u64, length: u64) -> Result<Vec<u8>> {
 
 fn read_at(file: &mut File, offset: u64, bytes: &mut [u8]) -> Result<()> {
     file.seek(SeekFrom::Start(offset))
-        .map_err(|error| crate::FormatError::Io(format!("cannot seek QIF v2: {error}")))?;
+        .map_err(|error| crate::FormatError::Io(format!("cannot seek QIF: {error}")))?;
     file.read_exact(bytes)
-        .map_err(|error| crate::FormatError::Io(format!("cannot read QIF v2: {error}")))
+        .map_err(|error| crate::FormatError::Io(format!("cannot read QIF: {error}")))
 }
 
 pub(crate) fn has_magic(bytes: &[u8]) -> bool {
@@ -795,7 +795,7 @@ fn parse_control(
     let canonical = serde_json::to_vec(&manifest)
         .map_err(|error| invalid(format!("cannot canonicalize manifest: {error}")))?;
     if canonical != manifest_bytes {
-        return Err(invalid("manifest is not in the QIF v2 canonical JSON form"));
+        return Err(invalid("manifest is not in the QIF canonical JSON form"));
     }
     let metadata = super::metadata::decode(metadata_bytes)?;
     let (tensors, chunks) = parse_index(index_bytes, payload_length, &manifest)?;
@@ -970,7 +970,7 @@ fn parse_index(
             checksum_sha256: hash,
         };
         if chunk.shard_id != 0 || !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4) {
-            return Err(invalid("unsupported QIF v2 single-file chunk codec"));
+            return Err(invalid("unsupported QIF single-file chunk codec"));
         }
         if chunk.codec == CODEC_NONE && chunk.stored_length != chunk.raw_length {
             return Err(invalid(
@@ -1248,7 +1248,7 @@ fn dtype_to_ggml(value: u32) -> Result<GgmlType> {
         6 => Ok(GgmlType::Q5_K),
         7 => Ok(GgmlType::Q6_K),
         8 => Ok(GgmlType::Q8_0),
-        value => Err(invalid(format!("unsupported QIF v2 dtype {value}"))),
+        value => Err(invalid(format!("unsupported QIF dtype {value}"))),
     }
 }
 

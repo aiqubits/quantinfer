@@ -4,7 +4,7 @@ use std::fmt;
 use candle_core::quantized::{GgmlDType, QStorage, QTensor};
 use candle_core::{DType as CandleDType, Device, Tensor as CandleTensor};
 use quantinfer_core::{CoreError, DType, Tensor};
-use quantinfer_format::qif_v2::QifV2Reader;
+use quantinfer_format::qif::Reader as QifReader;
 
 pub type Result<T> = std::result::Result<T, InteropError>;
 
@@ -55,7 +55,7 @@ pub fn from_candle(tensor: &CandleTensor) -> Result<Tensor> {
 }
 
 /// Copy a verified QIF tensor into Candle packed storage without requantizing.
-pub fn packed_from_qif(reader: &QifV2Reader<'_>, name: &str, device: &Device) -> Result<QTensor> {
+pub fn packed_from_qif(reader: &QifReader<'_>, name: &str, device: &Device) -> Result<QTensor> {
     if cfg!(target_endian = "big") {
         return Err(InteropError::Invalid(
             "packed Candle interchange requires a little-endian target".to_owned(),
@@ -134,7 +134,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use quantinfer_core::{QuantizationScheme, Shape, TensorStorageDescriptor};
-    use quantinfer_format::{qif_v2::write_qif_v2, ModelManifest, TensorManifest};
+    use quantinfer_format::{qif::write_qif, ModelManifest, TensorManifest};
 
     use super::*;
 
@@ -177,8 +177,8 @@ mod tests {
         let mut bytes = Vec::<u8>::with_capacity(2048);
         let offset = usize::from(bytes.as_ptr().cast::<u16>().is_aligned());
         bytes.resize(offset, 0);
-        write_qif_v2(manifest, &BTreeMap::new(), |_| Ok(&block), &mut bytes).unwrap();
-        let qif = QifV2Reader::open(&bytes[offset..]).unwrap();
+        write_qif(manifest, &BTreeMap::new(), |_| Ok(&block), &mut bytes).unwrap();
+        let qif = QifReader::open(&bytes[offset..]).unwrap();
         assert!(!qif
             .tensor_bytes("weight")
             .unwrap()

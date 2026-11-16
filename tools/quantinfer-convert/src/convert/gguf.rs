@@ -80,12 +80,12 @@ pub(crate) fn run() -> Result<(), String> {
         .transpose()?;
     let output_path = required_path(&arguments, "--output")?;
     let output_format =
-        optional_value(&arguments, "--output-format").unwrap_or_else(|| "qif2".to_owned());
-    if output_format != "gguf" && output_format != "qif2" {
-        return Err("--output-format must be gguf or qif2".to_owned());
+        optional_value(&arguments, "--output-format").unwrap_or_else(|| "qif".to_owned());
+    if output_format != "gguf" && output_format != "qif" {
+        return Err("--output-format must be gguf or qif".to_owned());
     }
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
-    if output_format == "qif2" && manifest_path.is_some() {
+    if output_format == "qif" && manifest_path.is_some() {
         return Err("--manifest is only supported when --output-format gguf".to_owned());
     }
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
@@ -444,7 +444,7 @@ pub(crate) fn run() -> Result<(), String> {
     spool
         .finish(output.as_file_mut())
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
-    if output_format == "qif2" {
+    if output_format == "qif" {
         output
             .as_file_mut()
             .rewind()
@@ -462,8 +462,8 @@ pub(crate) fn run() -> Result<(), String> {
             .unwrap_or("model");
         let mut qif = tempfile::NamedTempFile::new_in(output_dir)
             .map_err(|error| format!("cannot prepare {}: {error}", output_path.display()))?;
-        quantinfer_format::qif_v2::import_gguf(&reader, model_id, qif.as_file_mut())
-            .map_err(|error| format!("cannot write QIF2: {error}"))?;
+        quantinfer_format::qif::import_gguf(&reader, model_id, qif.as_file_mut())
+            .map_err(|error| format!("cannot write QIF: {error}"))?;
         qif.persist_noclobber(&output_path)
             .map_err(|error| format!("cannot publish {}: {error}", output_path.display()))?;
         println!(

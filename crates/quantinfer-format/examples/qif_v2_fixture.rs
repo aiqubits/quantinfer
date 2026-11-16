@@ -3,7 +3,7 @@ use std::env;
 use std::fs::File;
 
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
-use quantinfer_format::qif_v2::{write_qif_v2, QifV2MetadataValue};
+use quantinfer_format::qif::{write_qif, MetadataValue};
 use quantinfer_format::{ModelManifest, TensorManifest};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,10 +18,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let metadata = BTreeMap::from([(
         "fixture.kind".to_owned(),
-        QifV2MetadataValue::String("golden".to_owned()),
+        MetadataValue::String("golden".to_owned()),
     )]);
     let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
     let mut file = File::create(output)?;
-    write_qif_v2(manifest, &metadata, |_| Ok(&payload), &mut file)?;
+    write_qif(manifest, &metadata, |_| Ok(&payload), &mut file)?;
     Ok(())
 }

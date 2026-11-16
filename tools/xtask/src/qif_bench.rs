@@ -5,7 +5,9 @@ use std::io::{Read, Seek, SeekFrom};
 use std::time::Instant;
 
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
-use quantinfer_format::qif_v2::{write_qif_v2, QifV2FileReader, QifV2MetadataValue, QifV2Reader};
+use quantinfer_format::qif::{
+    write_qif, FileReader as QifFileReader, MetadataValue, Reader as QifReader,
+};
 use quantinfer_format::{GgufReader, ModelManifest, SafeTensorFileReader, TensorManifest};
 
 #[derive(Clone, Copy, Default)]
@@ -36,7 +38,7 @@ fn run_synthetic() {
     let payload = (0..(1024 * 1024 / 4))
         .flat_map(|value| (value as f32).to_le_bytes())
         .collect::<Vec<_>>();
-    let mut manifest = ModelManifest::new("qif-v2-benchmark", "fixture");
+    let mut manifest = ModelManifest::new("qif-benchmark", "fixture");
     manifest.tensors.push(TensorManifest {
         name: "weight".to_owned(),
         descriptor: TensorStorageDescriptor::floating(
@@ -46,9 +48,9 @@ fn run_synthetic() {
         .unwrap(),
         checksum_sha256: None,
     });
-    let metadata = BTreeMap::<String, QifV2MetadataValue>::new();
+    let metadata = BTreeMap::<String, MetadataValue>::new();
     let mut artifact = Vec::new();
-    write_qif_v2(
+    write_qif(
         manifest,
         &metadata,
         |_| Ok(payload.as_slice()),
@@ -56,19 +58,19 @@ fn run_synthetic() {
     )
     .expect("benchmark artifact should be valid");
     let started = Instant::now();
-    let reader = QifV2Reader::open(&artifact).expect("benchmark reader should open");
-    println!("qif2_open_ns={}", started.elapsed().as_nanos());
+    let reader = QifReader::open(&artifact).expect("benchmark reader should open");
+    println!("qif_open_ns={}", started.elapsed().as_nanos());
     let started = Instant::now();
     black_box(
         reader
             .read_range("weight", 0..4096)
             .expect("range should read"),
     );
-    println!("qif2_first_range_ns={}", started.elapsed().as_nanos());
+    println!("qif_first_range_ns={}", started.elapsed().as_nanos());
     let started = Instant::now();
     reader.verify().expect("benchmark verification should pass");
-    println!("qif2_full_verify_ns={}", started.elapsed().as_nanos());
-    println!("qif2_artifact_bytes={}", artifact.len());
+    println!("qif_full_verify_ns={}", started.elapsed().as_nanos());
+    println!("qif_artifact_bytes={}", artifact.len());
 }
 
 fn run_external(
@@ -91,7 +93,7 @@ fn run_external(
 fn benchmark_qif(path: &str, requested_tensor: Option<&str>) {
     let before = resources();
     let started = Instant::now();
-    let mut reader = QifV2FileReader::open(path).expect("QIF2 file should open");
+    let mut reader = QifFileReader::open(path).expect("QIF file should open");
     let open_ns = started.elapsed().as_nanos();
     let name = requested_tensor
         .map(str::to_owned)
@@ -110,12 +112,12 @@ fn benchmark_qif(path: &str, requested_tensor: Option<&str>) {
     let verify_ns = started.elapsed().as_nanos();
     let after = resources();
     let bytes = fs::metadata(path).expect("QIF2 file should stat").len();
-    println!("qif2_tensor={name}");
-    println!("qif2_open_ns={open_ns}");
-    println!("qif2_first_range_ns={range_ns}");
-    println!("qif2_full_verify_ns={verify_ns}");
-    println!("qif2_artifact_bytes={bytes}");
-    print_resource_delta("qif2", before, after);
+    println!("qif_tensor={name}");
+    println!("qif_open_ns={open_ns}");
+    println!("qif_first_range_ns={range_ns}");
+    println!("qif_full_verify_ns={verify_ns}");
+    println!("qif_artifact_bytes={bytes}");
+    print_resource_delta("qif", before, after);
 }
 
 fn benchmark_safetensors(path: &str, requested_tensor: Option<&str>) {

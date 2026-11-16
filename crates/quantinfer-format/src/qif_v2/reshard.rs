@@ -6,7 +6,7 @@ use crate::{GgmlType, ModelManifest, Result};
 
 use super::invalid;
 
-/// Deterministic raw-byte shard placement for a QIF2-PACKAGE.
+/// Deterministic raw-byte shard placement for a QIF-PACKAGE.
 ///
 /// The plan describes logical placement only. Writers remain free to account
 /// for codec expansion and alignment while preserving the tensor order and

@@ -12,7 +12,7 @@ fn main() {
     match command.as_deref() {
         Some("bench") => bench::run(),
         Some("conformance") => conformance::run(),
-        Some("qif-v2-bench") => qif_bench::run(),
+        Some("qif-bench") => qif_bench::run(),
         Some("tokenizer-golden") => tokenizer_golden::run(),
         None | Some("--help") | Some("-h") => print_help(),
         Some(command) => {
@@ -32,5 +32,5 @@ pub(crate) fn option_value(flag: &str) -> Option<String> {
 }
 
 fn print_help() {
-    println!("Usage: cargo run -p quantinfer-xtask -- bench|qif-v2-bench [--qif PATH] [--safetensors PATH] [--gguf PATH] [--tensor NAME]|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
+    println!("Usage: cargo run -p quantinfer-xtask -- bench|qif-bench [--qif PATH] [--safetensors PATH] [--gguf PATH] [--tensor NAME]|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
 }

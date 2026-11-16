@@ -1,5 +1,8 @@
 # QIF v2.0 权重容器标准方案
 
+对外 artifact、CLI 和 Rust API 统一使用 **QIF** 名称；QIF2-SINGLE、QIF2-PACKAGE
+及 QIF v1 只用于内部 wire/version 实现与历史文档，不作为对外能力标识。
+
 状态：QIF v2.0-SINGLE、QIF2-PACKAGE、独立压缩 chunk 和 Ed25519 签名 envelope
 已实现并冻结；跨语言 golden reader 与 benchmark 仍是验证工作。
 
@@ -383,26 +386,27 @@ package manifest 为每个 shard 记录：
 
 ## 9. Runtime API
 
-`quantinfer-format` 的内存、file-backed、mmap 和 package reader 已独立于 QIF v1；当前 API 为：
+`quantinfer-format::qif` 的内存、file-backed、mmap 和 package reader 是对外稳定 API；
+wire-version implementation remains internal. 当前对外 API 为：
 
 ```rust
-QifV2Reader::open(bytes)
-QifV2Reader::manifest()
-QifV2Reader::metadata()
-QifV2Reader::tensor_info(name)
-QifV2Reader::tensor_bytes(name)
-QifV2Reader::read_range(name, range)
-QifV2Reader::verify()
-QifV2FileReader::open(path)
-QifV2FileReader::read_range(name, range)
-QifV2FileReader::verify()
-QifV2MappedFile::open(path)
-QifV2MappedFile::reader()
-QifV2PackageReader::open(path)
-QifV2PackageReader::read_range(name, range)
-QifV2PackageReader::verify()
-write_qif_v2_with_codec(..., QifV2Codec::Zstd|Lz4)
-write_qif_v2_signed(..., signing_key)
+quantinfer_format::qif::Reader::open(bytes)
+quantinfer_format::qif::Reader::manifest()
+quantinfer_format::qif::Reader::metadata()
+quantinfer_format::qif::Reader::tensor_info(name)
+quantinfer_format::qif::Reader::tensor_bytes(name)
+quantinfer_format::qif::Reader::read_range(name, range)
+quantinfer_format::qif::Reader::verify()
+quantinfer_format::qif::FileReader::open(path)
+quantinfer_format::qif::FileReader::read_range(name, range)
+quantinfer_format::qif::FileReader::verify()
+quantinfer_format::qif::MappedFile::open(path)
+quantinfer_format::qif::MappedFile::reader()
+quantinfer_format::qif::PackageReader::open(path)
+quantinfer_format::qif::PackageReader::read_range(name, range)
+quantinfer_format::qif::PackageReader::verify()
+quantinfer_format::qif::write_qif_with_codec(..., qif::Codec::Zstd|Lz4)
+quantinfer_format::qif::write_qif_signed(..., signing_key)
 ```
 
 API 要求：
@@ -427,7 +431,7 @@ API 要求：
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与当前 C/Python golden readers 对同一 uncompressed fixture 得出一致 header、index 和 payload bytes；
-9. `cargo run -p quantinfer-xtask -- qif-v2-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 已报告三种格式的 open、selected-layer range、artifact size、RSS 和 page-fault 指标；QIF2 额外报告 full-verify，并明确 SafeTensors/GGUF 不提供本容器定义的 checksum verify；
+9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 已报告三种格式的 open、selected-layer range、artifact size、RSS 和 page-fault 指标；QIF 额外报告 full-verify，并明确 SafeTensors/GGUF 不提供本容器定义的 checksum verify；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
 ## 11. 从当前仓库迁移
@@ -441,8 +445,8 @@ API 要求：
 5. QIF2 的 Rust fixture、dependency-free Python reader、C wire reader smoke test 和
    `fuzz/qif_v2_reader` target 已完成；更多 malformed corpus 仍是持续验证工作。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
-7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 转换器通过
-   `--output-format qif2` 直接发布 QIF2-SINGLE（内部仍复用已验证的 GGUF 语义映射）。
+7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
+   `--output-format qif` 直接发布当前 QIF 单文件（内部仍复用已验证的 GGUF 语义映射）。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论

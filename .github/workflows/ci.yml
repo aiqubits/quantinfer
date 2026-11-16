@@ -17,7 +17,7 @@ jobs:
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
       - run: cargo run --locked -p quantinfer-xtask -- bench
-      - run: cargo run --locked -p quantinfer-xtask -- qif-v2-bench
+      - run: cargo run --locked -p quantinfer-xtask -- qif-bench
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
       - name: Check the dependency-free QIF2 Python golden reader

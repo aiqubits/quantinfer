@@ -1,7 +1,7 @@
-//! QIF v2 inference weight container.
+//! Internal current QIF inference weight container implementation.
 //!
 //! This module is intentionally independent from the retired QIF v1 wire
-//! implementation in [`crate::qif`]. QIF v2 has a fixed binary index and
+//! implementation in a private legacy module. QIF has a fixed binary index and
 //! chunk table so a file-backed reader can locate tensors without scanning
 //! payload bytes.
 
@@ -57,7 +57,7 @@ pub(crate) fn canonicalize_manifest_layouts(manifest: &mut ModelManifest) {
 }
 
 pub(crate) fn invalid(message: impl std::fmt::Display) -> FormatError {
-    FormatError::Invalid(format!("QIF v2 {message}"))
+    FormatError::Invalid(format!("QIF {message}"))
 }
 
 pub(crate) fn align(offset: usize) -> Result<usize> {

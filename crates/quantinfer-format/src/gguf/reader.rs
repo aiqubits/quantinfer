@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{manifest::ModelManifest, qif, qif_v2};
+use crate::{manifest::ModelManifest, qif_legacy, qif_v2};
 
 use super::encoding::{align_up, tensor_byte_size, Cursor};
 use super::types::{FormatError, GgmlType, GgufTensorInfo, GgufValue};
@@ -42,7 +42,7 @@ impl PackedTensorReader {
     /// adapters, not the format reader.
     pub fn uses_ggml_output_rows(&self) -> Result<bool> {
         if self.embedded_manifest.is_some() {
-            return qif::uses_ggml_dimension_order(&self.metadata);
+            return qif_legacy::uses_ggml_dimension_order(&self.metadata);
         }
         if self
             .metadata

@@ -54,7 +54,7 @@ impl QifV2Codec {
     }
 }
 
-/// Transcode a supported GGUF model to the new QIF v2 wire format without
+/// Transcode a supported GGUF model to the new QIF wire format without
 /// dequantizing or requantizing its tensor bytes.
 pub fn import_gguf(
     reader: &GgufReader,
@@ -125,7 +125,7 @@ pub fn import_gguf(
     )
 }
 
-/// Write a QIF2-SINGLE artifact using the required uncompressed codec.
+/// Write a QIF-SINGLE artifact using the required uncompressed codec.
 pub fn write_qif_v2<'a>(
     manifest: ModelManifest,
     metadata: &BTreeMap<String, QifV2MetadataValue>,
@@ -135,7 +135,7 @@ pub fn write_qif_v2<'a>(
     write_qif_v2_with_codec(manifest, metadata, tensor_bytes, output, QifV2Codec::None)
 }
 
-/// Write a QIF v2 artifact using one independently compressed chunk per tensor.
+/// Write a QIF artifact using one independently compressed chunk per tensor.
 /// The default `write_qif_v2` remains the zero-copy, uncompressed profile.
 pub fn write_qif_v2_with_codec<'a>(
     manifest: ModelManifest,
@@ -604,7 +604,7 @@ fn write_padding(output: &mut impl Write, current: usize, target: usize) -> Resu
 }
 
 fn write_error(error: std::io::Error) -> crate::FormatError {
-    crate::FormatError::Io(format!("cannot write QIF v2: {error}"))
+    crate::FormatError::Io(format!("cannot write QIF: {error}"))
 }
 
 fn payload_size(descriptor: &TensorStorageDescriptor) -> Result<usize> {

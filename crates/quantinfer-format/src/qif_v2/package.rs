@@ -19,7 +19,7 @@ use super::{
 };
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
-const PACKAGE_PROFILE: &str = "QIF2-PACKAGE";
+const PACKAGE_PROFILE: &str = "QIF-PACKAGE";
 const INDEX_HEADER_SIZE: usize = 48;
 const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
@@ -64,7 +64,7 @@ struct PhysicalTensor {
     layout: u32,
 }
 
-/// Write a QIF2-PACKAGE directory with independently readable shard files.
+/// Write a QIF-PACKAGE directory with independently readable shard files.
 pub fn write_qif_v2_package<'a>(
     manifest: ModelManifest,
     metadata: &BTreeMap<String, QifV2MetadataValue>,
@@ -360,11 +360,11 @@ impl QifV2PackageReader {
         let package: PackageManifest =
             serde_json::from_slice(&package_bytes).map_err(json_error)?;
         if package.schema_version != PACKAGE_SCHEMA_VERSION || package.profile != PACKAGE_PROFILE {
-            return Err(invalid("unsupported QIF2 package profile"));
+            return Err(invalid("unsupported QIF package profile"));
         }
         let canonical = serde_json::to_vec(&package).map_err(json_error)?;
         if canonical != package_bytes {
-            return Err(invalid("QIF2 package manifest is not canonical JSON"));
+            return Err(invalid("QIF package manifest is not canonical JSON"));
         }
         package.model.validate()?;
         let mut unsigned = package.clone();
@@ -376,12 +376,12 @@ impl QifV2PackageReader {
         if crate::sha256_hex(&metadata_bytes) != package.metadata_sha256
             || crate::sha256_hex(&index) != package.index_sha256
         {
-            return Err(invalid("QIF2 package control checksum mismatch"));
+            return Err(invalid("QIF package control checksum mismatch"));
         }
         if package.root_hash
             != package_root_hash(&unsigned_bytes, &metadata_bytes, &index, &package.shards)
         {
-            return Err(invalid("QIF2 package root hash mismatch"));
+            return Err(invalid("QIF package root hash mismatch"));
         }
         let metadata = super::metadata::decode(&metadata_bytes)?;
         let (tensors, chunks) = parse_package_index(&index, &package.model)?;
@@ -389,13 +389,13 @@ impl QifV2PackageReader {
         let mut entries = BTreeMap::new();
         for entry in package.shards {
             if entries.insert(entry.path.clone(), entry.clone()).is_some() {
-                return Err(invalid("duplicate QIF2 package shard"));
+                return Err(invalid("duplicate QIF package shard"));
             }
             let path = resolve_path(&root, &entry.path)?;
             let file = File::open(&path).map_err(io_error)?;
             let size = file.metadata().map_err(io_error)?.len();
             if size != entry.size {
-                return Err(invalid(format!("QIF2 shard {} size mismatch", entry.path)));
+                return Err(invalid(format!("QIF shard {} size mismatch", entry.path)));
             }
             shards.insert(entry.path.clone(), file);
         }
@@ -403,7 +403,7 @@ impl QifV2PackageReader {
             let path = format!("shard-{:05}.qifd", chunk.shard_id);
             let file = shards
                 .get(&path)
-                .ok_or_else(|| invalid("QIF2 package index references a missing shard"))?;
+                .ok_or_else(|| invalid("QIF package index references a missing shard"))?;
             let size = file.metadata().map_err(io_error)?.len();
             if chunk
                 .stored_offset
@@ -447,7 +447,7 @@ impl QifV2PackageReader {
             .collect::<BTreeSet<_>>();
         if expected != actual {
             return Err(invalid(
-                "QIF2 package index tensor map disagrees with manifest",
+                "QIF package index tensor map disagrees with manifest",
             ));
         }
         let mut indexed_shards = BTreeMap::<String, BTreeSet<String>>::new();
@@ -1013,10 +1013,10 @@ fn read_at(file: &mut File, offset: u64, bytes: &mut [u8]) -> Result<()> {
     file.read_exact(bytes).map_err(io_error)
 }
 fn io_error(error: std::io::Error) -> FormatError {
-    FormatError::Io(format!("QIF2 package I/O error: {error}"))
+    FormatError::Io(format!("QIF package I/O error: {error}"))
 }
 fn json_error(error: impl std::fmt::Display) -> FormatError {
-    FormatError::Invalid(format!("invalid QIF2 package manifest: {error}"))
+    FormatError::Invalid(format!("invalid QIF package manifest: {error}"))
 }
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
