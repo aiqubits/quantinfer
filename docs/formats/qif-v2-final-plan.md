@@ -418,7 +418,7 @@ API 要求：
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前 writer 按 tensor 分片，reshard planner 仍需额外验证）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与当前 C/Python golden readers 对同一 uncompressed fixture 得出一致 header、index 和 payload bytes；
-9. 与 SafeTensors/GGUF 的 benchmark 必须报告：open latency、first-tensor latency、RSS、page faults、selected-layer read bandwidth、full-load time 和验证吞吐；
+9. `cargo run -p quantinfer-xtask -- qif-v2-bench` 已报告 QIF2 open、first-range、full-verify 延迟和 artifact size；与 SafeTensors/GGUF 的完整对比仍需在固定模型、RSS、page faults、selected-layer bandwidth 和验证吞吐基准上完成；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
 ## 11. 从当前仓库迁移

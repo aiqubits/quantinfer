@@ -2331,6 +2331,7 @@ version = "0.1.0"
 dependencies = [
  "quantinfer-backend-cpu",
  "quantinfer-core",
+ "quantinfer-format",
  "quantinfer-kernel",
  "quantinfer-quant",
  "quantinfer-tokenizer",

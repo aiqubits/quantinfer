@@ -2,6 +2,7 @@
 
 mod bench;
 mod conformance;
+mod qif_bench;
 mod tokenizer_golden;
 
 use std::env;
@@ -11,6 +12,7 @@ fn main() {
     match command.as_deref() {
         Some("bench") => bench::run(),
         Some("conformance") => conformance::run(),
+        Some("qif-v2-bench") => qif_bench::run(),
         Some("tokenizer-golden") => tokenizer_golden::run(),
         None | Some("--help") | Some("-h") => print_help(),
         Some(command) => {
@@ -30,5 +32,5 @@ pub(crate) fn option_value(flag: &str) -> Option<String> {
 }
 
 fn print_help() {
-    println!("Usage: cargo run -p quantinfer-xtask -- bench|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
+    println!("Usage: cargo run -p quantinfer-xtask -- bench|qif-v2-bench|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
 }
