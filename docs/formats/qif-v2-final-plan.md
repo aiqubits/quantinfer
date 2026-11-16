@@ -369,7 +369,7 @@ shard-00001.qifd
 
 package manifest 为每个 shard 记录：
 
-- 相对路径或受限 URI；
+- 相对路径；受限 URI 作为后续 transport profile 保留，v2.0 当前 reader 只接受包根目录内的本地相对路径；
 - 文件大小；
 - shard hash；
 - mesh axis、rank 和 shard coordinate；
