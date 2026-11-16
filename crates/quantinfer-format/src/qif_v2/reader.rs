@@ -12,6 +12,7 @@ use crate::gguf::{GgufTensorInfo, PackedTensorReader};
 use crate::{GgmlType, GgufValue, ModelManifest, Result};
 
 use super::metadata::MetadataValue;
+use super::writer::validate_payload;
 use super::{
     checked_range, invalid, metadata_to_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
     CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
@@ -341,9 +342,12 @@ impl<'a> Reader<'a> {
                     .map_err(|_| invalid("tensor length overflows usize"))?,
             )
             .ok_or_else(|| invalid("tensor end overflows usize"))?;
-        self.bytes
+        let bytes = self
+            .bytes
             .get(start..end)
-            .ok_or_else(|| invalid("tensor payload is truncated"))
+            .ok_or_else(|| invalid("tensor payload is truncated"))?;
+        validate_payload(dtype_from_id(tensor.dtype)?, bytes, &tensor.name)?;
+        Ok(bytes)
     }
 
     fn tensor_data_by_info(&self, tensor: &TensorInfo) -> Result<Vec<u8>> {
@@ -379,6 +383,7 @@ impl<'a> Reader<'a> {
         {
             return Err(invalid("decoded tensor length disagrees with index"));
         }
+        validate_payload(dtype_from_id(tensor.dtype)?, &output, &tensor.name)?;
         Ok(output)
     }
 }
@@ -510,6 +515,7 @@ impl FileReader {
             let raw_length = usize::try_from(tensor.raw_length)
                 .map_err(|_| invalid("tensor length overflows usize"))?;
             let bytes = self.read_range(&tensor.name, 0..raw_length)?;
+            validate_payload(dtype_from_id(tensor.dtype)?, &bytes, &tensor.name)?;
             let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
             if digest != tensor.checksum_sha256 {
                 return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
@@ -534,6 +540,20 @@ impl FileReader {
             }
         }
         Ok(())
+    }
+}
+
+fn dtype_from_id(id: u32) -> Result<DType> {
+    match id {
+        1 => Ok(DType::F32),
+        2 => Ok(DType::F16),
+        3 => Ok(DType::BF16),
+        4 => Ok(DType::Q4_0),
+        5 => Ok(DType::Q4_K),
+        6 => Ok(DType::Q5_K),
+        7 => Ok(DType::Q6_K),
+        8 => Ok(DType::Q8_0),
+        value => Err(invalid(format!("unsupported tensor dtype id {value}"))),
     }
 }
 

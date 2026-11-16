@@ -339,7 +339,8 @@ root hash = SHA-256(canonical manifest + canonical metadata + binary index)
 ```
 
 reader 打开时至少验证 header、manifest、metadata、index 和 root hash；显式
-`verify()` 必须读取并验证所有 tensor 与 payload chunk。v2.0 不定义命令行
+`verify()` 必须读取并验证所有 tensor、payload chunk，并拒绝非有限标准浮点/量化 scale。
+v2.0 不定义命令行
 `verify --fast/--full` 选项。
 
 ### 7.2 Signature

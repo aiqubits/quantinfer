@@ -607,6 +607,7 @@ impl PackageReader {
                 0..usize::try_from(tensor.raw_length)
                     .map_err(|_| invalid("tensor length overflows usize"))?,
             )?;
+            validate_payload(dtype_from_id(tensor.dtype)?, &bytes, &tensor.name)?;
             let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
             if digest != tensor.checksum_sha256 {
                 return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
@@ -642,6 +643,20 @@ impl PackageReader {
             }
         }
         Ok(())
+    }
+}
+
+fn dtype_from_id(id: u32) -> Result<quantinfer_core::DType> {
+    match id {
+        1 => Ok(quantinfer_core::DType::F32),
+        2 => Ok(quantinfer_core::DType::F16),
+        3 => Ok(quantinfer_core::DType::BF16),
+        4 => Ok(quantinfer_core::DType::Q4_0),
+        5 => Ok(quantinfer_core::DType::Q4_K),
+        6 => Ok(quantinfer_core::DType::Q5_K),
+        7 => Ok(quantinfer_core::DType::Q6_K),
+        8 => Ok(quantinfer_core::DType::Q8_0),
+        value => Err(invalid(format!("unsupported tensor dtype id {value}"))),
     }
 }
 
