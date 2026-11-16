@@ -11,7 +11,8 @@ tensor bytes; those APIs are no longer part of the default public format path.
 
 The historical converter imported a supported GGUF artifact and preserved its
 typed metadata and quantized weights. The current converter writes QIF2-SINGLE;
-the v1 API remains only for reading old fixtures and migration tests.
+the v1 implementation remains only inside the format crate for old fixtures and
+migration tests.
 
 The command example from the retired implementation is intentionally omitted;
 running `quantinfer-convert from-gguf` today produces QIF2-SINGLE v2.0.
