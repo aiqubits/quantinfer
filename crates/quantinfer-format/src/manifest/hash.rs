@@ -35,7 +35,11 @@ pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        let read = reader.read(&mut buffer)?;
+        let read = match reader.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if read == 0 {
             break;
         }

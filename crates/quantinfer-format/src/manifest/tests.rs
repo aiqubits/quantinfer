@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{self, Cursor, Read};
 
 use quantinfer_core::{DType, QuantizationScheme, Shape, TensorStorageDescriptor};
 
@@ -54,6 +54,42 @@ fn hashes_known_bytes_and_streams_identically() {
         sha256_reader(&mut Cursor::new(b"fixture")).unwrap(),
         expected
     );
+}
+
+struct InterruptedOnce<R> {
+    inner: R,
+    interrupted: bool,
+}
+
+impl<R: Read> Read for InterruptedOnce<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if !self.interrupted {
+            self.interrupted = true;
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        self.inner.read(buffer)
+    }
+}
+
+#[test]
+fn retries_interrupted_reads_when_hashing_a_stream() {
+    let mut reader = InterruptedOnce {
+        inner: Cursor::new(b"fixture"),
+        interrupted: false,
+    };
+    assert_eq!(sha256_reader(&mut reader).unwrap(), sha256_hex(b"fixture"));
+}
+
+#[test]
+fn returns_other_read_errors_when_hashing_a_stream() {
+    struct Failing;
+    impl Read for Failing {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        }
+    }
+    let error = sha256_reader(&mut Failing).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
 }
 
 #[test]
