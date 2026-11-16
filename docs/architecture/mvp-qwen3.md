@@ -29,8 +29,9 @@ assignments, and imatrix statistics. Linear projection weights can be
 quantized while embeddings, normalization, and the language-model head remain
 floating point where the model path requires it.
 
-The format layer supports GGUF, SafeTensors, package manifests, and a legacy
-QIF v1 path. QIF v1 is retired and is not the target format for new artifacts.
+The format layer supports GGUF, SafeTensors, package manifests, and the new
+QIF2-SINGLE path. Retired QIF v1 code is limited to internal historical
+fixtures and is not accepted by the default runtime.
 QIF2-SINGLE v2.0 is implemented as a separate wire boundary in
 `quantinfer-format::qif_v2`; package, compressed and cross-language conformance
 profiles remain future work documented in `docs/formats/qif-v2-final-plan.md`.

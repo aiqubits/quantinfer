@@ -4,9 +4,10 @@
 > migration and fixture analysis. New artifacts must target QIF v2; see
 > [qif-v2-final-plan.md](qif-v2-final-plan.md).
 
-QIF is an optional QuantInfer container for a model manifest, typed metadata,
-and tensor payloads. The format crate exposes a streaming writer and a reader
-that verifies the full artifact before returning borrowed tensor bytes.
+QIF was an optional QuantInfer container for a model manifest, typed metadata,
+and tensor payloads. The historical format implementation included a streaming
+writer and a reader that verified the full artifact before returning borrowed
+tensor bytes; those APIs are no longer part of the default public format path.
 
 The historical converter imported a supported GGUF artifact and preserved its
 typed metadata and quantized weights. The current converter writes QIF2-SINGLE;
