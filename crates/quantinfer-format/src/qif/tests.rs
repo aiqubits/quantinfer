@@ -156,7 +156,7 @@ fn imports_legacy_q4_0_without_changing_decoded_values() {
     assert_eq!(gguf.tensor_q4_0("weight").unwrap(), tensor);
     let mut bytes = Vec::new();
     import_gguf(&gguf, "legacy", &mut bytes).unwrap();
-    let qif = PackedTensorReader::open_artifact(bytes).unwrap();
+    let qif = open_packed(bytes).unwrap();
     assert_ne!(
         gguf.tensor_bytes("weight").unwrap(),
         qif.tensor_bytes("weight").unwrap()

@@ -28,8 +28,6 @@ impl PackedTensorReader {
     pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
         if qif_v2::has_magic(&bytes) {
             qif_v2::open_packed(bytes)
-        } else if qif::has_magic(&bytes) {
-            qif::open_packed(bytes)
         } else {
             Self::open(bytes)
         }
