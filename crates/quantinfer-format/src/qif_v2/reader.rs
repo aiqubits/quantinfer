@@ -981,6 +981,7 @@ fn parse_index(
             .is_none()
             || chunk.stored_offset + chunk.stored_length > payload_length
             || chunk.raw_offset.checked_add(chunk.raw_length).is_none()
+            || !chunk.stored_offset.is_multiple_of(ALIGNMENT as u64)
         {
             return Err(invalid("chunk range exceeds the payload section"));
         }
@@ -1034,12 +1035,21 @@ fn parse_index(
             }
             let mut raw_sum = 0u64;
             let mut stored_sum = 0u64;
-            for chunk in &chunks[chunk_start..end_chunk] {
-                let expected_raw = raw_sum;
-                let expected_stored = data_offset
-                    .checked_add(stored_sum)
-                    .ok_or_else(|| invalid("tensor stored offset overflows"))?;
-                if chunk.raw_offset != expected_raw || chunk.stored_offset != expected_stored {
+            for (position, chunk) in chunks[chunk_start..end_chunk].iter().enumerate() {
+                if position == 0 && chunk.stored_offset != data_offset {
+                    return Err(invalid("tensor data offset disagrees with first chunk"));
+                }
+                if position > 0 {
+                    let previous = &chunks[chunk_start + position - 1];
+                    let previous_end = previous
+                        .stored_offset
+                        .checked_add(previous.stored_length)
+                        .ok_or_else(|| invalid("tensor stored offset overflows"))?;
+                    if chunk.stored_offset != align_u64(previous_end)? {
+                        return Err(invalid("tensor chunk offsets are not aligned"));
+                    }
+                }
+                if chunk.raw_offset != raw_sum {
                     return Err(invalid("tensor chunk offsets are not contiguous"));
                 }
                 raw_sum = raw_sum
@@ -1065,16 +1075,13 @@ fn parse_index(
                     "tensor raw chunks must start at logical offset zero",
                 ));
             }
-            let end = data_offset
-                .checked_add(stored_length)
-                .ok_or_else(|| invalid("tensor range overflows"))?;
-            if occupied
-                .iter()
-                .any(|(start, stop)| data_offset < *stop && *start < end)
-            {
-                return Err(invalid("tensor chunks overlap"));
+            for chunk in &chunks[chunk_start..end_chunk] {
+                let end = chunk
+                    .stored_offset
+                    .checked_add(chunk.stored_length)
+                    .ok_or_else(|| invalid("tensor range overflows"))?;
+                occupied.push((chunk.stored_offset, end));
             }
-            occupied.push((data_offset, end));
         }
         tensors.push(QifV2TensorInfo {
             tensor_id,
@@ -1092,6 +1099,10 @@ fn parse_index(
             chunk_start,
             chunk_count: chunk_count_for_tensor,
         });
+    }
+    occupied.sort_unstable_by_key(|(start, _)| *start);
+    if occupied.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(invalid("tensor chunks overlap"));
     }
     Ok((tensors, chunks))
 }
@@ -1245,6 +1256,14 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+
+fn align_u64(offset: u64) -> Result<u64> {
+    let alignment = ALIGNMENT as u64;
+    offset
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+        .ok_or_else(|| invalid("offset alignment overflows"))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
