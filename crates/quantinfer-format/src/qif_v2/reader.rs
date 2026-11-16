@@ -322,8 +322,10 @@ impl<'a> QifV2Reader<'a> {
                 .ok_or_else(|| invalid("alias target is out of range"))?;
             return self.tensor_bytes_by_info(target);
         }
-        if tensor.codec != CODEC_NONE || tensor.chunk_count == 0 {
-            return Err(invalid("tensor is compressed or empty; use tensor_data"));
+        if tensor.codec != CODEC_NONE || tensor.chunk_count != 1 {
+            return Err(invalid(
+                "tensor is compressed, multi-chunk, or empty; use tensor_data",
+            ));
         }
         let first = &self.chunks[tensor.chunk_start];
         let start = self
@@ -669,10 +671,10 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
 pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
     let reader = QifV2Reader::open(&bytes)?;
     let metadata = metadata_to_gguf(reader.metadata())?;
-    let compressed = reader
-        .tensors
-        .iter()
-        .any(|tensor| tensor.codec != CODEC_NONE);
+    let compressed = reader.tensors.iter().any(|tensor| {
+        let physical = resolve_tensor(&reader.tensors, tensor.clone()).ok();
+        tensor.codec != CODEC_NONE || physical.is_some_and(|value| value.chunk_count != 1)
+    });
     let mut materialized = Vec::new();
     let mut materialized_offsets = BTreeMap::new();
     if compressed {
