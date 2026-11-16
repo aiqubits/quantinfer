@@ -417,7 +417,7 @@ API 要求：
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前 writer 按 tensor 分片，reshard planner 仍需额外验证）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust reader 与未来的 C/Python golden readers 对同一 fixtures 得出一致 tensor info 和 bytes；
+8. Rust reader 与当前 C/Python golden readers 对同一 uncompressed fixture 得出一致 header、index 和 payload bytes；
 9. 与 SafeTensors/GGUF 的 benchmark 必须报告：open latency、first-tensor latency、RSS、page faults、selected-layer read bandwidth、full-load time 和验证吞吐；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
@@ -429,7 +429,7 @@ API 要求：
 2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
-5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（跨语言验证里程碑）。
+5. QIF2 的 Rust fixture、dependency-free Python reader 和 C wire reader smoke test 已完成；fuzz target、更多 malformed corpus 和 benchmark 仍是持续验证工作。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 当前通过既有
    SafeTensors → GGUF → QIF2 两步路径转换，直接 SafeTensors → QIF2 仍待单独的

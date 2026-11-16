@@ -19,6 +19,12 @@ jobs:
       - run: cargo run --locked -p quantinfer-xtask -- bench
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
+      - name: Check the dependency-free QIF2 Python golden reader
+        run: |
+          cargo run --locked -p quantinfer-format --example qif_v2_fixture -- "$RUNNER_TEMP/qif-v2-fixture.qif"
+          python3 tests/conformance/qif_v2_reader.py --input "$RUNNER_TEMP/qif-v2-fixture.qif"
+          cc -std=c11 -Wall -Wextra -Werror tests/conformance/qif_v2_reader.c -o "$RUNNER_TEMP/qif-v2-c-reader"
+          "$RUNNER_TEMP/qif-v2-c-reader" "$RUNNER_TEMP/qif-v2-fixture.qif"
 
   cpu-simd:
     strategy:
