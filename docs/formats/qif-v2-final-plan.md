@@ -368,7 +368,9 @@ package manifest 为每个 shard 记录：
 - mesh axis、rank 和 shard coordinate；
 - 所属 tensor 名称；
 - package root hash（覆盖 root_hash 置空后的 canonical package manifest、metadata、global index 和 shard hashes）；
-- model manifest 中的 global shape 与 tensor checksum。
+- model manifest 中的 global shape 与 tensor checksum。global index 的 chunk record
+  使用 tensor-relative `raw_offset/raw_length` 和 shard-relative
+  `stored_offset/stored_length`，因此一个 tensor 可以跨多个 shard 重组。
 
 路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 的发布必须使用临时目录、完整校验和原子 rename；未完成 package 不得被 reader 视为有效模型。
 
