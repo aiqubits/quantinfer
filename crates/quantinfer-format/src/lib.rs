@@ -18,14 +18,14 @@ pub mod qif {
     pub use super::qif_v2::write_qif_v2_package_with_codec as write_qif_package_with_codec;
     pub use super::qif_v2::write_qif_v2_signed as write_qif_signed;
     pub use super::qif_v2::write_qif_v2_with_codec as write_qif_with_codec;
-    pub use super::qif_v2::QifV2Codec as Codec;
-    pub use super::qif_v2::QifV2FileReader as FileReader;
-    pub use super::qif_v2::QifV2MappedFile as MappedFile;
-    pub use super::qif_v2::QifV2MetadataValue as MetadataValue;
-    pub use super::qif_v2::QifV2PackageReader as PackageReader;
-    pub use super::qif_v2::QifV2Reader as Reader;
-    pub use super::qif_v2::QifV2ReshardPlan as ReshardPlan;
-    pub use super::qif_v2::QifV2TensorInfo as TensorInfo;
+    pub use super::qif_v2::Codec;
+    pub use super::qif_v2::FileReader;
+    pub use super::qif_v2::MappedFile;
+    pub use super::qif_v2::MetadataValue;
+    pub use super::qif_v2::PackageReader;
+    pub use super::qif_v2::Reader;
+    pub use super::qif_v2::ReshardPlan;
+    pub use super::qif_v2::TensorInfo;
 }
 pub mod safetensors;
 

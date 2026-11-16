@@ -3,11 +3,12 @@
 对外 artifact、CLI 和 Rust API 统一使用 **QIF** 名称；QIF2-SINGLE、QIF2-PACKAGE
 及 QIF v1 只用于内部 wire/version 实现与历史文档，不作为对外能力标识。
 
-状态：QIF v2.0-SINGLE、QIF2-PACKAGE、独立压缩 chunk 和 Ed25519 签名 envelope
-已实现并冻结；跨语言 golden reader 与 benchmark 仍是验证工作。
+状态：QIF-SINGLE、QIF-PACKAGE、独立压缩 chunk 和 QIF-SINGLE 的 Ed25519 签名 envelope
+已实现并冻结；跨语言 golden reader、seeded fuzz smoke test 和 benchmark 已接入 CI，
+长时 fuzzing 与硬件实测仍属于持续验证工作。
 
 QIF v1 已停止作为 QuantInfer 的目标格式。当前仓库中的 QIF v1 reader、writer 和
-历史测试只保留为旧 artifact 的读取与迁移参考；新 GGUF 转换器写入 QIF2-SINGLE，
+历史测试只保留为旧 artifact 的读取与迁移参考；新 GGUF 转换器写入当前 QIF（内部 wire version 为 QIF2-SINGLE），
 新 runtime 不得把 QIF v1 当作新版格式的兼容依据。
 
 本文定义全新的 QIF v2.0 wire format。当前仓库实现 QIF2-SINGLE 与
@@ -72,10 +73,11 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 
 ## 3. QIF v2.0 总体结构
 
-QIF v2.0 冻结两种容器 profile：
+QIF v2.0 冻结两种容器 profile；对外 profile 名称统一为 QIF，内部实现仍以
+QIF2 wire version 区分：
 
-- **QIF2-SINGLE**：一个文件，适合本地、边缘和单机服务。
-- **QIF2-PACKAGE**：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，适合对象存储、大模型和并行读取。
+- **QIF-SINGLE**（内部 QIF2-SINGLE）：一个文件，适合本地、边缘和单机服务。
+- **QIF-PACKAGE**（内部 QIF2-PACKAGE）：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，适合对象存储、大模型和并行读取。
 
 两种 profile 使用同一套 manifest、tensor record、chunk record 和 hash 规则。差异只在 payload 的物理位置与 package manifest。
 
@@ -301,7 +303,7 @@ QIF2-SINGLE/QIF2-PACKAGE v2.0 core codec：
 ```
 
 每个压缩 chunk 独立编码、独立解码和独立校验；reader 不使用跨 chunk 连续压缩流。
-`QifV2Reader::tensor_data` 与 file/package reader 会按需解压当前 tensor 数据。
+内部 `Reader::tensor_data` 与 file/package reader 会按需解压当前 tensor 数据。
 
 ### 6.3 量化编码
 
@@ -342,8 +344,10 @@ reader 打开时至少验证 header、manifest、metadata、index 和 root hash�
 
 ### 7.2 Signature
 
-v2.0 定义固定 108 字节 Ed25519 envelope：`QSIG` magic、版本、算法 ID、公钥和
+QIF-SINGLE v2.0 定义固定 108 字节 Ed25519 envelope：`QSIG` magic、版本、算法 ID、公钥和
 签名。签名覆盖 root hash；reader 验证 envelope，但信任根和密钥分发由发布系统负责。
+QIF-PACKAGE 当前使用 package root hash、metadata/index hash 和 shard hash；package
+级签名 envelope 不属于当前 v2.0 wire core。
 COSE、证书链和密钥轮换不属于 v2.0 wire core。
 
 ### 7.3 禁止项
@@ -357,9 +361,11 @@ QIF v2 MUST NOT：
 - 允许 NaN/Infinity 进入标准浮点 payload；
 - 允许未知 mandatory encoding 被当作其他 dtype 读取。
 
-## 8. QIF2-PACKAGE
+## 8. QIF-PACKAGE
 
-QIF2-PACKAGE 由一个 package manifest、一个全局 binary index 和多个独立 shard 构成：
+QIF-PACKAGE 由一个 package manifest、一个全局 binary index 和多个独立 shard 构成。
+其 `qif.json` 的 `profile` 固定为 `QIF-PACKAGE`；reader 也接受历史生成器写出的
+`QIF2-PACKAGE` profile，并在其它内容校验通过后按同一 wire schema 读取：
 
 ```text
 qif.json
@@ -405,16 +411,18 @@ quantinfer_format::qif::MappedFile::reader()
 quantinfer_format::qif::PackageReader::open(path)
 quantinfer_format::qif::PackageReader::read_range(name, range)
 quantinfer_format::qif::PackageReader::verify()
-quantinfer_format::qif::write_qif_with_codec(..., qif::Codec::Zstd|Lz4)
-quantinfer_format::qif::write_qif_signed(..., signing_key)
+quantinfer_format::qif::write_qif_with_codec(
+    ..., quantinfer_format::qif::Codec::Zstd /* or Codec::Lz4 */)
+quantinfer_format::qif::write_qif_signed(
+    ..., quantinfer_format::qif::Codec::None, signing_key)
 ```
 
 API 要求：
 
 - 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
 - `read_range` 只复制请求的 tensor 子范围；
-- v2.0-SINGLE/PACKAGE 提供按需 file-backed range read，并提供只读 `QifV2MappedFile` 映射入口；
-  mmap 的 unsafe 操作被隔离在单独模块，调用者仍必须先通过同一 QIF2 reader 校验；
+- QIF-SINGLE/PACKAGE 提供按需 file-backed range read，并提供只读 `qif::MappedFile` 映射入口；
+  mmap 的 unsafe 操作被隔离在单独模块，调用者仍必须先通过同一 QIF reader 校验；
 - reader 可选择调用 `verify` 执行全 payload 校验；
 - 文件、内存 buffer 和 package shard 使用同一逻辑 tensor/chunk 校验规则；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
@@ -423,9 +431,9 @@ API 要求：
 
 以下是必须验证的工程目标，不是未经测试的既定优势：
 
-1. file-backed index open 不读取 payload（当前 `QifV2FileReader::open` 已满足）；
+1. file-backed index open 不读取 payload（当前 `qif::FileReader::open` 已满足）；
 2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload（当前 file-backed `read_range` 已满足）；
-3. 无压缩路径能返回 mmap/range view（当前 `QifV2MappedFile` 与 file-backed range read 已满足）；
+3. 无压缩路径能返回 mmap/range view（当前 `qif::MappedFile` 与 file-backed range read 已满足）；
 4. 压缩路径只解压当前请求的 tensor/chunk（当前 codec reader 已满足）；
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
@@ -439,12 +447,12 @@ API 要求：
 迁移顺序：
 
 1. 新增 `qif-v2` module，禁止在 v2 module 复用 v1 header parser（已完成）。
-2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
+2. 将当前 legacy `qif` module 标记为 legacy-only，新的 GGUF 转换器写入当前 QIF（内部 wire version 为 QIF2，已完成）。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
 5. QIF2 的 Rust fixture、dependency-free Python reader、C wire reader smoke test 和
    `fuzz/qif_v2_reader` target 已完成；更多 malformed corpus 仍是持续验证工作。
-6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
+6. 新 CLI 默认输出 QIF；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif` 直接发布当前 QIF 单文件（内部仍复用已验证的 GGUF 语义映射）。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。

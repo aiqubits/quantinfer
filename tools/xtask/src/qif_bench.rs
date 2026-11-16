@@ -98,20 +98,20 @@ fn benchmark_qif(path: &str, requested_tensor: Option<&str>) {
     let name = requested_tensor
         .map(str::to_owned)
         .unwrap_or_else(|| reader.tensors()[0].name.clone());
-    let info = reader.tensor_info(&name).expect("QIF2 tensor should exist");
-    let length = usize::try_from(info.raw_length).expect("QIF2 tensor length should fit usize");
+    let info = reader.tensor_info(&name).expect("QIF tensor should exist");
+    let length = usize::try_from(info.raw_length).expect("QIF tensor length should fit usize");
     let started = Instant::now();
     black_box(
         reader
             .read_range(&name, 0..length.min(4096))
-            .expect("QIF2 range should read"),
+            .expect("QIF range should read"),
     );
     let range_ns = started.elapsed().as_nanos();
     let started = Instant::now();
-    reader.verify().expect("QIF2 verification should pass");
+    reader.verify().expect("QIF verification should pass");
     let verify_ns = started.elapsed().as_nanos();
     let after = resources();
-    let bytes = fs::metadata(path).expect("QIF2 file should stat").len();
+    let bytes = fs::metadata(path).expect("QIF file should stat").len();
     println!("qif_tensor={name}");
     println!("qif_open_ns={open_ns}");
     println!("qif_first_range_ns={range_ns}");

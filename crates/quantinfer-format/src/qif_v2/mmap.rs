@@ -7,18 +7,18 @@ use memmap2::{Mmap, MmapOptions};
 
 use crate::{FormatError, Result};
 
-use super::QifV2Reader;
+use super::Reader;
 
 /// Read-only memory-mapped QIF-SINGLE file.
 ///
 /// The unsafe operating-system mapping is isolated in this module. Callers
 /// receive the same validated reader as the in-memory API and cannot access an
 /// unvalidated byte range through this type.
-pub struct QifV2MappedFile {
+pub struct MappedFile {
     mapping: Mmap,
 }
 
-impl QifV2MappedFile {
+impl MappedFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let file = File::open(path.as_ref())
             .map_err(|error| FormatError::Io(format!("cannot open QIF for mmap: {error}")))?;
@@ -38,8 +38,8 @@ impl QifV2MappedFile {
         Ok(Self { mapping })
     }
 
-    pub fn reader(&self) -> Result<QifV2Reader<'_>> {
-        QifV2Reader::open(&self.mapping)
+    pub fn reader(&self) -> Result<Reader<'_>> {
+        Reader::open(&self.mapping)
     }
 
     pub fn len(&self) -> usize {

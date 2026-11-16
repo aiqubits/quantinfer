@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use ed25519_dalek::SigningKey;
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
+use serde_json::Value;
 
 use super::{
     plan_qif_v2_reshard, write_qif_v2, write_qif_v2_package_with_codec, write_qif_v2_signed,
-    write_qif_v2_with_codec, QifV2Codec, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue,
-    QifV2PackageReader, QifV2Reader,
+    write_qif_v2_with_codec, Codec, FileReader, MappedFile, MetadataValue, PackageReader, Reader,
 };
 use crate::{ModelManifest, TensorManifest};
 
@@ -27,16 +27,16 @@ fn round_trips_single_file_and_packed_adapter() {
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "general.architecture".to_owned(),
-        QifV2MetadataValue::String("test".to_owned()),
+        MetadataValue::String("test".to_owned()),
     );
     metadata.insert(
         "quantinfer.qif.ggml_dimension_order".to_owned(),
-        QifV2MetadataValue::Bool(false),
+        MetadataValue::Bool(false),
     );
     let mut bytes = Vec::new();
     write_qif_v2(sample_manifest(), &metadata, |_| Ok(&payload), &mut bytes).unwrap();
 
-    let reader = QifV2Reader::open(&bytes).unwrap();
+    let reader = Reader::open(&bytes).unwrap();
     assert_eq!(reader.tensor_bytes("weight").unwrap(), payload);
     assert_eq!(reader.read_range("weight", 4..8).unwrap(), payload[4..]);
     reader.verify().unwrap();
@@ -51,9 +51,9 @@ fn rejects_mixed_metadata_array() {
     let mut metadata = BTreeMap::new();
     metadata.insert(
         "bad".to_owned(),
-        QifV2MetadataValue::Array(vec![
-            QifV2MetadataValue::U32(1),
-            QifV2MetadataValue::String("mixed".to_owned()),
+        MetadataValue::Array(vec![
+            MetadataValue::U32(1),
+            MetadataValue::String("mixed".to_owned()),
         ]),
     );
     let error = super::metadata::encode(&metadata).unwrap_err();
@@ -73,7 +73,7 @@ fn rejects_noncanonical_manifest_bytes() {
     .unwrap();
     let manifest_offset = u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize;
     bytes[manifest_offset] = b' ';
-    assert!(QifV2Reader::open(&bytes).is_err());
+    assert!(Reader::open(&bytes).is_err());
 }
 
 #[test]
@@ -93,10 +93,10 @@ fn file_reader_loads_control_sections_lazily() {
         payload[0]
     ));
     std::fs::write(&path, bytes).unwrap();
-    let mut reader = QifV2FileReader::open(&path).unwrap();
+    let mut reader = FileReader::open(&path).unwrap();
     assert_eq!(reader.read_range("weight", 0..4).unwrap(), payload[..4]);
     reader.verify().unwrap();
-    let mapped = QifV2MappedFile::open(&path).unwrap();
+    let mapped = MappedFile::open(&path).unwrap();
     assert_eq!(
         mapped.reader().unwrap().tensor_bytes("weight").unwrap(),
         payload
@@ -116,7 +116,7 @@ fn rejects_unknown_flags_and_detects_payload_corruption_on_verify() {
     )
     .unwrap();
     bytes[8] = 1;
-    assert!(QifV2Reader::open(&bytes).is_err());
+    assert!(Reader::open(&bytes).is_err());
 
     let mut bytes = Vec::new();
     write_qif_v2(
@@ -128,14 +128,14 @@ fn rejects_unknown_flags_and_detects_payload_corruption_on_verify() {
     .unwrap();
     let payload_offset = u64::from_le_bytes(bytes[72..80].try_into().unwrap()) as usize;
     bytes[payload_offset] ^= 1;
-    let reader = QifV2Reader::open(&bytes).unwrap();
+    let reader = Reader::open(&bytes).unwrap();
     assert!(reader.verify().is_err());
 }
 
 #[test]
 fn round_trips_independently_compressed_codecs() {
     let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
-    for codec in [QifV2Codec::Zstd, QifV2Codec::Lz4] {
+    for codec in [Codec::Zstd, Codec::Lz4] {
         let mut bytes = Vec::new();
         write_qif_v2_with_codec(
             sample_manifest(),
@@ -145,7 +145,7 @@ fn round_trips_independently_compressed_codecs() {
             codec,
         )
         .unwrap();
-        let reader = QifV2Reader::open(&bytes).unwrap();
+        let reader = Reader::open(&bytes).unwrap();
         assert_eq!(reader.tensor_data("weight").unwrap(), payload);
         assert_eq!(reader.read_range("weight", 4..8).unwrap(), payload[4..]);
         reader.verify().unwrap();
@@ -165,15 +165,15 @@ fn verifies_ed25519_signature_envelope() {
         &BTreeMap::new(),
         |_| Ok(&payload),
         &mut bytes,
-        QifV2Codec::None,
+        Codec::None,
         &signing_key,
     )
     .unwrap();
-    let reader = QifV2Reader::open(&bytes).unwrap();
+    let reader = Reader::open(&bytes).unwrap();
     reader.verify().unwrap();
     let signature_offset = u64::from_le_bytes(bytes[120..128].try_into().unwrap()) as usize;
     bytes[signature_offset + 50] ^= 1;
-    assert!(QifV2Reader::open(&bytes).is_err());
+    assert!(Reader::open(&bytes).is_err());
 }
 
 #[test]
@@ -205,10 +205,10 @@ fn round_trips_qif2_package_and_shard_ranges() {
                 .ok_or_else(|| crate::FormatError::Invalid("missing single tensor".to_owned()))
         },
         &mut single,
-        QifV2Codec::Lz4,
+        Codec::Lz4,
     )
     .unwrap();
-    let single_reader = QifV2Reader::open(&single).unwrap();
+    let single_reader = Reader::open(&single).unwrap();
     let output =
         std::env::temp_dir().join(format!("quantinfer-qif2-package-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&output);
@@ -223,10 +223,10 @@ fn round_trips_qif2_package_and_shard_ranges() {
         },
         &output,
         Some(8),
-        QifV2Codec::Lz4,
+        Codec::Lz4,
     )
     .unwrap();
-    let mut reader = QifV2PackageReader::open(&output).unwrap();
+    let mut reader = PackageReader::open(&output).unwrap();
     assert_eq!(reader.tensors().len(), 3);
     assert_eq!(reader.tensor_shard("weight").unwrap(), "shard-00000.qifd");
     assert_eq!(reader.tensor_shard("bias").unwrap(), "shard-00001.qifd");
@@ -266,7 +266,7 @@ fn deduplicates_shared_payloads_in_single_and_package_profiles() {
         &mut single,
     )
     .unwrap();
-    let reader = QifV2Reader::open(&single).unwrap();
+    let reader = Reader::open(&single).unwrap();
     assert_eq!(
         reader.tensor_info("weight_alias").unwrap().alias_of,
         Some(0)
@@ -285,10 +285,10 @@ fn deduplicates_shared_payloads_in_single_and_package_profiles() {
         |_| Ok(&payload),
         &output,
         Some(1024),
-        QifV2Codec::None,
+        Codec::None,
     )
     .unwrap();
-    let mut package = QifV2PackageReader::open(&output).unwrap();
+    let mut package = PackageReader::open(&output).unwrap();
     assert_eq!(
         package.tensor_info("weight_alias").unwrap().alias_of,
         Some(0)
@@ -314,7 +314,7 @@ fn canonicalizes_output_rows_layout_in_qif2_manifest() {
     manifest.tensors[0].descriptor.physical_layout = "output_rows".to_owned();
     let mut bytes = Vec::new();
     write_qif_v2(manifest, &BTreeMap::new(), |_| Ok(&payload), &mut bytes).unwrap();
-    let reader = QifV2Reader::open(&bytes).unwrap();
+    let reader = Reader::open(&bytes).unwrap();
     assert_eq!(
         reader.manifest().tensors[0].descriptor.physical_layout,
         crate::GGML_OUTPUT_ROWS_LAYOUT
@@ -350,10 +350,10 @@ fn package_accepts_multiple_physical_tensors_in_one_shard() {
         },
         &output,
         Some(1024 * 1024),
-        QifV2Codec::None,
+        Codec::None,
     )
     .unwrap();
-    let mut reader = QifV2PackageReader::open(&output).unwrap();
+    let mut reader = PackageReader::open(&output).unwrap();
     assert_eq!(
         reader.read_range("weight", 0..8).unwrap(),
         payloads["weight"]
@@ -379,4 +379,83 @@ fn plans_deterministic_resharding_without_changing_tensor_order() {
     assert!(small.tensor_shards["large"].len() > large.tensor_shards["large"].len());
     assert!(small.shard_raw_bytes.iter().all(|size| *size <= 8));
     assert!(large.shard_raw_bytes.iter().all(|size| *size <= 1024));
+}
+
+#[test]
+fn accepts_historical_qif2_package_profile() {
+    let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
+    let output = std::env::temp_dir().join(format!(
+        "quantinfer-qif2-package-legacy-profile-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&output);
+    write_qif_v2_package_with_codec(
+        sample_manifest(),
+        &BTreeMap::new(),
+        |_| Ok(&payload),
+        &output,
+        Some(1024),
+        Codec::None,
+    )
+    .unwrap();
+
+    let package_path = output.join("qif.json");
+    let package_bytes = std::fs::read(&package_path).unwrap();
+    let mut package_text = String::from_utf8(package_bytes).unwrap();
+    package_text = package_text.replace("QIF-PACKAGE", "QIF2-PACKAGE");
+    let package: Value = serde_json::from_str(&package_text).unwrap();
+    let root_key = format!(
+        "\"root_hash\":\"{}\"",
+        package["root_hash"].as_str().unwrap()
+    );
+    package_text = package_text.replace(&root_key, "\"root_hash\":\"\"");
+    let unsigned = package_text.as_bytes().to_vec();
+    let mut root_input = unsigned;
+    root_input.extend_from_slice(&std::fs::read(output.join("metadata.qmb")).unwrap());
+    root_input.extend_from_slice(&std::fs::read(output.join("index.qifi")).unwrap());
+    for shard in package["shards"].as_array().unwrap() {
+        root_input.extend_from_slice(shard["sha256"].as_str().unwrap().as_bytes());
+    }
+    let package_text = package_text.replace(
+        "\"root_hash\":\"\"",
+        &format!("\"root_hash\":\"{}\"", crate::sha256_hex(&root_input)),
+    );
+    std::fs::write(&package_path, package_text).unwrap();
+
+    let mut reader = PackageReader::open(&output).unwrap();
+    assert_eq!(
+        reader.read_range("weight", 0..payload.len()).unwrap(),
+        payload
+    );
+    reader.verify().unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn rejects_json_that_exceeds_the_nesting_limit_before_parsing() {
+    let mut bytes = vec![b'['; super::MAX_JSON_DEPTH + 1];
+    bytes.extend(std::iter::repeat_n(b']', super::MAX_JSON_DEPTH + 1));
+    assert!(super::validate_json_depth(&bytes).is_err());
+}
+
+#[test]
+fn package_writer_rejects_non_finite_payloads() {
+    let mut payload = f32::NAN.to_le_bytes().to_vec();
+    payload.extend_from_slice(&0_f32.to_le_bytes());
+    let output = std::env::temp_dir().join(format!(
+        "quantinfer-qif-package-nonfinite-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&output);
+    let error = write_qif_v2_package_with_codec(
+        sample_manifest(),
+        &BTreeMap::new(),
+        |_| Ok(&payload),
+        &output,
+        Some(1024),
+        Codec::None,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("non-finite"));
+    assert!(!output.exists());
 }

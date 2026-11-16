@@ -6,12 +6,12 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::{FormatError, ModelManifest, Result};
+use crate::{DuplicateFreeJson, FormatError, ModelManifest, Result};
 
 use super::codec::{compress, decompress};
-use super::metadata::QifV2MetadataValue;
-use super::reader::{validate_tensor_descriptor, QifV2TensorInfo};
-use super::writer::QifV2Codec;
+use super::metadata::MetadataValue;
+use super::reader::{validate_tensor_descriptor, TensorInfo};
+use super::writer::{validate_payload, Codec};
 use super::{
     align, canonicalize_manifest_layouts, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
     CODEC_ZSTD, HASH_SIZE, INDEX_MAGIC, INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK,
@@ -20,6 +20,8 @@ use super::{
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
 const PACKAGE_PROFILE: &str = "QIF-PACKAGE";
+const LEGACY_PACKAGE_PROFILE: &str = "QIF2-PACKAGE";
+const MAX_PACKAGE_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 const INDEX_HEADER_SIZE: usize = 48;
 const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
@@ -67,7 +69,7 @@ struct PhysicalTensor {
 /// Write a QIF-PACKAGE directory with independently readable shard files.
 pub fn write_qif_v2_package<'a>(
     manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output_dir: impl AsRef<Path>,
     max_shard_bytes: Option<usize>,
@@ -78,17 +80,17 @@ pub fn write_qif_v2_package<'a>(
         tensor_bytes,
         output_dir,
         max_shard_bytes,
-        QifV2Codec::None,
+        Codec::None,
     )
 }
 
 pub fn write_qif_v2_package_with_codec<'a>(
     mut manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     mut tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output_dir: impl AsRef<Path>,
     max_shard_bytes: Option<usize>,
-    codec: QifV2Codec,
+    codec: Codec,
 ) -> Result<()> {
     canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
@@ -103,13 +105,17 @@ pub fn write_qif_v2_package_with_codec<'a>(
     if temporary.exists() {
         return Err(invalid("temporary package output already exists"));
     }
+    let max_shard_bytes = max_shard_bytes.unwrap_or(DEFAULT_SHARD_LIMIT);
+    if max_shard_bytes == 0 {
+        return Err(invalid("package shard size must be greater than zero"));
+    }
     fs::create_dir_all(&temporary).map_err(io_error)?;
     let result = write_package_contents(
         &mut manifest,
         metadata,
         &mut tensor_bytes,
         &temporary,
-        max_shard_bytes.unwrap_or(DEFAULT_SHARD_LIMIT).max(1),
+        max_shard_bytes,
         codec.id(),
     );
     if let Err(error) = result {
@@ -121,7 +127,7 @@ pub fn write_qif_v2_package_with_codec<'a>(
 
 fn write_package_contents<'a>(
     manifest: &mut ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     tensor_bytes: &mut impl FnMut(&str) -> Result<&'a [u8]>,
     output_dir: &Path,
     max_shard_bytes: usize,
@@ -141,6 +147,7 @@ fn write_package_contents<'a>(
                 bytes.len()
             )));
         }
+        validate_payload(tensor.descriptor.dtype, bytes, &tensor.name)?;
         tensor.checksum_sha256 = Some(crate::sha256_hex(bytes));
         payloads.push(bytes.to_vec());
     }
@@ -331,11 +338,11 @@ fn write_package_contents<'a>(
     write_atomic_file(&output_dir.join("qif.json"), &package_bytes)
 }
 
-pub struct QifV2PackageReader {
+pub struct PackageReader {
     root: PathBuf,
     manifest: ModelManifest,
-    metadata: BTreeMap<String, QifV2MetadataValue>,
-    tensors: Vec<QifV2TensorInfo>,
+    metadata: BTreeMap<String, MetadataValue>,
+    tensors: Vec<TensorInfo>,
     chunks: Vec<PackageChunk>,
     shards: BTreeMap<String, File>,
     entries: BTreeMap<String, ShardManifest>,
@@ -352,14 +359,26 @@ struct PackageChunk {
     checksum_sha256: [u8; HASH_SIZE],
 }
 
-impl QifV2PackageReader {
+impl PackageReader {
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = fs::canonicalize(root.as_ref()).map_err(io_error)?;
         let package_path = resolve_path(&root, "qif.json")?;
-        let package_bytes = fs::read(&package_path).map_err(io_error)?;
-        let package: PackageManifest =
+        let package_bytes = read_bounded_file(
+            &package_path,
+            MAX_PACKAGE_MANIFEST_BYTES,
+            "QIF package manifest",
+        )?;
+        super::validate_json_depth(&package_bytes)?;
+        let package_value: DuplicateFreeJson =
             serde_json::from_slice(&package_bytes).map_err(json_error)?;
-        if package.schema_version != PACKAGE_SCHEMA_VERSION || package.profile != PACKAGE_PROFILE {
+        let package: PackageManifest =
+            serde_json::from_value(package_value.0).map_err(json_error)?;
+        if package.schema_version != PACKAGE_SCHEMA_VERSION
+            || !matches!(
+                package.profile.as_str(),
+                PACKAGE_PROFILE | LEGACY_PACKAGE_PROFILE
+            )
+        {
             return Err(invalid("unsupported QIF package profile"));
         }
         let canonical = serde_json::to_vec(&package).map_err(json_error)?;
@@ -367,12 +386,20 @@ impl QifV2PackageReader {
             return Err(invalid("QIF package manifest is not canonical JSON"));
         }
         package.model.validate()?;
+        super::reader::validate_manifest_limits(&package.model)?;
         let mut unsigned = package.clone();
         unsigned.root_hash.clear();
         let unsigned_bytes = serde_json::to_vec(&unsigned).map_err(json_error)?;
-        let metadata_bytes =
-            fs::read(resolve_path(&root, &package.metadata_path)?).map_err(io_error)?;
-        let index = fs::read(resolve_path(&root, &package.index_path)?).map_err(io_error)?;
+        let metadata_bytes = read_bounded_file(
+            &resolve_path(&root, &package.metadata_path)?,
+            super::MAX_HEADER_SECTION,
+            "QIF package metadata",
+        )?;
+        let index = read_bounded_file(
+            &resolve_path(&root, &package.index_path)?,
+            super::MAX_INDEX_BYTES,
+            "QIF package index",
+        )?;
         if crate::sha256_hex(&metadata_bytes) != package.metadata_sha256
             || crate::sha256_hex(&index) != package.index_sha256
         {
@@ -496,13 +523,13 @@ impl QifV2PackageReader {
     pub fn manifest(&self) -> &ModelManifest {
         &self.manifest
     }
-    pub fn metadata(&self) -> &BTreeMap<String, QifV2MetadataValue> {
+    pub fn metadata(&self) -> &BTreeMap<String, MetadataValue> {
         &self.metadata
     }
-    pub fn tensors(&self) -> &[QifV2TensorInfo] {
+    pub fn tensors(&self) -> &[TensorInfo] {
         &self.tensors
     }
-    pub fn tensor_info(&self, name: &str) -> Result<&QifV2TensorInfo> {
+    pub fn tensor_info(&self, name: &str) -> Result<&TensorInfo> {
         self.tensors
             .iter()
             .find(|tensor| tensor.name == name)
@@ -621,7 +648,7 @@ impl QifV2PackageReader {
 fn parse_package_index(
     bytes: &[u8],
     manifest: &ModelManifest,
-) -> Result<(Vec<QifV2TensorInfo>, Vec<PackageChunk>)> {
+) -> Result<(Vec<TensorInfo>, Vec<PackageChunk>)> {
     if bytes.len() < INDEX_HEADER_SIZE
         || &bytes[..4] != INDEX_MAGIC
         || u32_at(bytes, 4) != INDEX_VERSION
@@ -682,7 +709,7 @@ fn parse_package_index(
         }
         chunks.push(chunk);
     }
-    let mut tensors: Vec<QifV2TensorInfo> = Vec::with_capacity(tensor_count);
+    let mut tensors: Vec<TensorInfo> = Vec::with_capacity(tensor_count);
     let mut names = BTreeSet::new();
     for index in 0..tensor_count {
         let offset = records_start + index * TENSOR_RECORD_SIZE;
@@ -703,6 +730,14 @@ fn parse_package_index(
         if end_chunk > chunks.len() {
             return Err(invalid("package tensor chunks are invalid"));
         }
+        if u32_at(bytes, offset + 36) != 0
+            || u32_at(bytes, offset + 112) != 0
+            || u32_at(bytes, offset + 116) != 0
+        {
+            return Err(invalid(
+                "package tensor flags or reserved fields are not zero",
+            ));
+        }
         let alias_raw = u64_at(bytes, offset + 104);
         let alias_of = if alias_raw == ALIAS_NONE {
             None
@@ -713,7 +748,7 @@ fn parse_package_index(
             Some(alias_raw)
         };
         let data_offset = u64_at(bytes, offset + 64);
-        let tensor = QifV2TensorInfo {
+        let tensor = TensorInfo {
             tensor_id,
             name,
             shape,
@@ -726,6 +761,7 @@ fn parse_package_index(
             stored_length: u64_at(bytes, offset + 56),
             checksum_sha256: bytes[offset + 72..offset + 104].try_into().unwrap(),
             alias_of,
+            data_offset,
             chunk_start,
             chunk_count: chunk_count_for_tensor,
         };
@@ -1006,6 +1042,18 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all().map_err(io_error)?;
     drop(file);
     fs::rename(temporary, path).map_err(io_error)
+}
+
+fn read_bounded_file(path: &Path, maximum: usize, label: &str) -> Result<Vec<u8>> {
+    let size = fs::metadata(path).map_err(io_error)?.len();
+    if size > maximum as u64 {
+        return Err(invalid(format!("{label} exceeds the size limit")));
+    }
+    let bytes = fs::read(path).map_err(io_error)?;
+    if bytes.len() > maximum {
+        return Err(invalid(format!("{label} exceeds the size limit")));
+    }
+    Ok(bytes)
 }
 
 fn read_at(file: &mut File, offset: u64, bytes: &mut [u8]) -> Result<()> {

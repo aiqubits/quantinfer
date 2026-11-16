@@ -13,7 +13,7 @@ use quantinfer_core::{
 use crate::gguf::GgufReader;
 use crate::{GgmlType, GgufValue, ModelManifest, Result, TensorManifest};
 
-use super::metadata::QifV2MetadataValue;
+use super::metadata::MetadataValue;
 use super::{
     align, canonicalize_manifest_layouts, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT,
     CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC,
@@ -21,7 +21,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QifV2Codec {
+pub enum Codec {
     None,
     Zstd,
     Lz4,
@@ -44,7 +44,7 @@ struct PhysicalTensor {
     layout: u32,
 }
 
-impl QifV2Codec {
+impl Codec {
     pub const fn id(self) -> u32 {
         match self {
             Self::None => CODEC_NONE,
@@ -128,31 +128,31 @@ pub fn import_gguf(
 /// Write a QIF-SINGLE artifact using the required uncompressed codec.
 pub fn write_qif_v2<'a>(
     manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
 ) -> Result<()> {
-    write_qif_v2_with_codec(manifest, metadata, tensor_bytes, output, QifV2Codec::None)
+    write_qif_v2_with_codec(manifest, metadata, tensor_bytes, output, Codec::None)
 }
 
 /// Write a QIF artifact using one independently compressed chunk per tensor.
 /// The default `write_qif_v2` remains the zero-copy, uncompressed profile.
 pub fn write_qif_v2_with_codec<'a>(
     manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
-    codec: QifV2Codec,
+    codec: Codec,
 ) -> Result<()> {
     write_qif_v2_inner(manifest, metadata, tensor_bytes, output, codec, None)
 }
 
 pub fn write_qif_v2_signed<'a>(
     manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
-    codec: QifV2Codec,
+    codec: Codec,
     signing_key: &SigningKey,
 ) -> Result<()> {
     write_qif_v2_inner(
@@ -167,10 +167,10 @@ pub fn write_qif_v2_signed<'a>(
 
 fn write_qif_v2_inner<'a>(
     mut manifest: ModelManifest,
-    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    metadata: &BTreeMap<String, MetadataValue>,
     mut tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
-    codec: QifV2Codec,
+    codec: Codec,
     signing_key: Option<&SigningKey>,
 ) -> Result<()> {
     if manifest.tensors.len() > MAX_TENSORS {
@@ -665,7 +665,7 @@ fn descriptor_ids(descriptor: &TensorStorageDescriptor) -> Result<(u32, u32, u32
     Ok((dtype, dtype, scheme, layout))
 }
 
-fn validate_payload(dtype: DType, bytes: &[u8], name: &str) -> Result<()> {
+pub(crate) fn validate_payload(dtype: DType, bytes: &[u8], name: &str) -> Result<()> {
     use half::{bf16, f16};
     let finite = |value: f32| {
         if value.is_finite() {

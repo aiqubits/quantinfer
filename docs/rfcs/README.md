@@ -29,10 +29,10 @@ graph and can be absent from a portable build.
 ### Model packages and QIF
 
 Manifests and checksum-verified packages are the stable deployment boundary.
-QIF v1 is retired and remains only as a migration reference. QIF2-SINGLE v2.0
-is implemented in the separate `quantinfer-format::qif_v2` wire boundary;
-package profiles, compression and cross-language golden fixtures remain future
-compatibility work described in `docs/formats/qif-v2-final-plan.md`.
+QIF v1 is retired and remains only as a migration reference. The current QIF
+wire implementation is isolated in the private `quantinfer-format::qif_v2`
+boundary; package profiles, compression and cross-language golden fixtures are
+implemented and validated by the format tests and CI.
 
 ### Compatibility and rejection
 

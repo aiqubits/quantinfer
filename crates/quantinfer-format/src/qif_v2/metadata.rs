@@ -19,7 +19,7 @@ const MAX_ITEMS: usize = 1_048_576;
 const MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum QifV2MetadataValue {
+pub enum MetadataValue {
     U32(u32),
     U64(u64),
     I32(i32),
@@ -32,7 +32,7 @@ pub enum QifV2MetadataValue {
     Map(BTreeMap<String, Self>),
 }
 
-impl From<&GgufValue> for QifV2MetadataValue {
+impl From<&GgufValue> for MetadataValue {
     fn from(value: &GgufValue) -> Self {
         match value {
             GgufValue::U32(value) => Self::U32(*value),
@@ -48,7 +48,7 @@ impl From<&GgufValue> for QifV2MetadataValue {
     }
 }
 
-impl QifV2MetadataValue {
+impl MetadataValue {
     pub fn to_gguf(&self) -> Result<GgufValue> {
         match self {
             Self::U32(value) => Ok(GgufValue::U32(*value)),
@@ -71,7 +71,7 @@ impl QifV2MetadataValue {
     }
 }
 
-pub(crate) fn encode(values: &BTreeMap<String, QifV2MetadataValue>) -> Result<Vec<u8>> {
+pub(crate) fn encode(values: &BTreeMap<String, MetadataValue>) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     write_map(&mut output, values, 0)?;
     if output.len() > MAX_HEADER_SECTION {
@@ -80,7 +80,7 @@ pub(crate) fn encode(values: &BTreeMap<String, QifV2MetadataValue>) -> Result<Ve
     Ok(output)
 }
 
-pub(crate) fn decode(bytes: &[u8]) -> Result<BTreeMap<String, QifV2MetadataValue>> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<BTreeMap<String, MetadataValue>> {
     if bytes.len() > MAX_HEADER_SECTION {
         return Err(invalid("metadata exceeds the size limit"));
     }
@@ -94,7 +94,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<BTreeMap<String, QifV2MetadataValue
 
 fn write_map(
     output: &mut Vec<u8>,
-    values: &BTreeMap<String, QifV2MetadataValue>,
+    values: &BTreeMap<String, MetadataValue>,
     depth: usize,
 ) -> Result<()> {
     if depth > MAX_DEPTH || values.len() > MAX_ITEMS {
@@ -115,47 +115,47 @@ fn write_map(
     Ok(())
 }
 
-fn write_value(output: &mut Vec<u8>, value: &QifV2MetadataValue, depth: usize) -> Result<()> {
+fn write_value(output: &mut Vec<u8>, value: &MetadataValue, depth: usize) -> Result<()> {
     match value {
-        QifV2MetadataValue::U32(value) => {
+        MetadataValue::U32(value) => {
             output.extend_from_slice(&TAG_U32.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::U64(value) => {
+        MetadataValue::U64(value) => {
             output.extend_from_slice(&TAG_U64.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::I32(value) => {
+        MetadataValue::I32(value) => {
             output.extend_from_slice(&TAG_I32.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::I64(value) => {
+        MetadataValue::I64(value) => {
             output.extend_from_slice(&TAG_I64.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::F32(value) => {
+        MetadataValue::F32(value) => {
             if !value.is_finite() {
                 return Err(invalid("metadata F32 values must be finite"));
             }
             output.extend_from_slice(&TAG_F32.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::F64(value) => {
+        MetadataValue::F64(value) => {
             if !value.is_finite() {
                 return Err(invalid("metadata F64 values must be finite"));
             }
             output.extend_from_slice(&TAG_F64.to_le_bytes());
             output.extend_from_slice(&value.to_le_bytes());
         }
-        QifV2MetadataValue::Bool(value) => {
+        MetadataValue::Bool(value) => {
             output.extend_from_slice(&TAG_BOOL.to_le_bytes());
             output.push(u8::from(*value));
         }
-        QifV2MetadataValue::String(value) => {
+        MetadataValue::String(value) => {
             output.extend_from_slice(&TAG_STRING.to_le_bytes());
             write_string(output, value)?;
         }
-        QifV2MetadataValue::Array(values) => {
+        MetadataValue::Array(values) => {
             if depth > MAX_DEPTH || values.len() > MAX_ITEMS {
                 return Err(invalid("metadata nesting or item limit exceeded"));
             }
@@ -175,7 +175,7 @@ fn write_value(output: &mut Vec<u8>, value: &QifV2MetadataValue, depth: usize) -
                 write_value(output, value, depth + 1)?;
             }
         }
-        QifV2MetadataValue::Map(values) => write_map(output, values, depth)?,
+        MetadataValue::Map(values) => write_map(output, values, depth)?,
     }
     Ok(())
 }
@@ -228,7 +228,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn read_map(cursor: &mut Cursor<'_>, depth: usize) -> Result<BTreeMap<String, QifV2MetadataValue>> {
+fn read_map(cursor: &mut Cursor<'_>, depth: usize) -> Result<BTreeMap<String, MetadataValue>> {
     if depth > MAX_DEPTH {
         return Err(invalid("metadata nesting limit exceeded"));
     }
@@ -258,35 +258,35 @@ fn read_map(cursor: &mut Cursor<'_>, depth: usize) -> Result<BTreeMap<String, Qi
     Ok(values)
 }
 
-fn read_value(cursor: &mut Cursor<'_>, depth: usize) -> Result<QifV2MetadataValue> {
+fn read_value(cursor: &mut Cursor<'_>, depth: usize) -> Result<MetadataValue> {
     if depth > MAX_DEPTH {
         return Err(invalid("metadata nesting limit exceeded"));
     }
     match cursor.u32()? {
-        TAG_U32 => Ok(QifV2MetadataValue::U32(cursor.u32()?)),
-        TAG_U64 => Ok(QifV2MetadataValue::U64(cursor.u64()?)),
-        TAG_I32 => Ok(QifV2MetadataValue::I32(cursor.u32()? as i32)),
-        TAG_I64 => Ok(QifV2MetadataValue::I64(cursor.u64()? as i64)),
+        TAG_U32 => Ok(MetadataValue::U32(cursor.u32()?)),
+        TAG_U64 => Ok(MetadataValue::U64(cursor.u64()?)),
+        TAG_I32 => Ok(MetadataValue::I32(cursor.u32()? as i32)),
+        TAG_I64 => Ok(MetadataValue::I64(cursor.u64()? as i64)),
         TAG_F32 => {
             let value = f32::from_le_bytes(cursor.read(4)?.try_into().unwrap());
             if !value.is_finite() {
                 return Err(invalid("metadata F32 value is not finite"));
             }
-            Ok(QifV2MetadataValue::F32(value))
+            Ok(MetadataValue::F32(value))
         }
         TAG_F64 => {
             let value = f64::from_le_bytes(cursor.read(8)?.try_into().unwrap());
             if !value.is_finite() {
                 return Err(invalid("metadata F64 value is not finite"));
             }
-            Ok(QifV2MetadataValue::F64(value))
+            Ok(MetadataValue::F64(value))
         }
         TAG_BOOL => match cursor.read(1)?[0] {
-            0 => Ok(QifV2MetadataValue::Bool(false)),
-            1 => Ok(QifV2MetadataValue::Bool(true)),
+            0 => Ok(MetadataValue::Bool(false)),
+            1 => Ok(MetadataValue::Bool(true)),
             _ => Err(invalid("metadata boolean is not 0 or 1")),
         },
-        TAG_STRING => Ok(QifV2MetadataValue::String(cursor.string()?)),
+        TAG_STRING => Ok(MetadataValue::String(cursor.string()?)),
         TAG_ARRAY => {
             let count = usize::try_from(cursor.u64()?)
                 .map_err(|_| invalid("metadata array count overflows"))?;
@@ -303,30 +303,30 @@ fn read_value(cursor: &mut Cursor<'_>, depth: usize) -> Result<QifV2MetadataValu
                     return Err(invalid("metadata array values must use one tag"));
                 }
             }
-            Ok(QifV2MetadataValue::Array(values))
+            Ok(MetadataValue::Array(values))
         }
         TAG_MAP => {
             cursor.offset = cursor
                 .offset
                 .checked_sub(4)
                 .ok_or_else(|| invalid("metadata cursor underflows"))?;
-            Ok(QifV2MetadataValue::Map(read_map(cursor, depth)?))
+            Ok(MetadataValue::Map(read_map(cursor, depth)?))
         }
         tag => Err(invalid(format!("unsupported metadata tag {tag}"))),
     }
 }
 
-fn value_tag(value: &QifV2MetadataValue) -> u32 {
+fn value_tag(value: &MetadataValue) -> u32 {
     match value {
-        QifV2MetadataValue::U32(_) => TAG_U32,
-        QifV2MetadataValue::U64(_) => TAG_U64,
-        QifV2MetadataValue::I32(_) => TAG_I32,
-        QifV2MetadataValue::I64(_) => TAG_I64,
-        QifV2MetadataValue::F32(_) => TAG_F32,
-        QifV2MetadataValue::F64(_) => TAG_F64,
-        QifV2MetadataValue::Bool(_) => TAG_BOOL,
-        QifV2MetadataValue::String(_) => TAG_STRING,
-        QifV2MetadataValue::Array(_) => TAG_ARRAY,
-        QifV2MetadataValue::Map(_) => TAG_MAP,
+        MetadataValue::U32(_) => TAG_U32,
+        MetadataValue::U64(_) => TAG_U64,
+        MetadataValue::I32(_) => TAG_I32,
+        MetadataValue::I64(_) => TAG_I64,
+        MetadataValue::F32(_) => TAG_F32,
+        MetadataValue::F64(_) => TAG_F64,
+        MetadataValue::Bool(_) => TAG_BOOL,
+        MetadataValue::String(_) => TAG_STRING,
+        MetadataValue::Array(_) => TAG_ARRAY,
+        MetadataValue::Map(_) => TAG_MAP,
     }
 }

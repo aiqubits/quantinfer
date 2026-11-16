@@ -12,7 +12,7 @@ use super::invalid;
 /// for codec expansion and alignment while preserving the tensor order and
 /// descriptors recorded here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QifV2ReshardPlan {
+pub struct ReshardPlan {
     pub max_shard_bytes: usize,
     pub tensor_shards: BTreeMap<String, Vec<u32>>,
     pub shard_raw_bytes: Vec<u64>,
@@ -24,7 +24,7 @@ pub struct QifV2ReshardPlan {
 pub fn plan_qif_v2_reshard(
     manifest: &ModelManifest,
     max_shard_bytes: usize,
-) -> Result<QifV2ReshardPlan> {
+) -> Result<ReshardPlan> {
     if max_shard_bytes == 0 {
         return Err(invalid("reshard shard size must be greater than zero"));
     }
@@ -55,7 +55,7 @@ pub fn plan_qif_v2_reshard(
         }
         tensor_shards.insert(tensor.name.clone(), assigned);
     }
-    Ok(QifV2ReshardPlan {
+    Ok(ReshardPlan {
         max_shard_bytes,
         tensor_shards,
         shard_raw_bytes,

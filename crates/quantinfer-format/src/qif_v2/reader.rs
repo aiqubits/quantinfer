@@ -11,7 +11,7 @@ use quantinfer_core::DType;
 use crate::gguf::{GgufTensorInfo, PackedTensorReader};
 use crate::{GgmlType, GgufValue, ModelManifest, Result};
 
-use super::metadata::QifV2MetadataValue;
+use super::metadata::MetadataValue;
 use super::{
     checked_range, invalid, metadata_to_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
     CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
@@ -23,18 +23,17 @@ const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
 const KNOWN_FLAGS: u32 = 0;
 const MAX_MANIFEST_STRING_BYTES: usize = 16 * 1024 * 1024;
-const MAX_MANIFEST_DEPTH: usize = 32;
 
 type ParsedControl = (
     ModelManifest,
-    BTreeMap<String, QifV2MetadataValue>,
-    Vec<QifV2TensorInfo>,
+    BTreeMap<String, MetadataValue>,
+    Vec<TensorInfo>,
     Vec<ChunkInfo>,
 );
 
 /// A tensor entry from the QIF binary index.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QifV2TensorInfo {
+pub struct TensorInfo {
     pub tensor_id: u64,
     pub name: String,
     pub shape: Vec<u64>,
@@ -47,6 +46,7 @@ pub struct QifV2TensorInfo {
     pub stored_length: u64,
     pub checksum_sha256: [u8; HASH_SIZE],
     pub alias_of: Option<u64>,
+    pub(crate) data_offset: u64,
     pub(crate) chunk_start: usize,
     pub(crate) chunk_count: usize,
 }
@@ -63,16 +63,16 @@ struct ChunkInfo {
 }
 
 /// A fully validated QIF single-file artifact.
-pub struct QifV2Reader<'a> {
+pub struct Reader<'a> {
     bytes: &'a [u8],
     manifest: ModelManifest,
-    metadata: BTreeMap<String, QifV2MetadataValue>,
-    tensors: Vec<QifV2TensorInfo>,
+    metadata: BTreeMap<String, MetadataValue>,
+    tensors: Vec<TensorInfo>,
     chunks: Vec<ChunkInfo>,
     payload_offset: usize,
 }
 
-impl<'a> QifV2Reader<'a> {
+impl<'a> Reader<'a> {
     pub fn open(bytes: &'a [u8]) -> Result<Self> {
         let header = bytes
             .get(..HEADER_SIZE)
@@ -209,15 +209,15 @@ impl<'a> QifV2Reader<'a> {
         &self.manifest
     }
 
-    pub fn metadata(&self) -> &BTreeMap<String, QifV2MetadataValue> {
+    pub fn metadata(&self) -> &BTreeMap<String, MetadataValue> {
         &self.metadata
     }
 
-    pub fn tensors(&self) -> &[QifV2TensorInfo] {
+    pub fn tensors(&self) -> &[TensorInfo] {
         &self.tensors
     }
 
-    pub fn tensor_info(&self, name: &str) -> Result<&QifV2TensorInfo> {
+    pub fn tensor_info(&self, name: &str) -> Result<&TensorInfo> {
         self.tensors
             .iter()
             .find(|tensor| tensor.name == name)
@@ -314,7 +314,7 @@ impl<'a> QifV2Reader<'a> {
         Ok(())
     }
 
-    fn tensor_bytes_by_info(&self, tensor: &QifV2TensorInfo) -> Result<&'a [u8]> {
+    fn tensor_bytes_by_info(&self, tensor: &TensorInfo) -> Result<&'a [u8]> {
         if let Some(target) = tensor.alias_of {
             let target = self
                 .tensors
@@ -346,7 +346,7 @@ impl<'a> QifV2Reader<'a> {
             .ok_or_else(|| invalid("tensor payload is truncated"))
     }
 
-    fn tensor_data_by_info(&self, tensor: &QifV2TensorInfo) -> Result<Vec<u8>> {
+    fn tensor_data_by_info(&self, tensor: &TensorInfo) -> Result<Vec<u8>> {
         if let Some(target) = tensor.alias_of {
             let target = self
                 .tensors
@@ -385,16 +385,16 @@ impl<'a> QifV2Reader<'a> {
 
 /// File-backed QIF reader. It reads only the fixed header, manifest,
 /// metadata and index at open time; tensor bytes are fetched on demand.
-pub struct QifV2FileReader {
+pub struct FileReader {
     file: File,
     manifest: ModelManifest,
-    metadata: BTreeMap<String, QifV2MetadataValue>,
-    tensors: Vec<QifV2TensorInfo>,
+    metadata: BTreeMap<String, MetadataValue>,
+    tensors: Vec<TensorInfo>,
     chunks: Vec<ChunkInfo>,
     payload_offset: u64,
 }
 
-impl QifV2FileReader {
+impl FileReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut file = File::open(path.as_ref())
             .map_err(|error| crate::FormatError::Io(format!("cannot open QIF: {error}")))?;
@@ -439,15 +439,15 @@ impl QifV2FileReader {
         &self.manifest
     }
 
-    pub fn metadata(&self) -> &BTreeMap<String, QifV2MetadataValue> {
+    pub fn metadata(&self) -> &BTreeMap<String, MetadataValue> {
         &self.metadata
     }
 
-    pub fn tensors(&self) -> &[QifV2TensorInfo] {
+    pub fn tensors(&self) -> &[TensorInfo] {
         &self.tensors
     }
 
-    pub fn tensor_info(&self, name: &str) -> Result<&QifV2TensorInfo> {
+    pub fn tensor_info(&self, name: &str) -> Result<&TensorInfo> {
         self.tensors
             .iter()
             .find(|tensor| tensor.name == name)
@@ -537,10 +537,7 @@ impl QifV2FileReader {
     }
 }
 
-fn resolve_tensor(
-    tensors: &[QifV2TensorInfo],
-    mut tensor: QifV2TensorInfo,
-) -> Result<QifV2TensorInfo> {
+fn resolve_tensor(tensors: &[TensorInfo], mut tensor: TensorInfo) -> Result<TensorInfo> {
     while let Some(alias) = tensor.alias_of {
         tensor = tensors
             .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
@@ -669,7 +666,7 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
 }
 
 pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
-    let reader = QifV2Reader::open(&bytes)?;
+    let reader = Reader::open(&bytes)?;
     let metadata = metadata_to_gguf(reader.metadata())?;
     let compressed = reader.tensors.iter().any(|tensor| {
         let physical = resolve_tensor(&reader.tensors, tensor.clone()).ok();
@@ -745,9 +742,9 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
 }
 
 fn tensor_storage_info(
-    tensors: &[QifV2TensorInfo],
+    tensors: &[TensorInfo],
     chunks: &[ChunkInfo],
-    tensor: &QifV2TensorInfo,
+    tensor: &TensorInfo,
 ) -> Result<(u64, usize)> {
     if let Some(alias) = tensor.alias_of {
         let target = tensors
@@ -784,9 +781,10 @@ fn parse_control(
     }
     let manifest_text =
         std::str::from_utf8(manifest_bytes).map_err(|_| invalid("manifest is not UTF-8"))?;
+    super::validate_json_depth(manifest_bytes)?;
     let manifest_value: serde_json::Value = serde_json::from_slice(manifest_bytes)
         .map_err(|error| invalid(format!("invalid manifest JSON: {error}")))?;
-    if json_depth(&manifest_value) > MAX_MANIFEST_DEPTH {
+    if json_depth(&manifest_value) > super::MAX_JSON_DEPTH {
         return Err(invalid("manifest nesting depth exceeds the limit"));
     }
     let manifest = ModelManifest::from_json(manifest_text)
@@ -833,6 +831,7 @@ fn parse_control(
                 || tensor.raw_length != target.raw_length
                 || tensor.stored_length != target.stored_length
                 || tensor.checksum_sha256 != target.checksum_sha256
+                || tensor.data_offset != target.data_offset
             {
                 return Err(invalid(format!(
                     "tensor {} alias metadata disagrees with target",
@@ -865,7 +864,7 @@ fn json_depth(value: &serde_json::Value) -> usize {
     }
 }
 
-fn validate_manifest_limits(manifest: &ModelManifest) -> Result<()> {
+pub(crate) fn validate_manifest_limits(manifest: &ModelManifest) -> Result<()> {
     let mut strings = vec![
         &manifest.model_id,
         &manifest.architecture,
@@ -910,7 +909,7 @@ fn parse_index(
     bytes: &[u8],
     payload_length: u64,
     manifest: &ModelManifest,
-) -> Result<(Vec<QifV2TensorInfo>, Vec<ChunkInfo>)> {
+) -> Result<(Vec<TensorInfo>, Vec<ChunkInfo>)> {
     if bytes.len() < INDEX_HEADER_SIZE || &bytes[..4] != INDEX_MAGIC {
         return Err(invalid("invalid index header"));
     }
@@ -1020,6 +1019,12 @@ fn parse_index(
         let data_offset = u64_at(bytes, offset + 64);
         let checksum: [u8; HASH_SIZE] = bytes[offset + 72..offset + 104].try_into().unwrap();
         let alias_raw = u64_at(bytes, offset + 104);
+        if u32_at(bytes, offset + 36) != 0
+            || u32_at(bytes, offset + 112) != 0
+            || u32_at(bytes, offset + 116) != 0
+        {
+            return Err(invalid("tensor flags or reserved fields are not zero"));
+        }
         let alias_of = if alias_raw == ALIAS_NONE {
             None
         } else {
@@ -1085,7 +1090,7 @@ fn parse_index(
                 occupied.push((chunk.stored_offset, end));
             }
         }
-        tensors.push(QifV2TensorInfo {
+        tensors.push(TensorInfo {
             tensor_id,
             name,
             shape,
@@ -1098,6 +1103,7 @@ fn parse_index(
             stored_length,
             checksum_sha256: checksum,
             alias_of,
+            data_offset,
             chunk_start,
             chunk_count: chunk_count_for_tensor,
         });
@@ -1110,7 +1116,7 @@ fn parse_index(
 }
 
 pub(crate) fn validate_tensor_descriptor(
-    tensor: &QifV2TensorInfo,
+    tensor: &TensorInfo,
     manifest: &crate::TensorManifest,
 ) -> Result<()> {
     let descriptor = &manifest.descriptor;
