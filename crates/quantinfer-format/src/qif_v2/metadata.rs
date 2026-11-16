@@ -241,11 +241,18 @@ fn read_map(cursor: &mut Cursor<'_>, depth: usize) -> Result<BTreeMap<String, Qi
         return Err(invalid("metadata map item limit exceeded"));
     }
     let mut values = BTreeMap::new();
+    let mut previous_key: Option<String> = None;
     for _ in 0..count {
         let key = cursor.string()?;
-        if key.is_empty() || values.contains_key(&key) {
+        if key.is_empty()
+            || previous_key
+                .as_ref()
+                .is_some_and(|previous| previous.as_bytes() >= key.as_bytes())
+            || values.contains_key(&key)
+        {
             return Err(invalid("metadata keys must be unique and nonempty"));
         }
+        previous_key = Some(key.clone());
         values.insert(key, read_value(cursor, depth + 1)?);
     }
     Ok(values)

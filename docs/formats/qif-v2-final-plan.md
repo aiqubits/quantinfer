@@ -58,7 +58,7 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 - “比 SafeTensors/GGUF/DCP 更快或更轻”是待验证的设计目标，不是规范事实；
 - 当前 QIF v1 没有 file-backed mmap API，v2 把它列为实现要求而不是现状；
 - fixed header 的字段、大小和偏移固定为 144 字节；v2.0 reader 要求该值精确为 144，扩展头保留给后续版本；
-- manifest 采用 canonical JSON，metadata 采用确定性 QMB typed map，避免把可读性和热路径索引混为一谈，也避免 v2.0 强制引入 CBOR runtime 依赖；
+- manifest 采用 QuantInfer v2.0 定义的确定性 JSON，metadata 采用确定性 QMB typed map，避免把可读性和热路径索引混为一谈，也避免 v2.0 强制引入 CBOR runtime 依赖；
 - SHA-256 是 v2.0 必选 hash；BLAKE3、Ed25519/COSE 不作为 v2.0 的强制依赖；
 - chunk compression 是可选能力，`none` 是唯一必须支持的 codec；
 - 单文件与分片包是两个 profile，不声称所有运行时都支持分片或 resharding；
@@ -172,7 +172,7 @@ metadata MUST 设置最大深度、最大 map/array 项数和最大字符串字�
 
 ## 5. Binary index
 
- index 由固定头和四个确定性区域组成：
+index 由固定头和四个确定性区域组成：
 
 ```text
 index header
@@ -237,7 +237,9 @@ tensor name MUST 是唯一的 UTF-8 字符串。`tensor_id` 在同一 artifact �
 
 ### 5.2 Shape、stride 和 layout
 
-rank、shape 和 stride 使用 64 位无符号整数。实现 MUST 限制最大 rank，防止恶意 shape 造成分配或乘法溢出。
+rank 和 shape 使用 64 位无符号整数；stride 在 v2.0 不存储，后续 layout profile
+不得复用当前 tensor record 的 reserved 字段。实现 MUST 限制最大 rank，防止恶意
+shape 造成分配或乘法溢出。
 
 QIF2-SINGLE v2.0 内建 layout：
 
@@ -314,15 +316,17 @@ Q4_0/Q4_K/Q5_K/Q6_K/Q8_0。FP8、INT8、INT4、NF4 需要在 descriptor、payloa
 
 SHA-256 是 v2.0 必选算法，以保持跨语言和现有 QuantInfer 生态的可用性。BLAKE3 可以作为后续可选算法，但不能成为 v2.0 的唯一依赖。
 
-hash 层级为：
+v2.0 的 hash 层级为：
 
 ```text
-chunk hash
-tensor hash = canonical tensor record + chunk hashes
-root hash = canonical manifest + metadata + index + tensor/chunk digest list
+chunk hash = SHA-256(stored chunk bytes)
+tensor hash = SHA-256(raw tensor bytes)
+root hash = SHA-256(canonical manifest + canonical metadata + binary index)
 ```
 
-`verify --fast` 至少验证 header、manifest、metadata、index 和 root hash。`verify --full` 必须读取并验证所有 payload chunk。
+reader 打开时至少验证 header、manifest、metadata、index 和 root hash；显式
+`verify()` 必须读取并验证所有 tensor 与 payload chunk。v2.0 不定义命令行
+`verify --fast/--full` 选项。
 
 ### 7.2 Signature
 
@@ -404,7 +408,7 @@ API 要求：
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（PACKAGE 尚未实现）；
 6. 只改变 shard/rank 布局时无需重新编码 tensor（PACKAGE 尚未实现）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust、C 和 Python golden readers 对同一 fixtures 得出一致 tensor info 和 bytes；
+8. Rust reader 与未来的 C/Python golden readers 对同一 fixtures 得出一致 tensor info 和 bytes；
 9. 与 SafeTensors/GGUF 的 benchmark 必须报告：open latency、first-tensor latency、RSS、page faults、selected-layer read bandwidth、full-load time 和验证吞吐；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
@@ -415,7 +419,7 @@ API 要求：
 1. 新增 `qif-v2` module，禁止在 v2 module 复用 v1 header parser（已完成）。
 2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
-4. 增加 file-backed reader、mmap/range view 和 QIF2 package/shard writer（后续里程碑）。
+4. file-backed reader 和 mmap/range view 已完成；QIF2 package/shard writer 仍是后续 profile。
 5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（后续里程碑）。
 6. 新 CLI 默认输出 QIF2；旧 v1 只能通过显式 `--legacy-qif-v1` 读取（迁移 CLI 仍需补齐显式开关）。
 7. 完成 GGUF/SafeTensors → QIF2 转换后，再删除 v1 writer 和 v1 默认 reader。
@@ -431,7 +435,10 @@ QIF v2 的实际价值不是声称全面击败 SafeTensors、GGUF 或 DCP，而�
 - 吸收 fastsafetensors、DataStates-LLM、TierCheck 的批量、异步、分层和按需 I/O 思路；
 - 保持 QuantInfer 自有的 logical descriptor、semantic tensor role 和 backend capability 边界。
 
-因此，QIF v2.0 的成功标准是：**同一套可验证权重语义，既能在一个文件中低依赖 mmap 加载，也能在多个 shard、不同设备布局和远端范围读取中保持一致解释。**
+因此，QIF2-SINGLE v2.0 的成功标准是：**同一套可验证权重语义，能在一个文件中
+通过低依赖 mmap、file-backed range read 和完整校验稳定加载。** 多 shard、不同设备
+布局和远端范围读取属于后续 QIF2-PACKAGE profile，必须在单独规范和 fixtures 完成后
+才能纳入兼容性承诺。
 
 ## 13. 参考资料
 

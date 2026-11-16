@@ -22,6 +22,7 @@ const INDEX_HEADER_SIZE: usize = 48;
 const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
 const KNOWN_FLAGS: u32 = 0;
+const MAX_MANIFEST_STRING_BYTES: usize = 16 * 1024 * 1024;
 
 type ParsedControl = (
     ModelManifest,
@@ -589,6 +590,7 @@ fn parse_control(
         std::str::from_utf8(manifest_bytes).map_err(|_| invalid("manifest is not UTF-8"))?;
     let manifest = ModelManifest::from_json(manifest_text)
         .map_err(|error| invalid(format!("invalid manifest: {error}")))?;
+    validate_manifest_limits(&manifest)?;
     let canonical = serde_json::to_vec(&manifest)
         .map_err(|error| invalid(format!("cannot canonicalize manifest: {error}")))?;
     if canonical != manifest_bytes {
@@ -631,6 +633,47 @@ fn parse_control(
         }
     }
     Ok((manifest, metadata, tensors, chunks))
+}
+
+fn validate_manifest_limits(manifest: &ModelManifest) -> Result<()> {
+    let mut strings = vec![
+        &manifest.model_id,
+        &manifest.architecture,
+        &manifest.source_format,
+    ];
+    if let Some(value) = &manifest.source_revision {
+        strings.push(value);
+    }
+    if let Some(value) = &manifest.tokenizer_revision {
+        strings.push(value);
+    }
+    for tensor in &manifest.tensors {
+        strings.push(&tensor.name);
+        strings.push(&tensor.descriptor.physical_layout);
+        strings.push(&tensor.descriptor.packing);
+        strings.extend(tensor.descriptor.backend_requirements.iter());
+    }
+    for variant in &manifest.execution_variants {
+        strings.push(&variant.name);
+        strings.push(&variant.dtype);
+        strings.push(&variant.runtime_provider);
+        strings.push(&variant.kernel_provider);
+    }
+    strings.extend(manifest.kernel_requirements.operations.iter());
+    if let Some(value) = &manifest.compatibility.minimum_quantinfer_version {
+        strings.push(value);
+    }
+    strings.extend(manifest.compatibility.required_features.iter());
+    if strings
+        .iter()
+        .any(|value| value.len() > MAX_MANIFEST_STRING_BYTES)
+    {
+        return Err(invalid("manifest string exceeds the size limit"));
+    }
+    if manifest.tensors.len() > MAX_TENSORS || manifest.execution_variants.len() > MAX_TENSORS {
+        return Err(invalid("manifest item count exceeds the size limit"));
+    }
+    Ok(())
 }
 
 fn parse_index(
