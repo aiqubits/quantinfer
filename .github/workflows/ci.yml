@@ -17,6 +17,7 @@ jobs:
       - run: cargo check --workspace --locked
       - run: cargo test --workspace --locked
       - run: cargo run --locked -p quantinfer-xtask -- bench
+      - run: cargo run --locked -p quantinfer-xtask -- qif-v2-bench
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
       - name: Check the dependency-free QIF2 Python golden reader
@@ -25,6 +26,10 @@ jobs:
           python3 tests/conformance/qif_v2_reader.py --input "$RUNNER_TEMP/qif-v2-fixture.qif"
           cc -std=c11 -Wall -Wextra -Werror tests/conformance/qif_v2_reader.c -o "$RUNNER_TEMP/qif-v2-c-reader"
           "$RUNNER_TEMP/qif-v2-c-reader" "$RUNNER_TEMP/qif-v2-fixture.qif"
+      - name: Smoke-test the QIF2 fuzz corpus
+        run: |
+          cargo run --manifest-path fuzz/Cargo.toml --bin qif_v2_reader -- \
+            -runs=128 fuzz/corpus/qif_v2_reader
 
   cpu-simd:
     strategy:

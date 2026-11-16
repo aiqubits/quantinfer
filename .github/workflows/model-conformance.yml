@@ -222,6 +222,12 @@ jobs:
           gguf=$("${generate[@]}" --input smollm2-q4_0.gguf | grep '^generated_tokens=')
           qif=$("${generate[@]}" --input smollm2-q4_0.qif | grep '^generated_tokens=')
           test "$gguf" = "$qif"
+          cargo run --release --locked -p quantinfer-xtask -- qif-v2-bench \
+            --qif smollm2-q4_0.qif --safetensors model.safetensors --gguf smollm2-q4_0.gguf \
+            | tee smollm2-qif2-comparison.txt
+          grep -E '^qif2_full_verify_ns=[0-9]+' smollm2-qif2-comparison.txt
+          grep -E '^safetensors_first_range_ns=[0-9]+' smollm2-qif2-comparison.txt
+          grep -E '^gguf_first_range_ns=[0-9]+' smollm2-qif2-comparison.txt
       - name: Apply PEFT LoRA to quantized SmolLM2
         shell: bash
         run: |
@@ -296,7 +302,9 @@ jobs:
         if: always()
         with:
           name: smollm2-benchmark
-          path: smollm2-*-benchmark.txt
+          path: |
+            smollm2-*-benchmark.txt
+            smollm2-qif2-comparison.txt
 
   smollm2-external-f16:
     runs-on: ubuntu-latest
