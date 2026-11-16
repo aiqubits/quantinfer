@@ -1,4 +1,6 @@
-//! Versioned QuantInfer model containers.
+//! Retired QIF v1 compatibility implementation.
+
+#![allow(dead_code, unused_imports)]
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
