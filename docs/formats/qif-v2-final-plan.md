@@ -1,12 +1,15 @@
 # QIF v2.0 权重容器标准方案
 
-状态：QIF v2.0-SINGLE 规范与首个实现已冻结；PACKAGE、压缩和签名仍是后续兼容扩展。
+状态：QIF v2.0-SINGLE、QIF2-PACKAGE、独立压缩 chunk 和 Ed25519 签名 envelope
+已实现并冻结；跨语言 golden reader 与 benchmark 仍是验证工作。
 
 QIF v1 已停止作为 QuantInfer 的目标格式。当前仓库中的 QIF v1 reader、writer 和
 历史测试只保留为旧 artifact 的读取与迁移参考；新 GGUF 转换器写入 QIF2-SINGLE，
 新 runtime 不得把 QIF v1 当作新版格式的兼容依据。
 
-本文定义全新的 QIF v2.0 wire format。当前仓库实现的是 QIF2-SINGLE 的无压缩核心 profile。文中的 **MUST**、**MUST NOT**、**SHOULD**、**MAY** 具有规范含义：MUST/MUST NOT 是互操作性要求，SHOULD 是默认实现要求，MAY 是可选能力。
+本文定义全新的 QIF v2.0 wire format。当前仓库实现 QIF2-SINGLE 与
+QIF2-PACKAGE 两种 profile。文中的 **MUST**、**MUST NOT**、**SHOULD**、**MAY**
+具有规范含义：MUST/MUST NOT 是互操作性要求，SHOULD 是默认实现要求，MAY 是可选能力。
 
 ## 1. 定位与边界
 
@@ -59,17 +62,17 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 - 当前 QIF v1 没有 file-backed mmap API，v2 把它列为实现要求而不是现状；
 - fixed header 的字段、大小和偏移固定为 144 字节；v2.0 reader 要求该值精确为 144，扩展头保留给后续版本；
 - manifest 采用 QuantInfer v2.0 定义的确定性 JSON，metadata 采用确定性 QMB typed map，避免把可读性和热路径索引混为一谈，也避免 v2.0 强制引入 CBOR runtime 依赖；
-- SHA-256 是 v2.0 必选 hash；BLAKE3、Ed25519/COSE 不作为 v2.0 的强制依赖；
-- chunk compression 是可选能力，`none` 是唯一必须支持的 codec；
-- 单文件与分片包是两个 profile，不声称所有运行时都支持分片或 resharding；
+- SHA-256 是 v2.0 必选 hash；BLAKE3 仍是后续可选 hash，Ed25519 envelope 已作为可选签名能力实现；
+- chunk compression 支持独立 zstd/LZ4 chunk，`none` 仍是基础 codec；
+- 单文件与分片包是两个 profile，PACKAGE reader 会验证全局 tensor map 和 shard coordinate；
 - 训练 checkpoint 论文提供设计启发，但不把 optimizer、训练对象或增量恢复能力强行塞入 QIF 推理核心。
 
 ## 3. QIF v2.0 总体结构
 
-QIF v2 规划两种容器 profile；当前 v2.0 实现只冻结第一种：
+QIF v2.0 冻结两种容器 profile：
 
 - **QIF2-SINGLE**：一个文件，适合本地、边缘和单机服务。
-- **QIF2-PACKAGE**：一个 package manifest 加多个 data shard，适合对象存储、大模型和并行读取（后续兼容 profile，当前未实现）。
+- **QIF2-PACKAGE**：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，适合对象存储、大模型和并行读取。
 
 两种 profile 使用同一套 manifest、tensor record、chunk record 和 hash 规则。差异只在 payload 的物理位置与 package manifest。
 
@@ -109,14 +112,14 @@ header 长度为 144 字节；下表字段按文件顺序排列，字段 offset 
 | payload_offset | 8 | payload 区域起始偏移 |
 | payload_length | 8 | payload 区域长度 |
 | root_hash | 32 | 对 canonical sections 和 chunk digest 的根校验 |
-| signature_offset | 8 | v2.0 必须为 0；签名 profile 保留给后续版本 |
-| signature_length | 8 | v2.0 必须为 0；签名 profile 保留给后续版本 |
+| signature_offset | 8 | 无签名时为 0；有签名时指向 108 字节 envelope |
+| signature_length | 8 | 无签名时为 0；有签名时固定为 108 |
 | reserved | 8 | 必须为 0，未来版本可扩展 |
 
 未知的必需 feature bit MUST 拒绝；未知的 advisory bit MAY 忽略。reader MUST 检查所有区域的边界、重叠、整数溢出和文件 EOF。
 
-QIF2-SINGLE v2.0 的 `flags` 固定为 `0`。profile、compression 和 signature
-feature bits 在后续兼容版本中分配；v2.0 reader 遇到非零 flags 必须拒绝。
+QIF2-SINGLE v2.0 的 `flags` 固定为 `0`；codec 通过 chunk record 的 codec_id 表达，
+签名通过 header 的 signature offset/length 表达。v2.0 reader 遇到非零 flags 必须拒绝。
 
 ## 4. Manifest 与 metadata
 
@@ -274,22 +277,21 @@ QIF2-PACKAGE 的 chunk record 还 MUST 包含 `shard_id`；QIF2-SINGLE 使用
 
 v2.0 默认 chunk alignment 为 4096 字节；实现 MAY 使用更大的 64 KiB 或 2 MiB 对齐。alignment 必须是 2 的幂，且不小于 64 字节。
 
-无压缩 chunk MUST 可以通过 offset/length 直接读取；v2.0-SINGLE reader 只接受无压缩
-chunk。后续压缩 profile 的 chunk MUST 可以独立解压和独立校验，禁止使用跨 chunk
-的连续压缩流。
+无压缩 chunk MUST 可以通过 offset/length 直接读取；压缩 chunk MUST 可以独立解压和
+独立校验，禁止使用跨 chunk 的连续压缩流。mmap 只适用于无压缩 chunk。
 
 ### 6.2 Codec
 
-QIF2-SINGLE v2.0 core codec：
+QIF2-SINGLE/QIF2-PACKAGE v2.0 core codec：
 
 ```text
 0 = none       (MUST)
-1 = zstd       (reserved)
-2 = lz4        (reserved)
+1 = zstd       (supported)
+2 = lz4        (supported)
 ```
 
-v2.0 encoder 使用 `none`；zstd/lz4 只保留 registry ID，当前 reader 会拒绝它们。
-压缩 codec 必须通过明确的 extension ID、能力协商和独立 golden fixtures 后才能启用。
+每个压缩 chunk 独立编码、独立解码和独立校验；reader 不使用跨 chunk 连续压缩流。
+`QifV2Reader::tensor_data` 与 file/package reader 会按需解压当前 tensor 数据。
 
 ### 6.3 量化编码
 
@@ -330,7 +332,9 @@ reader 打开时至少验证 header、manifest、metadata、index 和 root hash�
 
 ### 7.2 Signature
 
-签名 envelope 在 v2.0 中只定义位置和长度，不强制具体签名算法。Ed25519/COSE 属于 v2.1 候选，避免在 v2.0 同时锁定密钥分发、证书链和签名格式。
+v2.0 定义固定 108 字节 Ed25519 envelope：`QSIG` magic、版本、算法 ID、公钥和
+签名。签名覆盖 root hash；reader 验证 envelope，但信任根和密钥分发由发布系统负责。
+COSE、证书链和密钥轮换不属于 v2.0 wire core。
 
 ### 7.3 禁止项
 
@@ -343,34 +347,34 @@ QIF v2 MUST NOT：
 - 允许 NaN/Infinity 进入标准浮点 payload；
 - 允许未知 mandatory encoding 被当作其他 dtype 读取。
 
-## 8. QIF2-PACKAGE（后续 profile，当前未实现）
+## 8. QIF2-PACKAGE
 
-QIF2-PACKAGE 由一个 package manifest 和多个 shard 构成：
+QIF2-PACKAGE 由一个 package manifest、一个全局 binary index 和多个独立 shard 构成：
 
 ```text
 qif.json
+metadata.qmb
 index.qifi
 shard-00000.qifd
 shard-00001.qifd
 ...
-checksums.sha256
 ```
 
-package manifest MUST 为每个 shard 记录：
+package manifest 为每个 shard 记录：
 
 - 相对路径或受限 URI；
 - 文件大小；
 - shard hash；
-- global root hash；
-- tensor 的 global shape；
-- logical offset/length；
-- mesh axis、rank 和 shard coordinate。
+- mesh axis、rank 和 shard coordinate；
+- 所属 tensor 名称；
+- package root hash（覆盖 root_hash 置空后的 canonical package manifest、metadata、global index 和 shard hashes）；
+- model manifest 中的 global shape 与 tensor checksum。
 
 路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 的发布必须使用临时目录、完整校验和原子 rename；未完成 package 不得被 reader 视为有效模型。
 
 ## 9. Runtime API
 
-`quantinfer-format` 的内存和 file-backed reader 已独立于 QIF v1；当前 API 为：
+`quantinfer-format` 的内存、file-backed、mmap 和 package reader 已独立于 QIF v1；当前 API 为：
 
 ```rust
 QifV2Reader::open(bytes)
@@ -385,16 +389,21 @@ QifV2FileReader::read_range(name, range)
 QifV2FileReader::verify()
 QifV2MappedFile::open(path)
 QifV2MappedFile::reader()
+QifV2PackageReader::open(path)
+QifV2PackageReader::read_range(name, range)
+QifV2PackageReader::verify()
+write_qif_v2_with_codec(..., QifV2Codec::Zstd|Lz4)
+write_qif_v2_signed(..., signing_key)
 ```
 
 API 要求：
 
 - 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
 - `read_range` 只复制请求的 tensor 子范围；
-- v2.0-SINGLE 提供按需 file-backed range read，并提供只读 `QifV2MappedFile` 映射入口；
+- v2.0-SINGLE/PACKAGE 提供按需 file-backed range read，并提供只读 `QifV2MappedFile` 映射入口；
   mmap 的 unsafe 操作被隔离在单独模块，调用者仍必须先通过同一 QIF2 reader 校验；
 - reader 可选择调用 `verify` 执行全 payload 校验；
-- 文件、内存 buffer 和 package shard 使用同一逻辑接口；
+- 文件、内存 buffer 和 package shard 使用同一逻辑 tensor/chunk 校验规则；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
 
 ## 10. 性能目标与验收边界
@@ -404,9 +413,9 @@ API 要求：
 1. file-backed index open 不读取 payload（当前 `QifV2FileReader::open` 已满足）；
 2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload（当前 file-backed `read_range` 已满足）；
 3. 无压缩路径能返回 mmap/range view（当前 `QifV2MappedFile` 与 file-backed range read 已满足）；
-4. 压缩路径不会把整个模型解压到内存（待压缩 profile 实现后验收）；
-5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（PACKAGE 尚未实现）；
-6. 只改变 shard/rank 布局时无需重新编码 tensor（PACKAGE 尚未实现）；
+4. 压缩路径只解压当前请求的 tensor/chunk（当前 codec reader 已满足）；
+5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
+6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前 writer 按 tensor 分片，reshard planner 仍需额外验证）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与未来的 C/Python golden readers 对同一 fixtures 得出一致 tensor info 和 bytes；
 9. 与 SafeTensors/GGUF 的 benchmark 必须报告：open latency、first-tensor latency、RSS、page faults、selected-layer read bandwidth、full-load time 和验证吞吐；
@@ -419,8 +428,8 @@ API 要求：
 1. 新增 `qif-v2` module，禁止在 v2 module 复用 v1 header parser（已完成）。
 2. 将当前 `qif` module 标记为 legacy-only，新的 GGUF 转换器写入 QIF2（已完成）。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
-4. file-backed reader 和 mmap/range view 已完成；QIF2 package/shard writer 仍是后续 profile。
-5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（后续里程碑）。
+4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
+5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（跨语言验证里程碑）。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 当前通过既有
    SafeTensors → GGUF → QIF2 两步路径转换，直接 SafeTensors → QIF2 仍待单独的
@@ -437,10 +446,9 @@ QIF v2 的实际价值不是声称全面击败 SafeTensors、GGUF 或 DCP，而�
 - 吸收 fastsafetensors、DataStates-LLM、TierCheck 的批量、异步、分层和按需 I/O 思路；
 - 保持 QuantInfer 自有的 logical descriptor、semantic tensor role 和 backend capability 边界。
 
-因此，QIF2-SINGLE v2.0 的成功标准是：**同一套可验证权重语义，能在一个文件中
-通过低依赖 mmap、file-backed range read 和完整校验稳定加载。** 多 shard、不同设备
-布局和远端范围读取属于后续 QIF2-PACKAGE profile，必须在单独规范和 fixtures 完成后
-才能纳入兼容性承诺。
+因此，QIF v2.0 的成功标准是：**同一套可验证权重语义，能在单文件或 package
+shard 中通过 mmap、file-backed range read、独立 codec 解压和完整校验稳定加载。**
+性能优劣仍必须由可复现 benchmark 证明，不能由格式设计直接推出。
 
 ## 13. 参考资料
 

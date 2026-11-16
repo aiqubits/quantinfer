@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
+use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
 
 use quantinfer_core::{
@@ -14,10 +15,29 @@ use crate::{GgmlType, GgufValue, ModelManifest, Result, TensorManifest};
 
 use super::metadata::QifV2MetadataValue;
 use super::{
-    align, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT, CODEC_NONE, HASH_SHA256, HASH_SIZE,
-    HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK,
-    MAX_TENSORS, VERSION,
+    align, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD,
+    HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
+    MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS, VERSION,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QifV2Codec {
+    None,
+    Zstd,
+    Lz4,
+}
+
+type BuiltIndex = (Vec<u8>, Vec<usize>, Vec<Vec<u8>>);
+
+impl QifV2Codec {
+    pub const fn id(self) -> u32 {
+        match self {
+            Self::None => CODEC_NONE,
+            Self::Zstd => CODEC_ZSTD,
+            Self::Lz4 => CODEC_LZ4,
+        }
+    }
+}
 
 /// Transcode a supported GGUF model to the new QIF v2 wire format without
 /// dequantizing or requantizing its tensor bytes.
@@ -84,14 +104,53 @@ pub fn import_gguf(
     )
 }
 
-/// Write a QIF v2 single-file artifact. v2.0 emits uncompressed chunks; the
-/// reader and index are already chunk-aware so compression can be added under
-/// a negotiated codec in a later compatible profile.
+/// Write a QIF2-SINGLE artifact using the required uncompressed codec.
 pub fn write_qif_v2<'a>(
+    manifest: ModelManifest,
+    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
+    output: &mut impl Write,
+) -> Result<()> {
+    write_qif_v2_with_codec(manifest, metadata, tensor_bytes, output, QifV2Codec::None)
+}
+
+/// Write a QIF v2 artifact using one independently compressed chunk per tensor.
+/// The default `write_qif_v2` remains the zero-copy, uncompressed profile.
+pub fn write_qif_v2_with_codec<'a>(
+    manifest: ModelManifest,
+    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
+    output: &mut impl Write,
+    codec: QifV2Codec,
+) -> Result<()> {
+    write_qif_v2_inner(manifest, metadata, tensor_bytes, output, codec, None)
+}
+
+pub fn write_qif_v2_signed<'a>(
+    manifest: ModelManifest,
+    metadata: &BTreeMap<String, QifV2MetadataValue>,
+    tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
+    output: &mut impl Write,
+    codec: QifV2Codec,
+    signing_key: &SigningKey,
+) -> Result<()> {
+    write_qif_v2_inner(
+        manifest,
+        metadata,
+        tensor_bytes,
+        output,
+        codec,
+        Some(signing_key),
+    )
+}
+
+fn write_qif_v2_inner<'a>(
     mut manifest: ModelManifest,
     metadata: &BTreeMap<String, QifV2MetadataValue>,
     mut tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
+    codec: QifV2Codec,
+    signing_key: Option<&SigningKey>,
 ) -> Result<()> {
     if manifest.tensors.len() > MAX_TENSORS {
         return Err(invalid("tensor count exceeds the limit"));
@@ -121,7 +180,7 @@ pub fn write_qif_v2<'a>(
     if manifest_bytes.len() > 64 * 1024 * 1024 {
         return Err(invalid("manifest exceeds the size limit"));
     }
-    let (index, chunk_offsets) = build_index(&manifest, &payloads)?;
+    let (index, chunk_offsets, stored_payloads) = build_index(&manifest, &payloads, codec.id())?;
     let root_hash = root_hash(&manifest_bytes, &metadata_bytes, &index);
 
     let manifest_offset = align(HEADER_SIZE)?;
@@ -135,13 +194,22 @@ pub fn write_qif_v2<'a>(
             .checked_add(metadata_bytes.len())
             .ok_or_else(|| invalid("metadata range overflows"))?,
     )?;
-    let payload_offset = align(
+    let index_end = align(
         index_offset
             .checked_add(index.len())
             .ok_or_else(|| invalid("index range overflows"))?,
     )?;
+    let signature = signing_key.map(|key| super::signature::encode(&root_hash, key));
+    let signature_offset = if signature.is_some() { index_end } else { 0 };
+    let payload_offset = align(if let Some(signature) = &signature {
+        signature_offset
+            .checked_add(signature.len())
+            .ok_or_else(|| invalid("signature range overflows"))?
+    } else {
+        index_end
+    })?;
     let mut payload_length = 0usize;
-    for payload in &payloads {
+    for payload in &stored_payloads {
         payload_length = payload_length
             .checked_add(payload.len())
             .ok_or_else(|| invalid("payload length overflows"))?;
@@ -158,6 +226,8 @@ pub fn write_qif_v2<'a>(
         payload_offset,
         payload_length,
         root_hash,
+        signature_offset,
+        signature.as_ref().map_or(0, |value| value.len()),
     )?;
     output.write_all(&header).map_err(write_error)?;
     write_padding(output, HEADER_SIZE, manifest_offset)?;
@@ -170,9 +240,21 @@ pub fn write_qif_v2<'a>(
     output.write_all(&metadata_bytes).map_err(write_error)?;
     write_padding(output, metadata_offset + metadata_bytes.len(), index_offset)?;
     output.write_all(&index).map_err(write_error)?;
-    write_padding(output, index_offset + index.len(), payload_offset)?;
+    write_padding(
+        output,
+        index_offset + index.len(),
+        if signature.is_some() {
+            signature_offset
+        } else {
+            payload_offset
+        },
+    )?;
+    if let Some(signature) = signature {
+        output.write_all(&signature).map_err(write_error)?;
+        write_padding(output, signature_offset + signature.len(), payload_offset)?;
+    }
     let mut current = payload_offset;
-    for (payload, offset) in payloads.iter().zip(chunk_offsets) {
+    for (payload, offset) in stored_payloads.iter().zip(chunk_offsets) {
         let expected = payload_offset
             .checked_add(offset)
             .ok_or_else(|| invalid("payload offset overflows"))?;
@@ -200,6 +282,8 @@ fn encode_header(
     payload_offset: usize,
     payload_length: usize,
     root_hash: [u8; HASH_SIZE],
+    signature_offset: usize,
+    signature_length: usize,
 ) -> Result<Vec<u8>> {
     let mut header = Vec::with_capacity(HEADER_SIZE);
     header.extend_from_slice(MAGIC);
@@ -225,8 +309,16 @@ fn encode_header(
         );
     }
     header.extend_from_slice(&root_hash);
-    header.extend_from_slice(&0_u64.to_le_bytes());
-    header.extend_from_slice(&0_u64.to_le_bytes());
+    header.extend_from_slice(
+        &u64::try_from(signature_offset)
+            .map_err(|_| invalid("signature offset overflows u64"))?
+            .to_le_bytes(),
+    );
+    header.extend_from_slice(
+        &u64::try_from(signature_length)
+            .map_err(|_| invalid("signature length overflows u64"))?
+            .to_le_bytes(),
+    );
     header.extend_from_slice(&0_u64.to_le_bytes());
     if header.len() != HEADER_SIZE {
         return Err(invalid("internal header size mismatch"));
@@ -234,13 +326,14 @@ fn encode_header(
     Ok(header)
 }
 
-fn build_index(manifest: &ModelManifest, payloads: &[&[u8]]) -> Result<(Vec<u8>, Vec<usize>)> {
+fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Result<BuiltIndex> {
     let mut strings = Vec::new();
     let mut shapes = Vec::new();
     let mut records = Vec::new();
     let mut chunks = Vec::new();
     let mut names = BTreeSet::new();
     let mut offsets = Vec::with_capacity(payloads.len());
+    let mut stored_payloads = Vec::with_capacity(payloads.len());
     let mut payload_offset = 0usize;
     for (index, tensor) in manifest.tensors.iter().enumerate() {
         if !names.insert(tensor.name.as_str()) {
@@ -269,15 +362,17 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]]) -> Result<(Vec<u8>,
         let (dtype, encoding, scheme, layout) = descriptor_ids(&tensor.descriptor)?;
         let chunk_start = chunks.len() / 72;
         let payload = payloads[index];
+        let stored = super::codec::compress(codec, payload)?;
         let hash: [u8; HASH_SIZE] = Sha256::digest(payload).into();
+        let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
         let chunk = encode_chunk(
             0,
-            CODEC_NONE,
-            payload_offset,
+            codec,
+            0,
             payload.len(),
             payload_offset,
-            payload.len(),
-            hash,
+            stored.len(),
+            stored_hash,
         )?;
         chunks.extend_from_slice(&chunk);
         let record = encode_tensor_record(
@@ -288,19 +383,20 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]]) -> Result<(Vec<u8>,
             encoding,
             scheme,
             layout,
-            CODEC_NONE,
+            codec,
             u32::try_from(chunk_start).map_err(|_| invalid("chunk index overflows u32"))?,
             1,
             payload.len(),
-            payload.len(),
+            stored.len(),
             payload_offset,
             hash,
         )?;
         records.extend_from_slice(&record);
         offsets.push(payload_offset);
+        stored_payloads.push(stored);
         payload_offset = align(
             payload_offset
-                .checked_add(payload.len())
+                .checked_add(stored_payloads.last().unwrap().len())
                 .ok_or_else(|| invalid("payload offset overflows"))?,
         )?;
     }
@@ -323,7 +419,7 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]]) -> Result<(Vec<u8>,
     if index.len() > MAX_INDEX_BYTES {
         return Err(invalid("index exceeds the size limit"));
     }
-    Ok((index, offsets))
+    Ok((index, offsets, stored_payloads))
 }
 
 #[allow(clippy::too_many_arguments)]

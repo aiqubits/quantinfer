@@ -13,9 +13,9 @@ use crate::{GgmlType, GgufValue, ModelManifest, Result};
 
 use super::metadata::QifV2MetadataValue;
 use super::{
-    checked_range, invalid, metadata_to_gguf, ALIAS_NONE, ALIGNMENT, CODEC_NONE, HASH_SHA256,
-    HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS, MAX_HEADER_SECTION,
-    MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS, VERSION,
+    checked_range, invalid, metadata_to_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
+    CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
+    MAX_HEADER_SECTION, MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS, SIGNATURE_LENGTH, VERSION,
 };
 
 const INDEX_HEADER_SIZE: usize = 48;
@@ -47,8 +47,8 @@ pub struct QifV2TensorInfo {
     pub stored_length: u64,
     pub checksum_sha256: [u8; HASH_SIZE],
     pub alias_of: Option<u64>,
-    chunk_start: usize,
-    chunk_count: usize,
+    pub(crate) chunk_start: usize,
+    pub(crate) chunk_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -110,10 +110,12 @@ impl<'a> QifV2Reader<'a> {
         let index_length = u64_at(header, 64);
         let payload_offset = u64_at(header, 72);
         let payload_length = u64_at(header, 80);
+        let signature_offset = u64_at(header, 120);
+        let signature_length = u64_at(header, 128);
         let root_hash: [u8; HASH_SIZE] = header[88..120]
             .try_into()
             .map_err(|_| invalid("invalid root hash"))?;
-        if u64_at(header, 120) != 0 || u64_at(header, 128) != 0 || u64_at(header, 136) != 0 {
+        if u64_at(header, 136) != 0 {
             return Err(invalid("reserved header fields must be zero"));
         }
 
@@ -151,6 +153,28 @@ impl<'a> QifV2Reader<'a> {
         if ranges.windows(2).any(|pair| pair[1].1 < pair[0].2) {
             return Err(invalid("sections overlap"));
         }
+        let signature = if signature_length == 0 {
+            if signature_offset != 0 {
+                return Err(invalid("signature offset is nonzero with zero length"));
+            }
+            None
+        } else {
+            if signature_length != SIGNATURE_LENGTH as u64
+                || signature_offset < HEADER_SIZE as u64
+                || !signature_offset.is_multiple_of(ALIGNMENT as u64)
+            {
+                return Err(invalid("invalid QIF2 signature range"));
+            }
+            let signature_end = signature_offset
+                .checked_add(signature_length)
+                .ok_or_else(|| invalid("signature range overflows"))?;
+            if sections.iter().any(|(_, start, length)| {
+                signature_offset < start.saturating_add(*length) && *start < signature_end
+            }) {
+                return Err(invalid("signature overlaps another section"));
+            }
+            Some(checked_range(bytes, signature_offset, signature_length)?)
+        };
         let file_end = payload_offset
             .checked_add(payload_length)
             .ok_or_else(|| invalid("payload range overflows"))?;
@@ -167,6 +191,7 @@ impl<'a> QifV2Reader<'a> {
             index_bytes,
             payload_length,
             root_hash,
+            signature,
         )?;
 
         Ok(Self {
@@ -204,8 +229,13 @@ impl<'a> QifV2Reader<'a> {
         self.tensor_bytes_by_info(tensor)
     }
 
+    pub fn tensor_data(&self, name: &str) -> Result<Vec<u8>> {
+        let tensor = self.tensor_info(name)?;
+        self.tensor_data_by_info(tensor)
+    }
+
     pub fn read_range(&self, name: &str, range: Range<usize>) -> Result<Vec<u8>> {
-        let bytes = self.tensor_bytes(name)?;
+        let bytes = self.tensor_data(name)?;
         let slice = bytes
             .get(range)
             .ok_or_else(|| invalid("tensor range exceeds the stored tensor"))?;
@@ -214,8 +244,8 @@ impl<'a> QifV2Reader<'a> {
 
     pub fn verify(&self) -> Result<()> {
         for tensor in &self.tensors {
-            let bytes = self.tensor_bytes_by_info(tensor)?;
-            let digest: [u8; HASH_SIZE] = Sha256::digest(bytes).into();
+            let bytes = self.tensor_data_by_info(tensor)?;
+            let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
             if digest != tensor.checksum_sha256 {
                 return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
             }
@@ -247,9 +277,7 @@ impl<'a> QifV2Reader<'a> {
             return self.tensor_bytes_by_info(target);
         }
         if tensor.codec != CODEC_NONE || tensor.chunk_count == 0 {
-            return Err(invalid(
-                "compressed or empty tensor chunks are unsupported in v2.0",
-            ));
+            return Err(invalid("tensor is compressed or empty; use tensor_data"));
         }
         let first = &self.chunks[tensor.chunk_start];
         let start = self
@@ -268,6 +296,42 @@ impl<'a> QifV2Reader<'a> {
         self.bytes
             .get(start..end)
             .ok_or_else(|| invalid("tensor payload is truncated"))
+    }
+
+    fn tensor_data_by_info(&self, tensor: &QifV2TensorInfo) -> Result<Vec<u8>> {
+        if let Some(target) = tensor.alias_of {
+            let target = self
+                .tensors
+                .get(usize::try_from(target).map_err(|_| invalid("alias id overflows usize"))?)
+                .ok_or_else(|| invalid("alias target is out of range"))?;
+            return self.tensor_data_by_info(target);
+        }
+        let mut output = Vec::with_capacity(
+            usize::try_from(tensor.raw_length)
+                .map_err(|_| invalid("tensor length overflows usize"))?,
+        );
+        for chunk_index in tensor.chunk_start..tensor.chunk_start + tensor.chunk_count {
+            let chunk = &self.chunks[chunk_index];
+            let stored = checked_range(
+                self.bytes,
+                self.payload_offset as u64 + chunk.stored_offset,
+                chunk.stored_length,
+            )?;
+            let decoded = super::codec::decompress(
+                chunk.codec,
+                stored,
+                usize::try_from(chunk.raw_length)
+                    .map_err(|_| invalid("chunk length overflows usize"))?,
+            )?;
+            output.extend_from_slice(&decoded);
+        }
+        if output.len()
+            != usize::try_from(tensor.raw_length)
+                .map_err(|_| invalid("tensor length overflows usize"))?
+        {
+            return Err(invalid("decoded tensor length disagrees with index"));
+        }
+        Ok(output)
     }
 }
 
@@ -296,12 +360,22 @@ impl QifV2FileReader {
         let manifest = read_section(&mut file, header.manifest_offset, header.manifest_length)?;
         let metadata = read_section(&mut file, header.metadata_offset, header.metadata_length)?;
         let index = read_section(&mut file, header.index_offset, header.index_length)?;
+        let signature = if header.signature_length == 0 {
+            None
+        } else {
+            Some(read_section(
+                &mut file,
+                header.signature_offset,
+                header.signature_length,
+            )?)
+        };
         let (manifest, metadata_values, tensors, chunks) = parse_control(
             &manifest,
             &metadata,
             &index,
             header.payload_length,
             header.root_hash,
+            signature.as_deref(),
         )?;
         Ok(Self {
             file,
@@ -340,9 +414,6 @@ impl QifV2FileReader {
         if range.start > range.end || range.end > raw_length {
             return Err(invalid("tensor range exceeds the stored tensor"));
         }
-        if tensor.codec != CODEC_NONE {
-            return Err(invalid("compressed chunks are unsupported in v2.0"));
-        }
         let mut output = vec![0_u8; range.end - range.start];
         for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
             let chunk_start = usize::try_from(chunk.raw_offset)
@@ -358,15 +429,29 @@ impl QifV2FileReader {
             if copy_start >= copy_end {
                 continue;
             }
-            let mut bytes = vec![0_u8; copy_end - copy_start];
-            let file_offset = self
-                .payload_offset
-                .checked_add(chunk.stored_offset)
-                .and_then(|offset| offset.checked_add((copy_start - chunk_start) as u64))
-                .ok_or_else(|| invalid("file offset overflows"))?;
-            read_at(&mut self.file, file_offset, &mut bytes)?;
+            let mut stored = vec![
+                0_u8;
+                usize::try_from(chunk.stored_length)
+                    .map_err(|_| invalid("chunk length overflows usize"))?
+            ];
+            read_at(
+                &mut self.file,
+                self.payload_offset
+                    .checked_add(chunk.stored_offset)
+                    .ok_or_else(|| invalid("file offset overflows"))?,
+                &mut stored,
+            )?;
+            let decoded = super::codec::decompress(
+                chunk.codec,
+                &stored,
+                usize::try_from(chunk.raw_length)
+                    .map_err(|_| invalid("chunk length overflows usize"))?,
+            )?;
+            let source_start = copy_start - chunk_start;
+            let source_end = copy_end - chunk_start;
             let output_start = copy_start - range.start;
-            output[output_start..output_start + bytes.len()].copy_from_slice(&bytes);
+            output[output_start..output_start + source_end - source_start]
+                .copy_from_slice(&decoded[source_start..source_end]);
         }
         Ok(output)
     }
@@ -428,6 +513,8 @@ struct FileHeader {
     payload_offset: u64,
     payload_length: u64,
     root_hash: [u8; HASH_SIZE],
+    signature_offset: u64,
+    signature_length: u64,
 }
 
 fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<FileHeader> {
@@ -440,7 +527,9 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
     if u32_at(bytes, 16) != HASH_SHA256 || u32_at(bytes, 20) != INDEX_VERSION {
         return Err(invalid("unsupported QIF v2 header algorithm or index"));
     }
-    if u64_at(bytes, 120) != 0 || u64_at(bytes, 128) != 0 || u64_at(bytes, 136) != 0 {
+    let signature_offset = u64_at(bytes, 120);
+    let signature_length = u64_at(bytes, 128);
+    if u64_at(bytes, 136) != 0 {
         return Err(invalid("reserved header fields must be zero"));
     }
     let sections = [
@@ -471,6 +560,28 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
     if ranges.windows(2).any(|pair| pair[1].1 < pair[0].2) {
         return Err(invalid("sections overlap"));
     }
+    if signature_length == 0 {
+        if signature_offset != 0 {
+            return Err(invalid("signature offset is nonzero with zero length"));
+        }
+    } else {
+        if signature_length != SIGNATURE_LENGTH as u64
+            || signature_offset < HEADER_SIZE as u64
+            || !signature_offset.is_multiple_of(ALIGNMENT as u64)
+        {
+            return Err(invalid("invalid QIF2 signature range"));
+        }
+        let signature_end = signature_offset
+            .checked_add(signature_length)
+            .ok_or_else(|| invalid("signature range overflows"))?;
+        if signature_end > file_length
+            || sections.iter().any(|(_, start, length)| {
+                signature_offset < start.saturating_add(*length) && *start < signature_end
+            })
+        {
+            return Err(invalid("signature overlaps another section"));
+        }
+    }
     if sections[3].1 + sections[3].2 != file_length {
         return Err(invalid("unexpected bytes outside payload section"));
     }
@@ -484,6 +595,8 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
         payload_offset: sections[3].1,
         payload_length: sections[3].2,
         root_hash: bytes[88..120].try_into().unwrap(),
+        signature_offset,
+        signature_length,
     })
 }
 
@@ -510,7 +623,20 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
 pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
     let reader = QifV2Reader::open(&bytes)?;
     let metadata = metadata_to_gguf(reader.metadata())?;
-    let data_start = reader.payload_offset;
+    let compressed = reader
+        .tensors
+        .iter()
+        .any(|tensor| tensor.codec != CODEC_NONE);
+    let mut materialized = Vec::new();
+    let mut materialized_offsets = BTreeMap::new();
+    if compressed {
+        for tensor in &reader.tensors {
+            let offset = materialized.len();
+            materialized.extend_from_slice(&reader.tensor_data(&tensor.name)?);
+            materialized_offsets.insert(tensor.tensor_id, (offset, tensor.raw_length));
+        }
+    }
+    let data_start = if compressed { 0 } else { reader.payload_offset };
     let embedded_manifest = reader.manifest.clone();
     let index_tensors = reader.tensors.clone();
     let index_chunks = reader.chunks.clone();
@@ -539,13 +665,30 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
                 name: tensor.name.clone(),
                 shape,
                 dtype: dtype_to_ggml(tensor.dtype)?,
-                offset: storage.0,
-                size: storage.1,
+                offset: if compressed {
+                    materialized_offsets
+                        .get(&tensor.tensor_id)
+                        .map(|(offset, _)| *offset as u64)
+                        .ok_or_else(|| invalid("materialized tensor is missing"))?
+                } else {
+                    storage.0
+                },
+                size: if compressed {
+                    usize::try_from(
+                        materialized_offsets
+                            .get(&tensor.tensor_id)
+                            .map(|(_, length)| *length)
+                            .ok_or_else(|| invalid("materialized tensor is missing"))?,
+                    )
+                    .map_err(|_| invalid("materialized tensor length overflows usize"))?
+                } else {
+                    storage.1
+                },
             })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(PackedTensorReader {
-        bytes,
+        bytes: if compressed { materialized } else { bytes },
         metadata,
         tensors,
         data_start,
@@ -579,6 +722,7 @@ fn parse_control(
     index_bytes: &[u8],
     payload_length: u64,
     root_hash: [u8; HASH_SIZE],
+    signature: Option<&[u8]>,
 ) -> Result<ParsedControl> {
     let mut root = Sha256::new();
     root.update(manifest_bytes);
@@ -586,6 +730,9 @@ fn parse_control(
     root.update(index_bytes);
     if root.finalize()[..] != root_hash {
         return Err(invalid("root hash mismatch"));
+    }
+    if let Some(signature) = signature {
+        super::signature::verify(&root_hash, signature)?;
     }
     let manifest_text =
         std::str::from_utf8(manifest_bytes).map_err(|_| invalid("manifest is not UTF-8"))?;
@@ -766,13 +913,8 @@ fn parse_index(
             stored_length: u64_at(bytes, offset + 32),
             checksum_sha256: hash,
         };
-        if chunk.shard_id != 0
-            || chunk.codec != CODEC_NONE
-            || chunk.raw_length != chunk.stored_length
-        {
-            return Err(invalid(
-                "QIF v2.0 only supports uncompressed single-file chunks",
-            ));
+        if chunk.shard_id != 0 || !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4) {
+            return Err(invalid("unsupported QIF v2 single-file chunk codec"));
         }
         if chunk
             .stored_offset
@@ -780,7 +922,6 @@ fn parse_index(
             .is_none()
             || chunk.stored_offset + chunk.stored_length > payload_length
             || chunk.raw_offset.checked_add(chunk.raw_length).is_none()
-            || chunk.raw_offset + chunk.raw_length > payload_length
         {
             return Err(invalid("chunk range exceeds the payload section"));
         }
@@ -835,9 +976,7 @@ fn parse_index(
             let mut raw_sum = 0u64;
             let mut stored_sum = 0u64;
             for chunk in &chunks[chunk_start..end_chunk] {
-                let expected_raw = data_offset
-                    .checked_add(raw_sum)
-                    .ok_or_else(|| invalid("tensor raw offset overflows"))?;
+                let expected_raw = raw_sum;
                 let expected_stored = data_offset
                     .checked_add(stored_sum)
                     .ok_or_else(|| invalid("tensor stored offset overflows"))?;
@@ -853,6 +992,19 @@ fn parse_index(
             }
             if raw_sum != raw_length || stored_sum != stored_length {
                 return Err(invalid("tensor lengths disagree with chunks"));
+            }
+            let tensor_codec = u32_at(bytes, offset + 32);
+            if tensor_codec != chunks[chunk_start].codec
+                || chunks[chunk_start..end_chunk]
+                    .iter()
+                    .any(|chunk| chunk.codec != tensor_codec)
+            {
+                return Err(invalid("tensor codec disagrees with its chunks"));
+            }
+            if raw_sum != 0 && chunks[chunk_start].raw_offset != 0 {
+                return Err(invalid(
+                    "tensor raw chunks must start at logical offset zero",
+                ));
             }
             let end = data_offset
                 .checked_add(stored_length)
@@ -885,7 +1037,7 @@ fn parse_index(
     Ok((tensors, chunks))
 }
 
-fn validate_tensor_descriptor(
+pub(crate) fn validate_tensor_descriptor(
     tensor: &QifV2TensorInfo,
     manifest: &crate::TensorManifest,
 ) -> Result<()> {

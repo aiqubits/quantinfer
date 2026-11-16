@@ -5,15 +5,19 @@
 //! chunk table so a file-backed reader can locate tensors without scanning
 //! payload bytes.
 
+mod codec;
 mod metadata;
 mod mmap;
+mod package;
 mod reader;
+mod signature;
 mod writer;
 
 pub use metadata::QifV2MetadataValue;
 pub use mmap::QifV2MappedFile;
+pub use package::{write_qif_v2_package, write_qif_v2_package_with_codec, QifV2PackageReader};
 pub use reader::{QifV2FileReader, QifV2Reader, QifV2TensorInfo};
-pub use writer::write_qif_v2;
+pub use writer::{write_qif_v2, write_qif_v2_signed, write_qif_v2_with_codec, QifV2Codec};
 
 pub(crate) use reader::has_magic;
 pub(crate) use reader::open_packed;
@@ -37,7 +41,10 @@ pub(crate) const MAX_RANK: usize = 32;
 pub(crate) const HASH_SIZE: usize = 32;
 pub(crate) const HASH_SHA256: u32 = 1;
 pub(crate) const CODEC_NONE: u32 = 0;
+pub(crate) const CODEC_ZSTD: u32 = 1;
+pub(crate) const CODEC_LZ4: u32 = 2;
 pub(crate) const ALIAS_NONE: u64 = u64::MAX;
+pub(crate) const SIGNATURE_LENGTH: usize = signature::LENGTH;
 
 pub(crate) fn invalid(message: impl std::fmt::Display) -> FormatError {
     FormatError::Invalid(format!("QIF v2 {message}"))

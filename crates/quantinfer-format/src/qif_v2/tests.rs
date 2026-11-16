@@ -1,8 +1,13 @@
 use std::collections::BTreeMap;
 
+use ed25519_dalek::SigningKey;
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
 
-use super::{write_qif_v2, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue, QifV2Reader};
+use super::{
+    write_qif_v2, write_qif_v2_package_with_codec, write_qif_v2_signed, write_qif_v2_with_codec,
+    QifV2Codec, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue, QifV2PackageReader,
+    QifV2Reader,
+};
 use crate::{ModelManifest, TensorManifest};
 
 fn sample_manifest() -> ModelManifest {
@@ -125,4 +130,89 @@ fn rejects_unknown_flags_and_detects_payload_corruption_on_verify() {
     bytes[payload_offset] ^= 1;
     let reader = QifV2Reader::open(&bytes).unwrap();
     assert!(reader.verify().is_err());
+}
+
+#[test]
+fn round_trips_independently_compressed_codecs() {
+    let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
+    for codec in [QifV2Codec::Zstd, QifV2Codec::Lz4] {
+        let mut bytes = Vec::new();
+        write_qif_v2_with_codec(
+            sample_manifest(),
+            &BTreeMap::new(),
+            |_| Ok(&payload),
+            &mut bytes,
+            codec,
+        )
+        .unwrap();
+        let reader = QifV2Reader::open(&bytes).unwrap();
+        assert_eq!(reader.tensor_data("weight").unwrap(), payload);
+        assert_eq!(reader.read_range("weight", 4..8).unwrap(), payload[4..]);
+        reader.verify().unwrap();
+        assert!(reader.tensor_bytes("weight").is_err());
+        let packed = crate::GgufReader::open_artifact(bytes).unwrap();
+        assert_eq!(packed.tensor_bytes("weight").unwrap(), payload);
+    }
+}
+
+#[test]
+fn verifies_ed25519_signature_envelope() {
+    let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
+    let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+    let mut bytes = Vec::new();
+    write_qif_v2_signed(
+        sample_manifest(),
+        &BTreeMap::new(),
+        |_| Ok(&payload),
+        &mut bytes,
+        QifV2Codec::None,
+        &signing_key,
+    )
+    .unwrap();
+    let reader = QifV2Reader::open(&bytes).unwrap();
+    reader.verify().unwrap();
+    let signature_offset = u64::from_le_bytes(bytes[120..128].try_into().unwrap()) as usize;
+    bytes[signature_offset + 50] ^= 1;
+    assert!(QifV2Reader::open(&bytes).is_err());
+}
+
+#[test]
+fn round_trips_qif2_package_and_shard_ranges() {
+    let mut manifest = sample_manifest();
+    manifest.tensors.push(TensorManifest {
+        name: "bias".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![2])).unwrap(),
+        checksum_sha256: None,
+    });
+    let payloads = BTreeMap::from([
+        ("weight".to_owned(), vec![0_u8, 0, 128, 63, 0, 0, 0, 64]),
+        ("bias".to_owned(), vec![0_u8, 0, 0, 0, 0, 0, 128, 63]),
+    ]);
+    let output =
+        std::env::temp_dir().join(format!("quantinfer-qif2-package-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&output);
+    write_qif_v2_package_with_codec(
+        manifest,
+        &BTreeMap::new(),
+        |name| {
+            payloads
+                .get(name)
+                .map(Vec::as_slice)
+                .ok_or_else(|| crate::FormatError::Invalid("missing package tensor".to_owned()))
+        },
+        &output,
+        Some(8),
+        QifV2Codec::Lz4,
+    )
+    .unwrap();
+    let mut reader = QifV2PackageReader::open(&output).unwrap();
+    assert_eq!(reader.tensors().len(), 2);
+    assert_eq!(reader.tensor_shard("weight").unwrap(), "shard-00000.qifd");
+    assert_eq!(reader.tensor_shard("bias").unwrap(), "shard-00001.qifd");
+    assert_eq!(
+        reader.read_range("bias", 4..8).unwrap(),
+        payloads["bias"][4..]
+    );
+    reader.verify().unwrap();
+    std::fs::remove_dir_all(output).unwrap();
 }

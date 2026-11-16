@@ -7,7 +7,7 @@ artifacts. The historical wire description is preserved in
 The new format is QIF v2.0. Its normative design is documented in
 [qif-v2-final-plan.md](qif-v2-final-plan.md).
 
-QIF2-SINGLE v2.0 的 reader、writer、GGUF 转换路径和内存/file-backed 校验器已在
-`quantinfer-format::qif_v2` 实现。当前实现只接受无压缩单文件 profile；QIF2-PACKAGE、
-压缩 codec、签名和跨语言 golden fixtures 仍是后续兼容工作。Legacy v1 wire code
+QIF2-SINGLE 与 QIF2-PACKAGE v2.0 的 reader、writer、GGUF 转换路径、独立压缩
+codec、Ed25519 签名、mmap 和 file-backed 校验器已在 `quantinfer-format::qif_v2`
+实现。跨语言 golden fixtures 和 benchmark 仍是验证工作。Legacy v1 wire code
 仅保留在 format crate 内供历史 fixtures 使用，默认 runtime 和转换路径均拒绝或不生成 v1。
