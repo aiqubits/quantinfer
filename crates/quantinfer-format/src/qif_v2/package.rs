@@ -674,6 +674,7 @@ fn parse_package_index(
                 .stored_offset
                 .checked_add(chunk.stored_length)
                 .is_none()
+            || (chunk.codec == CODEC_NONE && chunk.stored_length != chunk.raw_length)
         {
             return Err(invalid("package chunk range or codec is invalid"));
         }

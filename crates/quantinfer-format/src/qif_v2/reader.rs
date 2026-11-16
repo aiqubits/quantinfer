@@ -235,11 +235,57 @@ impl<'a> QifV2Reader<'a> {
     }
 
     pub fn read_range(&self, name: &str, range: Range<usize>) -> Result<Vec<u8>> {
-        let bytes = self.tensor_data(name)?;
-        let slice = bytes
-            .get(range)
-            .ok_or_else(|| invalid("tensor range exceeds the stored tensor"))?;
-        Ok(slice.to_vec())
+        let mut tensor = self.tensor_info(name)?;
+        while let Some(alias) = tensor.alias_of {
+            tensor = self
+                .tensors
+                .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
+                .ok_or_else(|| invalid("alias target is out of range"))?;
+        }
+        let raw_length = usize::try_from(tensor.raw_length)
+            .map_err(|_| invalid("tensor length overflows usize"))?;
+        if range.start > range.end || range.end > raw_length {
+            return Err(invalid("tensor range exceeds the stored tensor"));
+        }
+        let mut output = vec![0_u8; range.end - range.start];
+        for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
+            let chunk_start = usize::try_from(chunk.raw_offset)
+                .map_err(|_| invalid("chunk offset overflows usize"))?;
+            let chunk_end = chunk_start
+                .checked_add(
+                    usize::try_from(chunk.raw_length)
+                        .map_err(|_| invalid("chunk length overflows usize"))?,
+                )
+                .ok_or_else(|| invalid("chunk range overflows usize"))?;
+            let copy_start = range.start.max(chunk_start);
+            let copy_end = range.end.min(chunk_end);
+            if copy_start >= copy_end {
+                continue;
+            }
+            let stored = checked_range(
+                self.bytes,
+                self.payload_offset as u64 + chunk.stored_offset,
+                chunk.stored_length,
+            )?;
+            let decoded;
+            let source = if chunk.codec == CODEC_NONE {
+                stored
+            } else {
+                decoded = super::codec::decompress(
+                    chunk.codec,
+                    stored,
+                    usize::try_from(chunk.raw_length)
+                        .map_err(|_| invalid("chunk length overflows usize"))?,
+                )?;
+                &decoded
+            };
+            let source_start = copy_start - chunk_start;
+            let source_end = copy_end - chunk_start;
+            let output_start = copy_start - range.start;
+            output[output_start..output_start + source_end - source_start]
+                .copy_from_slice(&source[source_start..source_end]);
+        }
+        Ok(output)
     }
 
     pub fn verify(&self) -> Result<()> {
@@ -923,6 +969,11 @@ fn parse_index(
         };
         if chunk.shard_id != 0 || !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4) {
             return Err(invalid("unsupported QIF v2 single-file chunk codec"));
+        }
+        if chunk.codec == CODEC_NONE && chunk.stored_length != chunk.raw_length {
+            return Err(invalid(
+                "uncompressed chunk length disagrees with raw length",
+            ));
         }
         if chunk
             .stored_offset
