@@ -80,7 +80,7 @@ pub(crate) fn run() -> Result<(), String> {
         .transpose()?;
     let output_path = required_path(&arguments, "--output")?;
     let output_format =
-        optional_value(&arguments, "--output-format").unwrap_or_else(|| "gguf".to_owned());
+        optional_value(&arguments, "--output-format").unwrap_or_else(|| "qif2".to_owned());
     if output_format != "gguf" && output_format != "qif2" {
         return Err("--output-format must be gguf or qif2".to_owned());
     }

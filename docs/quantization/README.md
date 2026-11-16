@@ -37,7 +37,7 @@ For Qwen3, use `--tokenizer-pre qwen2` with the checkpoint's tokenizer.
 ```sh
 quantinfer-convert --config config.json --weights model.safetensors \
   --tokenizer tokenizer.json --tokenizer-pre qwen2 --gguf-layout ggml \
-  --quantize q4_0 --imatrix imatrix.json --output model-q4_0.gguf
+  --quantize q4_0 --imatrix imatrix.json --output-format gguf --output model-q4_0.gguf
 ```
 
 The converter evaluates several clipping points for each Q4_0 block and
@@ -62,7 +62,7 @@ embeddings and the output head by default.
 
 ```sh
 quantinfer-convert --config config.json --weights model.safetensors \
-  --quantize q4_k --mixed-precision-policy policy.json --output model-mixed.gguf
+  --quantize q4_k --mixed-precision-policy policy.json --output-format gguf --output model-mixed.gguf
 ```
 
 The policy and explicit `--mixed-precision` plans are mutually exclusive.

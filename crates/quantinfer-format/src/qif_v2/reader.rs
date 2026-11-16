@@ -1147,7 +1147,7 @@ pub(crate) fn validate_tensor_descriptor(
     }
     let expected_layout = match descriptor.physical_layout.as_str() {
         "row_major" => 1,
-        "output_rows" => 2,
+        crate::GGML_OUTPUT_ROWS_LAYOUT => 2,
         value => return Err(invalid(format!("unsupported tensor layout {value}"))),
     };
     if tensor.layout != expected_layout {

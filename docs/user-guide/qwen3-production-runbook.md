@@ -152,6 +152,7 @@ sudo -H -u quantinfer /opt/quantinfer/current/quantinfer-convert \
   --config "$SOURCE/config.json" \
   --weights "$SOURCE/model.safetensors" \
   --tokenizer "$SOURCE/tokenizer.json" \
+  --output-format gguf \
   --output "$MODEL_DIR/qwen3-q8_0.gguf" \
   --quantize q8_0
 sudo -H -u quantinfer sha256sum "$MODEL_DIR/qwen3-q8_0.gguf" \

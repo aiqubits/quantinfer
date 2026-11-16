@@ -49,7 +49,8 @@ pre-tokenizer name recognized by llama.cpp. SmolLM2 uses `smollm`.
 ```sh
 cargo run --release -p quantinfer-convert -- \
   --config config.json --weights model.safetensors --tokenizer tokenizer.json \
-  --gguf-layout ggml --tokenizer-pre smollm --quantize q8_0 --output model.gguf
+  --gguf-layout ggml --tokenizer-pre smollm --quantize q8_0 \
+  --output-format gguf --output model.gguf
 ```
 
 The GGML layout stores linear weights in output rows with adjacent RoPE

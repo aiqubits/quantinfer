@@ -25,13 +25,13 @@ cargo fmt --all -- --check
 
 ## MVP flow
 
-Convert a Qwen3 SafeTensors checkpoint to the canonical GGUF layout. Linear projection matrices are transposed into the runtime layout, and `--quantize q8_0` stores supported projection weights as Q8_0 blocks.
+Convert a Qwen3 SafeTensors checkpoint to the canonical QIF2-SINGLE layout. Linear projection matrices are transposed into the runtime layout, and `--quantize q8_0` stores supported projection weights as Q8_0 blocks. Use `--output-format gguf` when a GGUF artifact is required.
 
 ```bash
 cargo run --locked -p quantinfer-convert -- \
   --config config.json \
   --weights model.safetensors \
-  --output model.gguf \
+  --output model.qif \
   --tokenizer tokenizer.json \
   --quantize q8_0
 ```
@@ -42,6 +42,7 @@ The converter also accepts `model.safetensors.index.json` with sharded weights a
 cargo run --locked -p quantinfer-convert -- \
   --config config.json \
   --weights model.safetensors.index.json \
+  --output-format gguf \
   --output model.gguf \
   --manifest manifest.json \
   --quantize q4_0

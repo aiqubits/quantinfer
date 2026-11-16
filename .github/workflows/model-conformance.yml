@@ -104,7 +104,7 @@ jobs:
         run: |
           cargo run --release --locked -p quantinfer-convert -- \
             --config config.json --weights model.safetensors --tokenizer tokenizer.json \
-            --output "$QUANTINFER_SMOLLM2_GGUF"
+            --output-format gguf --output "$QUANTINFER_SMOLLM2_GGUF"
           cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
       - name: Verify sharded SafeTensors conversion and input checksums
         shell: bash
@@ -112,7 +112,8 @@ jobs:
           python3 tests/conformance/split_safetensors_fixture.py model.safetensors sharded
           (cd sharded && sha256sum model.safetensors.index.json model-*.safetensors) > sharded.sha256
           convert=(target/release/quantinfer-convert --config config.json \
-            --weights sharded/model.safetensors.index.json --tokenizer tokenizer.json)
+            --weights sharded/model.safetensors.index.json --tokenizer tokenizer.json \
+            --output-format gguf)
           "${convert[@]}" --weights-checksums sharded.sha256 --output smollm2-sharded.gguf
           cmp smollm2-f32.gguf smollm2-sharded.gguf
           grep -v 'model-00002-of-00002.safetensors' sharded.sha256 > incomplete.sha256
@@ -138,7 +139,7 @@ jobs:
             "blk.0.attn_v.weight":"q6_k", "blk.0.ffn_gate.weight":"q4_k",
             "blk.0.ffn_down.weight":"f32"}' > mixed-plan.json
           target/release/quantinfer-convert --config config.json --weights model.safetensors \
-            --tokenizer tokenizer.json --quantize q4_0 --mixed-precision mixed-plan.json \
+            --tokenizer tokenizer.json --output-format gguf --quantize q4_0 --mixed-precision mixed-plan.json \
             --output mixed/model.gguf --manifest mixed/manifest.json
           target/release/quantinfer-cli inspect-gguf --input mixed --json > mixed-inventory.json
           jq -e '.metadata["quantinfer.quantization.variant"] == "mixed"' mixed-inventory.json
@@ -181,7 +182,7 @@ jobs:
             model="$GITHUB_WORKSPACE/smollm2-$variant.gguf"
             target/release/quantinfer-convert --config config.json --weights model.safetensors \
               --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
-              --quantize "$variant" --output "$model"
+              --output-format gguf --quantize "$variant" --output "$model"
             QUANTINFER_SMOLLM2_GGUF="$model" QUANTINFER_SMOLLM2_VARIANT="$variant" \
               cargo test --release --locked -p quantinfer-runtime --test smollm2_conformance -- --ignored --nocapture
             target/release/quantinfer-cli generate --input "$model" --prompt "$prompt" \
@@ -205,7 +206,7 @@ jobs:
             ."blk.0.attn_q.weight" == ."blk.0.attn_k.weight"' imatrix.json
           target/release/quantinfer-convert --config config.json --weights model.safetensors \
             --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm --quantize q4_0 \
-            --imatrix imatrix.json --output smollm2-imatrix-q4_0.gguf
+            --imatrix imatrix.json --output-format gguf --output smollm2-imatrix-q4_0.gguf
           target/release/quantinfer-cli generate --input smollm2-imatrix-q4_0.gguf \
             --prompt 'The capital of France is' --max-new-tokens 8 --max-sequence-length 64 \
             | grep -Fx 'generated_tokens=[260, 3575, 282, 260, 1798, 30, 657, 314]'
@@ -390,7 +391,7 @@ jobs:
             if [[ "$variant" != f32 ]]; then options+=(--quantize "$variant"); fi
             target/release/quantinfer-convert --config qwen3/config.json \
               --weights qwen3/model.safetensors --tokenizer qwen3/tokenizer.json \
-              --output "qwen3-$variant.gguf" "${options[@]}"
+              --output-format gguf --output "qwen3-$variant.gguf" "${options[@]}"
             target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
               > "qwen3-$variant.inventory"
           done
@@ -456,7 +457,7 @@ jobs:
           target/release/quantinfer-convert --config qwen3/config.json \
             --weights qwen3/model.safetensors --tokenizer qwen3/tokenizer.json \
             --gguf-layout ggml --tokenizer-pre qwen2 --quantize q4_0 \
-            --imatrix qwen3-imatrix.json --output qwen3-imatrix-q4_0.gguf
+            --imatrix qwen3-imatrix.json --output-format gguf --output qwen3-imatrix-q4_0.gguf
           python tests/conformance/gguf_interop.py --cli target/release/quantinfer-cli \
             --server "$RUNNER_TEMP/llama/bin/llama-server" --model qwen3-imatrix-q4_0.gguf \
             --architecture qwen3 --dtype Q4_0 --count 5

@@ -18,7 +18,7 @@ fn main() {
 
 pub(crate) fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.gguf [--output-format gguf|qif2] [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json|--mixed-precision-policy POLICY.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME] (writes QIF2-SINGLE v2.0; legacy QIF v1 is isolated)"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.qif [--output-format qif2|gguf] [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json|--mixed-precision-policy POLICY.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME] (writes QIF2-SINGLE v2.0; legacy QIF v1 is isolated)"
     );
 }
 

@@ -308,6 +308,21 @@ fn deduplicates_shared_payloads_in_single_and_package_profiles() {
 }
 
 #[test]
+fn canonicalizes_output_rows_layout_in_qif2_manifest() {
+    let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
+    let mut manifest = sample_manifest();
+    manifest.tensors[0].descriptor.physical_layout = "output_rows".to_owned();
+    let mut bytes = Vec::new();
+    write_qif_v2(manifest, &BTreeMap::new(), |_| Ok(&payload), &mut bytes).unwrap();
+    let reader = QifV2Reader::open(&bytes).unwrap();
+    assert_eq!(
+        reader.manifest().tensors[0].descriptor.physical_layout,
+        crate::GGML_OUTPUT_ROWS_LAYOUT
+    );
+    assert_eq!(reader.tensor_info("weight").unwrap().layout, 2);
+}
+
+#[test]
 fn package_accepts_multiple_physical_tensors_in_one_shard() {
     let mut manifest = sample_manifest();
     manifest.tensors.push(TensorManifest {

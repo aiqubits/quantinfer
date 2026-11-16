@@ -15,9 +15,9 @@ use crate::{GgmlType, GgufValue, ModelManifest, Result, TensorManifest};
 
 use super::metadata::QifV2MetadataValue;
 use super::{
-    align, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD,
-    HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
-    MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS, VERSION,
+    align, canonicalize_manifest_layouts, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT,
+    CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC,
+    INDEX_VERSION, MAGIC, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS, VERSION,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,7 @@ pub fn import_gguf(
             shape.reverse();
         }
         let shape = Shape::new(shape)?;
-        let descriptor = if scheme == QuantizationScheme::None {
+        let mut descriptor = if scheme == QuantizationScheme::None {
             TensorStorageDescriptor::floating(dtype, shape)?
         } else {
             if !schemes.contains(&scheme) {
@@ -91,6 +91,12 @@ pub fn import_gguf(
             }
             TensorStorageDescriptor::quantized(dtype, scheme, shape, block_size)?
         };
+        if ggml && tensor.shape.len() == 2 && !crate::is_embedding_storage_name(&tensor.name) {
+            descriptor.physical_layout = crate::GGML_OUTPUT_ROWS_LAYOUT.to_owned();
+            if scheme != QuantizationScheme::None {
+                descriptor.quantization_axis = quantinfer_core::QuantizationAxis::Axis(0);
+            }
+        }
         let payload = if dtype == DType::Q4_0 && reader.uses_legacy_quant_block_layout()? {
             Cow::Owned(repack_q4_0(bytes))
         } else {
@@ -170,6 +176,7 @@ fn write_qif_v2_inner<'a>(
     if manifest.tensors.len() > MAX_TENSORS {
         return Err(invalid("tensor count exceeds the limit"));
     }
+    canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
     let metadata_bytes = super::metadata::encode(metadata)?;
 
@@ -652,6 +659,7 @@ fn descriptor_ids(descriptor: &TensorStorageDescriptor) -> Result<(u32, u32, u32
     let layout = match descriptor.physical_layout.as_str() {
         "row_major" => 1,
         "output_rows" => 2,
+        crate::GGML_OUTPUT_ROWS_LAYOUT => 2,
         value => return Err(invalid(format!("unsupported tensor layout {value}"))),
     };
     Ok((dtype, dtype, scheme, layout))

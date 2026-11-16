@@ -78,7 +78,7 @@ jobs:
             if [[ "$dtype" != F32 ]]; then quantization=(--quantize "${dtype,,}"); fi
             target/release/quantinfer-convert --config config.json --weights model.safetensors \
               --tokenizer tokenizer.json --gguf-layout ggml --tokenizer-pre smollm \
-              --output "$package/model.gguf" --manifest "$package/manifest.json" "${quantization[@]}"
+              --output-format gguf --output "$package/model.gguf" --manifest "$package/manifest.json" "${quantization[@]}"
             sha256sum "$package/model.gguf"
             mkdir "$package/profiles"
             jq -n --arg scheme "${dtype,,}" '{model_variant:"cpu-scalar", quantization_variant:$scheme,

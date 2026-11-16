@@ -25,7 +25,7 @@ pub use writer::import_gguf;
 
 use std::collections::BTreeMap;
 
-use crate::{FormatError, GgufValue, Result};
+use crate::{FormatError, GgufValue, ModelManifest, Result};
 
 pub(crate) const MAGIC: &[u8; 4] = b"QIF\0";
 pub(crate) const VERSION: u32 = 2;
@@ -45,6 +45,14 @@ pub(crate) const CODEC_ZSTD: u32 = 1;
 pub(crate) const CODEC_LZ4: u32 = 2;
 pub(crate) const ALIAS_NONE: u64 = u64::MAX;
 pub(crate) const SIGNATURE_LENGTH: usize = signature::LENGTH;
+
+pub(crate) fn canonicalize_manifest_layouts(manifest: &mut ModelManifest) {
+    for tensor in &mut manifest.tensors {
+        if tensor.descriptor.physical_layout == "output_rows" {
+            tensor.descriptor.physical_layout = crate::GGML_OUTPUT_ROWS_LAYOUT.to_owned();
+        }
+    }
+}
 
 pub(crate) fn invalid(message: impl std::fmt::Display) -> FormatError {
     FormatError::Invalid(format!("QIF v2 {message}"))

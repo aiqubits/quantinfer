@@ -13,8 +13,9 @@ use super::metadata::QifV2MetadataValue;
 use super::reader::{validate_tensor_descriptor, QifV2TensorInfo};
 use super::writer::QifV2Codec;
 use super::{
-    align, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SIZE,
-    INDEX_MAGIC, INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS,
+    align, canonicalize_manifest_layouts, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
+    CODEC_ZSTD, HASH_SIZE, INDEX_MAGIC, INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK,
+    MAX_TENSORS,
 };
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
@@ -89,6 +90,7 @@ pub fn write_qif_v2_package_with_codec<'a>(
     max_shard_bytes: Option<usize>,
     codec: QifV2Codec,
 ) -> Result<()> {
+    canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
     let output_dir = output_dir.as_ref();
     if output_dir.exists() {
@@ -925,6 +927,7 @@ fn descriptor_ids(
     let layout = match descriptor.physical_layout.as_str() {
         "row_major" => 1,
         "output_rows" => 2,
+        crate::GGML_OUTPUT_ROWS_LAYOUT => 2,
         value => return Err(invalid(format!("unsupported tensor layout {value}"))),
     };
     Ok((dtype, scheme, layout))
