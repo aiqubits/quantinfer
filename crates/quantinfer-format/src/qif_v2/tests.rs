@@ -4,9 +4,9 @@ use ed25519_dalek::SigningKey;
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
 
 use super::{
-    write_qif_v2, write_qif_v2_package_with_codec, write_qif_v2_signed, write_qif_v2_with_codec,
-    QifV2Codec, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue, QifV2PackageReader,
-    QifV2Reader,
+    plan_qif_v2_reshard, write_qif_v2, write_qif_v2_package_with_codec, write_qif_v2_signed,
+    write_qif_v2_with_codec, QifV2Codec, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue,
+    QifV2PackageReader, QifV2Reader,
 };
 use crate::{ModelManifest, TensorManifest};
 
@@ -361,4 +361,22 @@ fn package_accepts_multiple_physical_tensors_in_one_shard() {
     assert_eq!(reader.read_range("bias", 0..8).unwrap(), payloads["bias"]);
     reader.verify().unwrap();
     std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn plans_deterministic_resharding_without_changing_tensor_order() {
+    let mut manifest = sample_manifest();
+    manifest.tensors.push(TensorManifest {
+        name: "large".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![4])).unwrap(),
+        checksum_sha256: None,
+    });
+    let small = plan_qif_v2_reshard(&manifest, 8).unwrap();
+    let large = plan_qif_v2_reshard(&manifest, 1024).unwrap();
+    for tensor in &manifest.tensors {
+        assert!(small.tensor_shards.contains_key(&tensor.name));
+    }
+    assert!(small.tensor_shards["large"].len() > large.tensor_shards["large"].len());
+    assert!(small.shard_raw_bytes.iter().all(|size| *size <= 8));
+    assert!(large.shard_raw_bytes.iter().all(|size| *size <= 1024));
 }

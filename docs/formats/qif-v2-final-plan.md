@@ -251,6 +251,9 @@ row_major
 ggml_output_rows
 ```
 
+`ggml_output_rows` 是 QIF2 的规范字符串；QuantInfer 内部旧的
+`output_rows` descriptor 会在 QIF2 writer 入口 canonicalize 为该名称。
+
 新的 layout 必须使用新的 registry ID；不能通过复用旧 ID 改变含义。
 
 ### 5.3 Alias
@@ -421,10 +424,10 @@ API 要求：
 3. 无压缩路径能返回 mmap/range view（当前 `QifV2MappedFile` 与 file-backed range read 已满足）；
 4. 压缩路径只解压当前请求的 tensor/chunk（当前 codec reader 已满足）；
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
-6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前 writer 按 tensor 分片，reshard planner 仍需额外验证）；
+6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与当前 C/Python golden readers 对同一 uncompressed fixture 得出一致 header、index 和 payload bytes；
-9. `cargo run -p quantinfer-xtask -- qif-v2-bench` 已报告 QIF2 open、first-range、full-verify 延迟和 artifact size；与 SafeTensors/GGUF 的完整对比仍需在固定模型、RSS、page faults、selected-layer bandwidth 和验证吞吐基准上完成；
+9. `cargo run -p quantinfer-xtask -- qif-v2-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 已报告三种格式的 open、selected-layer range、artifact size、RSS 和 page-fault 指标；QIF2 额外报告 full-verify，并明确 SafeTensors/GGUF 不提供本容器定义的 checksum verify；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
 ## 11. 从当前仓库迁移

@@ -10,6 +10,7 @@ mod metadata;
 mod mmap;
 mod package;
 mod reader;
+mod reshard;
 mod signature;
 mod writer;
 
@@ -17,6 +18,7 @@ pub use metadata::QifV2MetadataValue;
 pub use mmap::QifV2MappedFile;
 pub use package::{write_qif_v2_package, write_qif_v2_package_with_codec, QifV2PackageReader};
 pub use reader::{QifV2FileReader, QifV2Reader, QifV2TensorInfo};
+pub use reshard::{plan_qif_v2_reshard, QifV2ReshardPlan};
 pub use writer::{write_qif_v2, write_qif_v2_signed, write_qif_v2_with_codec, QifV2Codec};
 
 pub(crate) use reader::has_magic;

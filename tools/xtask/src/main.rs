@@ -32,5 +32,5 @@ pub(crate) fn option_value(flag: &str) -> Option<String> {
 }
 
 fn print_help() {
-    println!("Usage: cargo run -p quantinfer-xtask -- bench|qif-v2-bench|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
+    println!("Usage: cargo run -p quantinfer-xtask -- bench|qif-v2-bench [--qif PATH] [--safetensors PATH] [--gguf PATH] [--tensor NAME]|conformance|tokenizer-golden --tokenizer PATH --golden PATH");
 }
