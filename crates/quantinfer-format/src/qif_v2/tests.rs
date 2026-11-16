@@ -226,3 +226,103 @@ fn round_trips_qif2_package_and_shard_ranges() {
     reader.verify().unwrap();
     std::fs::remove_dir_all(output).unwrap();
 }
+
+#[test]
+fn deduplicates_shared_payloads_in_single_and_package_profiles() {
+    let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
+    let mut manifest = sample_manifest();
+    manifest.tensors.push(TensorManifest {
+        name: "weight_alias".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![2])).unwrap(),
+        checksum_sha256: None,
+    });
+
+    let mut single = Vec::new();
+    write_qif_v2(
+        manifest.clone(),
+        &BTreeMap::new(),
+        |_| Ok(&payload),
+        &mut single,
+    )
+    .unwrap();
+    let reader = QifV2Reader::open(&single).unwrap();
+    assert_eq!(
+        reader.tensor_info("weight_alias").unwrap().alias_of,
+        Some(0)
+    );
+    assert_eq!(reader.tensor_data("weight_alias").unwrap(), payload);
+    reader.verify().unwrap();
+
+    let output = std::env::temp_dir().join(format!(
+        "quantinfer-qif2-package-alias-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&output);
+    write_qif_v2_package_with_codec(
+        manifest,
+        &BTreeMap::new(),
+        |_| Ok(&payload),
+        &output,
+        Some(1024),
+        QifV2Codec::None,
+    )
+    .unwrap();
+    let mut package = QifV2PackageReader::open(&output).unwrap();
+    assert_eq!(
+        package.tensor_info("weight_alias").unwrap().alias_of,
+        Some(0)
+    );
+    assert_eq!(
+        package.tensor_shard("weight_alias").unwrap(),
+        "shard-00000.qifd"
+    );
+    assert_eq!(
+        package
+            .read_range("weight_alias", 0..payload.len())
+            .unwrap(),
+        payload
+    );
+    package.verify().unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}
+
+#[test]
+fn package_accepts_multiple_physical_tensors_in_one_shard() {
+    let mut manifest = sample_manifest();
+    manifest.tensors.push(TensorManifest {
+        name: "bias".to_owned(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::from(vec![2])).unwrap(),
+        checksum_sha256: None,
+    });
+    let payloads = BTreeMap::from([
+        ("weight".to_owned(), vec![0_u8, 0, 128, 63, 0, 0, 0, 64]),
+        ("bias".to_owned(), vec![0_u8, 0, 0, 0, 0, 0, 128, 63]),
+    ]);
+    let output = std::env::temp_dir().join(format!(
+        "quantinfer-qif2-package-one-shard-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&output);
+    write_qif_v2_package_with_codec(
+        manifest,
+        &BTreeMap::new(),
+        |name| {
+            payloads
+                .get(name)
+                .map(Vec::as_slice)
+                .ok_or_else(|| crate::FormatError::Invalid("missing package tensor".to_owned()))
+        },
+        &output,
+        Some(1024 * 1024),
+        QifV2Codec::None,
+    )
+    .unwrap();
+    let mut reader = QifV2PackageReader::open(&output).unwrap();
+    assert_eq!(
+        reader.read_range("weight", 0..8).unwrap(),
+        payloads["weight"]
+    );
+    assert_eq!(reader.read_range("bias", 0..8).unwrap(), payloads["bias"]);
+    reader.verify().unwrap();
+    std::fs::remove_dir_all(output).unwrap();
+}

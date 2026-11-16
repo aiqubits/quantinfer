@@ -257,6 +257,10 @@ ggml_output_rows
 
 如果多个逻辑 tensor 共享相同物理 payload，除第一个 tensor 外，其余 tensor MUST 使用 `alias_target`，不得重复写入相同 bytes。
 
+当前 QIF2-SINGLE 与 QIF2-PACKAGE writer 会在 tensor descriptor 和原始 payload
+一致时自动去重并生成 alias record；reader、file-backed reader 和 package reader
+都会沿 alias 解析到物理 tensor，并继续执行相同的 checksum 校验。
+
 ## 6. Payload、chunk 和 codec
 
 ### 6.1 Chunk 规则

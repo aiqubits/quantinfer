@@ -29,6 +29,21 @@ pub enum QifV2Codec {
 
 type BuiltIndex = (Vec<u8>, Vec<usize>, Vec<Vec<u8>>);
 
+#[derive(Clone, Copy)]
+struct PhysicalTensor {
+    chunk_start: u32,
+    chunk_count: u32,
+    raw_length: usize,
+    stored_length: usize,
+    data_offset: usize,
+    hash: [u8; HASH_SIZE],
+    codec: u32,
+    dtype: u32,
+    encoding: u32,
+    scheme: u32,
+    layout: u32,
+}
+
 impl QifV2Codec {
     pub const fn id(self) -> u32 {
         match self {
@@ -332,6 +347,8 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
     let mut records = Vec::new();
     let mut chunks = Vec::new();
     let mut names = BTreeSet::new();
+    let mut dedup = BTreeMap::<[u8; HASH_SIZE], Vec<usize>>::new();
+    let mut physical = Vec::<Option<PhysicalTensor>>::with_capacity(payloads.len());
     let mut offsets = Vec::with_capacity(payloads.len());
     let mut stored_payloads = Vec::with_capacity(payloads.len());
     let mut payload_offset = 0usize;
@@ -360,45 +377,99 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
             );
         }
         let (dtype, encoding, scheme, layout) = descriptor_ids(&tensor.descriptor)?;
-        let chunk_start = chunks.len() / 72;
         let payload = payloads[index];
-        let stored = super::codec::compress(codec, payload)?;
         let hash: [u8; HASH_SIZE] = Sha256::digest(payload).into();
-        let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
-        let chunk = encode_chunk(
-            0,
-            codec,
-            0,
-            payload.len(),
-            payload_offset,
-            stored.len(),
-            stored_hash,
-        )?;
-        chunks.extend_from_slice(&chunk);
-        let record = encode_tensor_record(
-            index as u64,
-            u32::try_from(name_offset).map_err(|_| invalid("name table offset overflows u32"))?,
-            u32::try_from(shape_offset).map_err(|_| invalid("shape table offset overflows u32"))?,
-            dtype,
-            encoding,
-            scheme,
-            layout,
-            codec,
-            u32::try_from(chunk_start).map_err(|_| invalid("chunk index overflows u32"))?,
-            1,
-            payload.len(),
-            stored.len(),
-            payload_offset,
-            hash,
-        )?;
-        records.extend_from_slice(&record);
-        offsets.push(payload_offset);
-        stored_payloads.push(stored);
-        payload_offset = align(
-            payload_offset
-                .checked_add(stored_payloads.last().unwrap().len())
-                .ok_or_else(|| invalid("payload offset overflows"))?,
-        )?;
+        let alias_target = dedup.get(&hash).and_then(|candidates| {
+            candidates.iter().copied().find(|candidate| {
+                let prior = physical[*candidate].expect("dedup candidate is physical");
+                prior.dtype == dtype
+                    && prior.encoding == encoding
+                    && prior.scheme == scheme
+                    && prior.layout == layout
+                    && payloads[*candidate] == payload
+            })
+        });
+        let tensor = if let Some(target) = alias_target {
+            let prior = physical[target].expect("alias target is physical");
+            let record = encode_tensor_record(
+                index as u64,
+                u32::try_from(name_offset)
+                    .map_err(|_| invalid("name table offset overflows u32"))?,
+                u32::try_from(shape_offset)
+                    .map_err(|_| invalid("shape table offset overflows u32"))?,
+                dtype,
+                encoding,
+                scheme,
+                layout,
+                prior.codec,
+                0,
+                0,
+                prior.raw_length,
+                prior.stored_length,
+                prior.data_offset,
+                prior.hash,
+                target as u64,
+            )?;
+            physical.push(None);
+            record
+        } else {
+            let chunk_start = chunks.len() / 72;
+            let stored = super::codec::compress(codec, payload)?;
+            let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
+            let chunk = encode_chunk(
+                0,
+                codec,
+                0,
+                payload.len(),
+                payload_offset,
+                stored.len(),
+                stored_hash,
+            )?;
+            chunks.extend_from_slice(&chunk);
+            let info = PhysicalTensor {
+                chunk_start: u32::try_from(chunk_start)
+                    .map_err(|_| invalid("chunk index overflows u32"))?,
+                chunk_count: 1,
+                raw_length: payload.len(),
+                stored_length: stored.len(),
+                data_offset: payload_offset,
+                hash,
+                codec,
+                dtype,
+                encoding,
+                scheme,
+                layout,
+            };
+            physical.push(Some(info));
+            dedup.entry(hash).or_default().push(index);
+            offsets.push(payload_offset);
+            stored_payloads.push(stored);
+            payload_offset = align(
+                payload_offset
+                    .checked_add(stored_payloads.last().unwrap().len())
+                    .ok_or_else(|| invalid("payload offset overflows"))?,
+            )?;
+            encode_tensor_record(
+                index as u64,
+                u32::try_from(name_offset)
+                    .map_err(|_| invalid("name table offset overflows u32"))?,
+                u32::try_from(shape_offset)
+                    .map_err(|_| invalid("shape table offset overflows u32"))?,
+                dtype,
+                encoding,
+                scheme,
+                layout,
+                codec,
+                info.chunk_start,
+                info.chunk_count,
+                info.raw_length,
+                info.stored_length,
+                info.data_offset,
+                info.hash,
+                ALIAS_NONE,
+            )?
+        };
+        records.extend_from_slice(&tensor);
     }
     if manifest.tensors.len() > MAX_TENSORS || chunks.len() / 72 > MAX_CHUNKS {
         return Err(invalid("index item limit exceeded"));
@@ -438,6 +509,7 @@ fn encode_tensor_record(
     stored_length: usize,
     data_offset: usize,
     hash: [u8; HASH_SIZE],
+    alias_target: u64,
 ) -> Result<[u8; 120]> {
     let mut record = [0_u8; 120];
     let mut offset = 0;
@@ -461,7 +533,7 @@ fn encode_tensor_record(
     write_u64(&mut record, &mut offset, data_offset as u64);
     record[offset..offset + HASH_SIZE].copy_from_slice(&hash);
     offset += HASH_SIZE;
-    write_u64(&mut record, &mut offset, ALIAS_NONE);
+    write_u64(&mut record, &mut offset, alias_target);
     write_u32(&mut record, &mut offset, 0);
     write_u32(&mut record, &mut offset, 0);
     if offset != record.len() {

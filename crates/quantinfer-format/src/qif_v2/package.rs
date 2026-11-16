@@ -13,8 +13,8 @@ use super::metadata::QifV2MetadataValue;
 use super::reader::{validate_tensor_descriptor, QifV2TensorInfo};
 use super::writer::QifV2Codec;
 use super::{
-    align, invalid, ALIAS_NONE, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SIZE, INDEX_MAGIC,
-    INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS,
+    align, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SIZE,
+    INDEX_MAGIC, INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK, MAX_TENSORS,
 };
 
 const PACKAGE_SCHEMA_VERSION: u32 = 1;
@@ -22,7 +22,7 @@ const PACKAGE_PROFILE: &str = "QIF2-PACKAGE";
 const INDEX_HEADER_SIZE: usize = 48;
 const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
-const DEFAULT_SHARD_LIMIT: usize = 4 * 1024 * 1024 * 1024;
+const DEFAULT_SHARD_LIMIT: usize = 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PackageManifest {
@@ -46,6 +46,21 @@ struct ShardManifest {
     rank: u32,
     coordinate: Vec<u32>,
     tensors: Vec<String>,
+}
+
+#[derive(Clone, Copy)]
+struct PhysicalTensor {
+    chunk_start: u32,
+    chunk_count: u32,
+    raw_length: usize,
+    stored_length: usize,
+    data_offset: usize,
+    hash: [u8; HASH_SIZE],
+    codec: u32,
+    dtype: u32,
+    encoding: u32,
+    scheme: u32,
+    layout: u32,
 }
 
 /// Write a QIF2-PACKAGE directory with independently readable shard files.
@@ -132,6 +147,8 @@ fn write_package_contents<'a>(
     let mut shapes = Vec::new();
     let mut records = Vec::new();
     let mut chunks = Vec::new();
+    let mut dedup = BTreeMap::<[u8; HASH_SIZE], Vec<usize>>::new();
+    let mut physical = Vec::<Option<PhysicalTensor>>::with_capacity(manifest.tensors.len());
     let mut shard_bytes = vec![Vec::<u8>::new()];
     let mut shard_tensors = vec![BTreeSet::<String>::new()];
     for (tensor_id, (tensor, payload)) in manifest.tensors.iter().zip(payloads.iter()).enumerate() {
@@ -155,59 +172,118 @@ fn write_package_contents<'a>(
             );
         }
         let (dtype, scheme, layout) = descriptor_ids(&tensor.descriptor)?;
-        let chunk_start = chunks.len() / CHUNK_RECORD_SIZE;
         let raw_hash: [u8; HASH_SIZE] = Sha256::digest(payload).into();
-        let mut raw_offset = 0usize;
-        let mut stored_total = 0usize;
-        while raw_offset < payload.len() {
-            let remaining = payload.len() - raw_offset;
-            let take = remaining.min(max_shard_bytes);
-            let stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
-            if shard_bytes.last().is_some_and(|shard| {
-                !shard.is_empty() && shard.len().saturating_add(stored.len()) > max_shard_bytes
-            }) {
-                shard_bytes.push(Vec::new());
-                shard_tensors.push(BTreeSet::new());
+        let alias_target = dedup.get(&raw_hash).and_then(|candidates| {
+            candidates.iter().copied().find(|candidate| {
+                let prior = physical[*candidate].expect("dedup candidate is physical");
+                prior.dtype == dtype
+                    && prior.encoding == dtype
+                    && prior.scheme == scheme
+                    && prior.layout == layout
+                    && payloads[*candidate] == *payload
+            })
+        });
+        if let Some(target) = alias_target {
+            let prior = physical[target].expect("alias target is physical");
+            let chunk_bytes = &chunks[prior.chunk_start as usize * CHUNK_RECORD_SIZE
+                ..(prior.chunk_start as usize + prior.chunk_count as usize) * CHUNK_RECORD_SIZE];
+            for chunk in chunk_bytes.as_chunks::<CHUNK_RECORD_SIZE>().0 {
+                let shard_id = u32::from_le_bytes(chunk[0..4].try_into().unwrap()) as usize;
+                shard_tensors[shard_id].insert(tensor.name.clone());
             }
-            let shard_id = shard_bytes.len() - 1;
-            let shard = &mut shard_bytes[shard_id];
-            let stored_offset = align(shard.len())?;
-            shard.resize(stored_offset, 0);
-            shard.extend_from_slice(&stored);
-            let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
-            chunks.extend_from_slice(&encode_chunk(
-                shard_id as u32,
-                codec,
-                raw_offset,
-                take,
-                stored_offset,
-                stored.len(),
-                stored_hash,
+            records.extend_from_slice(&encode_tensor_record(
+                tensor_id as u64,
+                u32::try_from(name_offset)
+                    .map_err(|_| invalid("name table offset overflows u32"))?,
+                u32::try_from(shape_offset)
+                    .map_err(|_| invalid("shape table offset overflows u32"))?,
+                dtype,
+                dtype,
+                scheme,
+                layout,
+                prior.codec,
+                0,
+                0,
+                prior.raw_length,
+                prior.stored_length,
+                prior.data_offset,
+                prior.hash,
+                target as u64,
             ));
-            shard_tensors[shard_id].insert(tensor.name.clone());
-            raw_offset += take;
-            stored_total += stored.len();
+            physical.push(None);
+        } else {
+            let chunk_start = chunks.len() / CHUNK_RECORD_SIZE;
+            let mut raw_offset = 0usize;
+            let mut stored_total = 0usize;
+            let mut first_stored_offset = None;
+            while raw_offset < payload.len() {
+                let remaining = payload.len() - raw_offset;
+                let take = remaining.min(max_shard_bytes);
+                let stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                if shard_bytes.last().is_some_and(|shard| {
+                    !shard.is_empty() && shard.len().saturating_add(stored.len()) > max_shard_bytes
+                }) {
+                    shard_bytes.push(Vec::new());
+                    shard_tensors.push(BTreeSet::new());
+                }
+                let shard_id = shard_bytes.len() - 1;
+                let shard = &mut shard_bytes[shard_id];
+                let stored_offset = align(shard.len())?;
+                shard.resize(stored_offset, 0);
+                shard.extend_from_slice(&stored);
+                first_stored_offset.get_or_insert(stored_offset);
+                let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
+                chunks.extend_from_slice(&encode_chunk(
+                    shard_id as u32,
+                    codec,
+                    raw_offset,
+                    take,
+                    stored_offset,
+                    stored.len(),
+                    stored_hash,
+                ));
+                shard_tensors[shard_id].insert(tensor.name.clone());
+                raw_offset += take;
+                stored_total += stored.len();
+            }
+            let info = PhysicalTensor {
+                chunk_start: u32::try_from(chunk_start)
+                    .map_err(|_| invalid("chunk index overflows u32"))?,
+                chunk_count: u32::try_from(chunks.len() / CHUNK_RECORD_SIZE - chunk_start)
+                    .map_err(|_| invalid("chunk count overflows u32"))?,
+                raw_length: payload.len(),
+                stored_length: stored_total,
+                data_offset: first_stored_offset
+                    .ok_or_else(|| invalid("package chunk is missing"))?,
+                hash: raw_hash,
+                codec,
+                dtype,
+                encoding: dtype,
+                scheme,
+                layout,
+            };
+            records.extend_from_slice(&encode_tensor_record(
+                tensor_id as u64,
+                u32::try_from(name_offset)
+                    .map_err(|_| invalid("name table offset overflows u32"))?,
+                u32::try_from(shape_offset)
+                    .map_err(|_| invalid("shape table offset overflows u32"))?,
+                dtype,
+                dtype,
+                scheme,
+                layout,
+                codec,
+                info.chunk_start,
+                info.chunk_count,
+                info.raw_length,
+                info.stored_length,
+                info.data_offset,
+                info.hash,
+                ALIAS_NONE,
+            ));
+            physical.push(Some(info));
+            dedup.entry(raw_hash).or_default().push(tensor_id);
         }
-        records.extend_from_slice(&encode_tensor_record(
-            tensor_id as u64,
-            u32::try_from(name_offset).map_err(|_| invalid("name table offset overflows u32"))?,
-            u32::try_from(shape_offset).map_err(|_| invalid("shape table offset overflows u32"))?,
-            dtype,
-            dtype,
-            scheme,
-            layout,
-            codec,
-            u32::try_from(chunk_start).map_err(|_| invalid("chunk index overflows u32"))?,
-            u32::try_from(chunks.len() / CHUNK_RECORD_SIZE - chunk_start)
-                .map_err(|_| invalid("chunk count overflows u32"))?,
-            payload.len(),
-            stored_total,
-            chunks
-                .get(chunk_start * CHUNK_RECORD_SIZE..(chunk_start + 1) * CHUNK_RECORD_SIZE)
-                .map(|bytes| u64::from_le_bytes(bytes[24..32].try_into().unwrap()) as usize)
-                .ok_or_else(|| invalid("package chunk is missing"))?,
-            raw_hash,
-        ));
     }
     if chunks.len() / CHUNK_RECORD_SIZE > MAX_CHUNKS {
         return Err(invalid("package chunk count exceeds the limit"));
@@ -331,8 +407,29 @@ impl QifV2PackageReader {
                 .checked_add(chunk.stored_length)
                 .is_none()
                 || chunk.stored_offset + chunk.stored_length > size
+                || chunk.stored_offset % ALIGNMENT as u64 != 0
             {
                 return Err(invalid("package chunk exceeds its shard"));
+            }
+        }
+        let mut occupied = BTreeMap::<String, Vec<(u64, u64)>>::new();
+        for chunk in &chunks {
+            let path = format!("shard-{:05}.qifd", chunk.shard_id);
+            let end = chunk
+                .stored_offset
+                .checked_add(chunk.stored_length)
+                .ok_or_else(|| invalid("package chunk range overflows"))?;
+            occupied
+                .entry(path)
+                .or_default()
+                .push((chunk.stored_offset, end));
+        }
+        for ranges in occupied.values_mut() {
+            ranges.sort_unstable_by_key(|(start, _)| *start);
+            for pair in ranges.windows(2) {
+                if pair[0].1 > pair[1].0 {
+                    return Err(invalid("package chunks overlap"));
+                }
             }
         }
         let expected = package
@@ -352,7 +449,14 @@ impl QifV2PackageReader {
         }
         let mut indexed_shards = BTreeMap::<String, BTreeSet<String>>::new();
         for tensor in &tensors {
-            for chunk in &chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
+            let mut physical = tensor;
+            while let Some(alias) = physical.alias_of {
+                physical = tensors
+                    .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
+                    .ok_or_else(|| invalid("package alias target is out of range"))?;
+            }
+            for chunk in &chunks[physical.chunk_start..physical.chunk_start + physical.chunk_count]
+            {
                 indexed_shards
                     .entry(format!("shard-{:05}.qifd", chunk.shard_id))
                     .or_default()
@@ -402,7 +506,13 @@ impl QifV2PackageReader {
             .ok_or_else(|| invalid(format!("unknown tensor {name}")))
     }
     pub fn tensor_shard(&self, name: &str) -> Result<&str> {
-        let tensor = self.tensor_info(name)?;
+        let mut tensor = self.tensor_info(name)?;
+        while let Some(alias) = tensor.alias_of {
+            tensor = self
+                .tensors
+                .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
+                .ok_or_else(|| invalid("package alias target is out of range"))?;
+        }
         let chunk = self.chunks[tensor.chunk_start].shard_id;
         self.entries
             .keys()
@@ -411,7 +521,14 @@ impl QifV2PackageReader {
             .ok_or_else(|| invalid("package shard is missing"))
     }
     pub fn read_range(&mut self, name: &str, range: std::ops::Range<usize>) -> Result<Vec<u8>> {
-        let tensor = self.tensor_info(name)?.clone();
+        let mut tensor = self.tensor_info(name)?.clone();
+        while let Some(alias) = tensor.alias_of {
+            tensor = self
+                .tensors
+                .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
+                .ok_or_else(|| invalid("package alias target is out of range"))?
+                .clone();
+        }
         let raw_length = usize::try_from(tensor.raw_length)
             .map_err(|_| invalid("tensor length overflows usize"))?;
         if range.start > range.end || range.end > raw_length {
@@ -561,7 +678,7 @@ fn parse_package_index(
         }
         chunks.push(chunk);
     }
-    let mut tensors = Vec::with_capacity(tensor_count);
+    let mut tensors: Vec<QifV2TensorInfo> = Vec::with_capacity(tensor_count);
     let mut names = BTreeSet::new();
     for index in 0..tensor_count {
         let offset = records_start + index * TENSOR_RECORD_SIZE;
@@ -579,13 +696,18 @@ fn parse_package_index(
         let end_chunk = chunk_start
             .checked_add(chunk_count_for_tensor)
             .ok_or_else(|| invalid("package tensor chunks overflow"))?;
-        if chunk_count_for_tensor == 0 || end_chunk > chunks.len() {
+        if end_chunk > chunks.len() {
             return Err(invalid("package tensor chunks are invalid"));
         }
         let alias_raw = u64_at(bytes, offset + 104);
-        if alias_raw != ALIAS_NONE {
-            return Err(invalid("package aliases are not yet supported"));
-        }
+        let alias_of = if alias_raw == ALIAS_NONE {
+            None
+        } else {
+            if alias_raw >= index as u64 || chunk_count_for_tensor != 0 {
+                return Err(invalid("package tensor alias target is invalid"));
+            }
+            Some(alias_raw)
+        };
         let data_offset = u64_at(bytes, offset + 64);
         let tensor = QifV2TensorInfo {
             tensor_id,
@@ -599,7 +721,7 @@ fn parse_package_index(
             raw_length: u64_at(bytes, offset + 48),
             stored_length: u64_at(bytes, offset + 56),
             checksum_sha256: bytes[offset + 72..offset + 104].try_into().unwrap(),
-            alias_of: None,
+            alias_of,
             chunk_start,
             chunk_count: chunk_count_for_tensor,
         };
@@ -609,37 +731,70 @@ fn parse_package_index(
             .find(|candidate| candidate.name == tensor.name)
             .ok_or_else(|| invalid("package index tensor is not in manifest"))?;
         validate_tensor_descriptor(&tensor, manifest_tensor)?;
-        if tensor.codec != chunks[chunk_start].codec
-            || chunks[chunk_start..end_chunk]
-                .iter()
-                .any(|chunk| chunk.codec != tensor.codec)
-        {
-            return Err(invalid("package tensor chunk metadata disagrees"));
-        }
-        let mut raw_sum = 0u64;
-        let mut stored_sum = 0u64;
-        let mut previous_shard = None;
-        for chunk in &chunks[chunk_start..end_chunk] {
-            let expected_stored = if previous_shard == Some(chunk.shard_id) {
-                data_offset
-                    .checked_add(stored_sum)
-                    .ok_or_else(|| invalid("package tensor stored offset overflows"))?
-            } else {
-                0
-            };
-            if chunk.raw_offset != raw_sum || chunk.stored_offset != expected_stored {
-                return Err(invalid("package tensor chunk offsets are not contiguous"));
+        if let Some(alias) = tensor.alias_of {
+            let target = tensors
+                .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
+                .ok_or_else(|| invalid("package alias target is out of range"))?;
+            if target.alias_of.is_some() || target.chunk_count == 0 {
+                return Err(invalid("package alias target must be physical"));
             }
-            raw_sum = raw_sum
-                .checked_add(chunk.raw_length)
-                .ok_or_else(|| invalid("package tensor raw length overflows"))?;
-            stored_sum = stored_sum
-                .checked_add(chunk.stored_length)
-                .ok_or_else(|| invalid("package tensor stored length overflows"))?;
-            previous_shard = Some(chunk.shard_id);
-        }
-        if raw_sum != tensor.raw_length || stored_sum != tensor.stored_length {
-            return Err(invalid("package tensor lengths disagree with chunks"));
+            if tensor.dtype != target.dtype
+                || tensor.physical_encoding != target.physical_encoding
+                || tensor.quantization_scheme != target.quantization_scheme
+                || tensor.layout != target.layout
+                || tensor.codec != target.codec
+                || tensor.raw_length != target.raw_length
+                || tensor.stored_length != target.stored_length
+                || tensor.checksum_sha256 != target.checksum_sha256
+                || data_offset != chunks[target.chunk_start].stored_offset
+            {
+                return Err(invalid("package alias metadata disagrees with target"));
+            }
+        } else {
+            if chunk_count_for_tensor == 0 {
+                return Err(invalid("non-alias package tensor has no chunks"));
+            }
+            if tensor.codec != chunks[chunk_start].codec
+                || chunks[chunk_start..end_chunk]
+                    .iter()
+                    .any(|chunk| chunk.codec != tensor.codec)
+            {
+                return Err(invalid("package tensor chunk metadata disagrees"));
+            }
+            let mut raw_sum = 0u64;
+            let mut stored_sum = 0u64;
+            let mut shard_end = BTreeMap::<u32, u64>::new();
+            for (position, chunk) in chunks[chunk_start..end_chunk].iter().enumerate() {
+                if position == 0 && chunk.stored_offset != data_offset {
+                    return Err(invalid(
+                        "package tensor data offset disagrees with first chunk",
+                    ));
+                }
+                if let Some(previous_end) = shard_end.get(&chunk.shard_id) {
+                    if chunk.stored_offset != align_u64(*previous_end)? {
+                        return Err(invalid("package tensor chunk offsets are not aligned"));
+                    }
+                }
+                if chunk.raw_offset != raw_sum {
+                    return Err(invalid("package tensor chunk offsets are not contiguous"));
+                }
+                raw_sum = raw_sum
+                    .checked_add(chunk.raw_length)
+                    .ok_or_else(|| invalid("package tensor raw length overflows"))?;
+                stored_sum = stored_sum
+                    .checked_add(chunk.stored_length)
+                    .ok_or_else(|| invalid("package tensor stored length overflows"))?;
+                shard_end.insert(
+                    chunk.shard_id,
+                    chunk
+                        .stored_offset
+                        .checked_add(chunk.stored_length)
+                        .ok_or_else(|| invalid("package tensor stored offset overflows"))?,
+                );
+            }
+            if raw_sum != tensor.raw_length || stored_sum != tensor.stored_length {
+                return Err(invalid("package tensor lengths disagree with chunks"));
+            }
         }
         tensors.push(tensor);
     }
@@ -691,6 +846,7 @@ fn encode_tensor_record(
     stored_len: usize,
     data_offset: usize,
     hash: [u8; HASH_SIZE],
+    alias_target: u64,
 ) -> [u8; TENSOR_RECORD_SIZE] {
     let mut record = [0_u8; TENSOR_RECORD_SIZE];
     let mut cursor = 0usize;
@@ -717,7 +873,7 @@ fn encode_tensor_record(
     }
     record[cursor..cursor + HASH_SIZE].copy_from_slice(&hash);
     cursor += HASH_SIZE;
-    record[cursor..cursor + 8].copy_from_slice(&ALIAS_NONE.to_le_bytes());
+    record[cursor..cursor + 8].copy_from_slice(&alias_target.to_le_bytes());
     record
 }
 
@@ -802,6 +958,14 @@ fn package_root_hash(
     }
     let bytes: [u8; HASH_SIZE] = digest.finalize().into();
     hex_encode(&bytes)
+}
+
+fn align_u64(offset: u64) -> Result<u64> {
+    let alignment = ALIGNMENT as u64;
+    offset
+        .checked_add(alignment - 1)
+        .map(|value| value / alignment * alignment)
+        .ok_or_else(|| invalid("package offset alignment overflows"))
 }
 
 fn resolve_path(root: &Path, relative: &str) -> Result<PathBuf> {
