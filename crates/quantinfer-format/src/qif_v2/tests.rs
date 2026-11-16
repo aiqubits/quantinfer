@@ -194,6 +194,21 @@ fn round_trips_qif2_package_and_shard_ranges() {
         ("bias".to_owned(), vec![0_u8, 0, 0, 0, 0, 0, 128, 63]),
         ("large".to_owned(), vec![0_u8; 16]),
     ]);
+    let mut single = Vec::new();
+    write_qif_v2_with_codec(
+        manifest.clone(),
+        &BTreeMap::new(),
+        |name| {
+            payloads
+                .get(name)
+                .map(Vec::as_slice)
+                .ok_or_else(|| crate::FormatError::Invalid("missing single tensor".to_owned()))
+        },
+        &mut single,
+        QifV2Codec::Lz4,
+    )
+    .unwrap();
+    let single_reader = QifV2Reader::open(&single).unwrap();
     let output =
         std::env::temp_dir().join(format!("quantinfer-qif2-package-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&output);
@@ -223,6 +238,12 @@ fn round_trips_qif2_package_and_shard_ranges() {
         reader.read_range("large", 0..16).unwrap(),
         payloads["large"]
     );
+    for name in ["weight", "bias", "large"] {
+        assert_eq!(
+            single_reader.tensor_data(name).unwrap(),
+            reader.read_range(name, 0..payloads[name].len()).unwrap()
+        );
+    }
     reader.verify().unwrap();
     std::fs::remove_dir_all(output).unwrap();
 }
