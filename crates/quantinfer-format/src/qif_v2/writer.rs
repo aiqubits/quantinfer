@@ -382,7 +382,8 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
         let alias_target = dedup.get(&hash).and_then(|candidates| {
             candidates.iter().copied().find(|candidate| {
                 let prior = physical[*candidate].expect("dedup candidate is physical");
-                prior.dtype == dtype
+                manifest.tensors[*candidate].descriptor == tensor.descriptor
+                    && prior.dtype == dtype
                     && prior.encoding == encoding
                     && prior.scheme == scheme
                     && prior.layout == layout

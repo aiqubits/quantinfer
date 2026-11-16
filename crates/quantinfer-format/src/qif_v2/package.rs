@@ -176,7 +176,8 @@ fn write_package_contents<'a>(
         let alias_target = dedup.get(&raw_hash).and_then(|candidates| {
             candidates.iter().copied().find(|candidate| {
                 let prior = physical[*candidate].expect("dedup candidate is physical");
-                prior.dtype == dtype
+                manifest.tensors[*candidate].descriptor == tensor.descriptor
+                    && prior.dtype == dtype
                     && prior.encoding == dtype
                     && prior.scheme == scheme
                     && prior.layout == layout
