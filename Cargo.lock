@@ -2083,6 +2083,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "libc",
+ "memmap2",
  "quantinfer-core",
  "serde",
  "serde_json",

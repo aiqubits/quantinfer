@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
 
-use super::{write_qif_v2, QifV2FileReader, QifV2MetadataValue, QifV2Reader};
+use super::{write_qif_v2, QifV2FileReader, QifV2MappedFile, QifV2MetadataValue, QifV2Reader};
 use crate::{ModelManifest, TensorManifest};
 
 fn sample_manifest() -> ModelManifest {
@@ -91,6 +91,11 @@ fn file_reader_loads_control_sections_lazily() {
     let mut reader = QifV2FileReader::open(&path).unwrap();
     assert_eq!(reader.read_range("weight", 0..4).unwrap(), payload[..4]);
     reader.verify().unwrap();
+    let mapped = QifV2MappedFile::open(&path).unwrap();
+    assert_eq!(
+        mapped.reader().unwrap().tensor_bytes("weight").unwrap(),
+        payload
+    );
     std::fs::remove_file(path).unwrap();
 }
 

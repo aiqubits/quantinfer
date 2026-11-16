@@ -379,14 +379,16 @@ QifV2Reader::verify()
 QifV2FileReader::open(path)
 QifV2FileReader::read_range(name, range)
 QifV2FileReader::verify()
+QifV2MappedFile::open(path)
+QifV2MappedFile::reader()
 ```
 
 API 要求：
 
 - 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
 - `read_range` 只复制请求的 tensor 子范围；
-- v2.0-SINGLE 提供按需 file-backed range read，但尚未提供 `mmap_range`；mmap 需要单独处理
-  Rust unsafe 边界与跨平台文件映射策略，不能在当前版本宣称已经具备；
+- v2.0-SINGLE 提供按需 file-backed range read，并提供只读 `QifV2MappedFile` 映射入口；
+  mmap 的 unsafe 操作被隔离在单独模块，调用者仍必须先通过同一 QIF2 reader 校验；
 - reader 可选择调用 `verify` 执行全 payload 校验；
 - 文件、内存 buffer 和 package shard 使用同一逻辑接口；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
@@ -397,7 +399,7 @@ API 要求：
 
 1. file-backed index open 不读取 payload（当前 `QifV2FileReader::open` 已满足）；
 2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload（当前 file-backed `read_range` 已满足）；
-3. 无压缩路径能返回 mmap/range view（range read 已满足，mmap view 待后续实现）；
+3. 无压缩路径能返回 mmap/range view（当前 `QifV2MappedFile` 与 file-backed range read 已满足）；
 4. 压缩路径不会把整个模型解压到内存（待压缩 profile 实现后验收）；
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（PACKAGE 尚未实现）；
 6. 只改变 shard/rank 布局时无需重新编码 tensor（PACKAGE 尚未实现）；

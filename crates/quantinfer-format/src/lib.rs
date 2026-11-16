@@ -1,6 +1,6 @@
 //! Compatibility format readers and writers.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod dense;
 pub mod gguf;

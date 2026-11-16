@@ -6,10 +6,12 @@
 //! payload bytes.
 
 mod metadata;
+mod mmap;
 mod reader;
 mod writer;
 
 pub use metadata::QifV2MetadataValue;
+pub use mmap::QifV2MappedFile;
 pub use reader::{QifV2FileReader, QifV2Reader, QifV2TensorInfo};
 pub use writer::write_qif_v2;
 
