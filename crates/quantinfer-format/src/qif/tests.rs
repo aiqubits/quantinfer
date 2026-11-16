@@ -135,6 +135,11 @@ fn rejects_non_finite_payloads_before_writing() {
 }
 
 #[test]
+fn retired_v1_is_not_opened_by_the_default_artifact_reader() {
+    assert!(PackedTensorReader::open_artifact(artifact()).is_err());
+}
+
+#[test]
 fn imports_legacy_q4_0_without_changing_decoded_values() {
     let block = Q4_0Block {
         scale: 0.5,
