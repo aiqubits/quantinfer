@@ -431,9 +431,8 @@ API 要求：
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
 5. QIF2 的 Rust fixture、dependency-free Python reader 和 C wire reader smoke test 已完成；fuzz target、更多 malformed corpus 和 benchmark 仍是持续验证工作。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
-7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 当前通过既有
-   SafeTensors → GGUF → QIF2 两步路径转换，直接 SafeTensors → QIF2 仍待单独的
-   descriptor/metadata 映射冻结后实现。
+7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 转换器通过
+   `--output-format qif2` 直接发布 QIF2-SINGLE（内部仍复用已验证的 GGUF 语义映射）。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论

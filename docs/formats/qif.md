@@ -7,7 +7,7 @@ artifacts. The historical wire description is preserved in
 The new format is QIF v2.0. Its normative design is documented in
 [qif-v2-final-plan.md](qif-v2-final-plan.md).
 
-QIF2-SINGLE 与 QIF2-PACKAGE v2.0 的 reader、writer、GGUF 转换路径、独立压缩
+QIF2-SINGLE 与 QIF2-PACKAGE v2.0 的 reader、writer、GGUF/SafeTensors 转换路径、独立压缩
 codec、Ed25519 签名、mmap 和 file-backed 校验器已在 `quantinfer-format::qif_v2`
 实现。Rust/Python/C 基线 reader 已加入验证路径，完整 benchmark 和 fuzz corpus
 仍是验证工作。Legacy v1 wire code

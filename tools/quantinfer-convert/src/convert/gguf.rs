@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::Seek;
+use std::io::{Read, Seek};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,7 @@ pub(crate) fn run() -> Result<(), String> {
             ("--config", true),
             ("--weights", true),
             ("--output", true),
+            ("--output-format", true),
             ("--weights-checksums", true),
             ("--architecture", true),
             ("--tokenizer", true),
@@ -78,7 +79,15 @@ pub(crate) fn run() -> Result<(), String> {
         .then(|| required_path(&arguments, "--weights-checksums"))
         .transpose()?;
     let output_path = required_path(&arguments, "--output")?;
+    let output_format =
+        optional_value(&arguments, "--output-format").unwrap_or_else(|| "gguf".to_owned());
+    if output_format != "gguf" && output_format != "qif2" {
+        return Err("--output-format must be gguf or qif2".to_owned());
+    }
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
+    if output_format == "qif2" && manifest_path.is_some() {
+        return Err("--manifest is only supported when --output-format gguf".to_owned());
+    }
     let tokenizer_path = optional_value(&arguments, "--tokenizer").map(PathBuf::from);
     let requested_architecture = optional_value(&arguments, "--architecture");
     let quantization = optional_value(&arguments, "--quantize")
@@ -435,6 +444,35 @@ pub(crate) fn run() -> Result<(), String> {
     spool
         .finish(output.as_file_mut())
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
+    if output_format == "qif2" {
+        output
+            .as_file_mut()
+            .rewind()
+            .map_err(|error| format!("cannot rewind {}: {error}", output_path.display()))?;
+        let mut gguf_bytes = Vec::new();
+        output
+            .as_file_mut()
+            .read_to_end(&mut gguf_bytes)
+            .map_err(|error| format!("cannot read temporary GGUF: {error}"))?;
+        let reader = quantinfer_format::GgufReader::open(gguf_bytes)
+            .map_err(|error| format!("cannot validate temporary GGUF: {error}"))?;
+        let model_id = output_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model");
+        let mut qif = tempfile::NamedTempFile::new_in(output_dir)
+            .map_err(|error| format!("cannot prepare {}: {error}", output_path.display()))?;
+        quantinfer_format::qif_v2::import_gguf(&reader, model_id, qif.as_file_mut())
+            .map_err(|error| format!("cannot write QIF2: {error}"))?;
+        qif.persist_noclobber(&output_path)
+            .map_err(|error| format!("cannot publish {}: {error}", output_path.display()))?;
+        println!(
+            "converted {} tensors to {}",
+            weights.tensor_count(),
+            output_path.display()
+        );
+        return Ok(());
+    }
     let checksum = if manifest_path.is_some() {
         let file = output.as_file_mut();
         file.rewind()
