@@ -422,7 +422,9 @@ API 要求：
 4. file-backed reader 和 mmap/range view 已完成；QIF2 package/shard writer 仍是后续 profile。
 5. 增加 QIF2 golden fixtures、malformed fixtures、fuzz target、C/Python smoke tests（后续里程碑）。
 6. 新 CLI 默认输出 QIF2；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
-7. 完成 GGUF/SafeTensors → QIF2 转换后，再删除 v1 writer 和 v1 默认 reader。
+7. GGUF → QIF2 已由 `from-gguf` 实现；SafeTensors 当前通过既有
+   SafeTensors → GGUF → QIF2 两步路径转换，直接 SafeTensors → QIF2 仍待单独的
+   descriptor/metadata 映射冻结后实现。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论
