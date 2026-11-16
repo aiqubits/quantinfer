@@ -774,7 +774,15 @@ fn parse_control(
             let target = tensors
                 .get(usize::try_from(alias).map_err(|_| invalid("alias id overflows usize"))?)
                 .ok_or_else(|| invalid("alias target is out of range"))?;
-            if tensor.raw_length != target.raw_length
+            if target.alias_of.is_some()
+                || target.chunk_count == 0
+                || tensor.shape != target.shape
+                || tensor.dtype != target.dtype
+                || tensor.physical_encoding != target.physical_encoding
+                || tensor.quantization_scheme != target.quantization_scheme
+                || tensor.layout != target.layout
+                || tensor.codec != target.codec
+                || tensor.raw_length != target.raw_length
                 || tensor.stored_length != target.stored_length
                 || tensor.checksum_sha256 != target.checksum_sha256
             {
@@ -964,7 +972,7 @@ fn parse_index(
             Some(alias_raw)
         };
         if let Some(alias) = alias_of {
-            if alias >= tensor_count as u64 || alias >= tensor_id {
+            if alias >= tensor_count as u64 || alias >= tensor_id || chunk_count_for_tensor != 0 {
                 return Err(invalid("tensor alias target is invalid"));
             }
         } else {
