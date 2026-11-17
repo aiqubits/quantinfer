@@ -80,6 +80,7 @@ fn rejects_noncanonical_manifest_bytes() {
 }
 
 #[test]
+#[allow(unsafe_code)]
 fn file_reader_loads_control_sections_lazily() {
     let payload = [0_u8, 0, 128, 63, 0, 0, 0, 64];
     let mut bytes = Vec::new();
@@ -99,11 +100,13 @@ fn file_reader_loads_control_sections_lazily() {
     let mut reader = FileReader::open(&path).unwrap();
     assert_eq!(reader.read_range("weight", 0..4).unwrap(), payload[..4]);
     reader.verify().unwrap();
-    let mapped = MappedFile::open(&path).unwrap();
+    // SAFETY: this test owns the unique fixture and does not modify it while mapped.
+    let mapped = unsafe { MappedFile::open(&path) }.unwrap();
     assert_eq!(
         mapped.reader().unwrap().tensor_bytes("weight").unwrap(),
         payload
     );
+    drop(mapped);
     std::fs::remove_file(path).unwrap();
 }
 

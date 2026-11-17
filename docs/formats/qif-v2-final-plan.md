@@ -465,7 +465,7 @@ quantinfer_format::qif::Reader::verify()
 quantinfer_format::qif::FileReader::open(path)
 quantinfer_format::qif::FileReader::read_range(name, range)
 quantinfer_format::qif::FileReader::verify()
-quantinfer_format::qif::MappedFile::open(path)
+unsafe { quantinfer_format::qif::MappedFile::open(path) }
 quantinfer_format::qif::MappedFile::reader()
 quantinfer_format::qif::PackageReader::open(path)
 quantinfer_format::qif::PackageReader::read_range(name, range)
@@ -481,7 +481,10 @@ API 要求：
 - 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
 - `read_range` 只复制请求的 tensor 子范围；
 - QIF-SINGLE/PACKAGE 提供按需 file-backed range read，并提供只读 `qif::MappedFile` 映射入口；
-  mmap 的 unsafe 操作被隔离在单独模块，调用者仍必须先通过同一 QIF reader 校验；
+  mmap 的 unsafe 操作被隔离在单独模块。`MappedFile::open` 是 unsafe API，调用者
+  必须保证映射及所有借用 view 存活期间，底层文件不被任何线程或进程修改/截断，
+  并仍需通过同一 QIF reader 校验。只读映射和 hash 校验不提供文件不变性保证；
+  不能满足该前提时使用安全的 `FileReader`；
 - reader 可选择调用 `verify` 执行全 payload 校验；
 - 文件、内存 buffer 和 package shard 使用同一逻辑 tensor/chunk 校验规则；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。

@@ -6,7 +6,7 @@ matrix below does not prove every possible artifact or deployment correct.
 | Path | Executed checks | Scope |
 | --- | --- | --- |
 | Rust memory/file/PACKAGE | Encoding validation, hashes, finite values, alias, shard ranges, malformed input | Eight core encodings and none/zstd/LZ4 round trips; fixed fixtures and targeted regressions |
-| Rust mmap | Same validated memory reader over a read-only mapping | Uncompressed borrowed views; opening a mapping alone does not verify payload |
+| Rust mmap | Same validated memory reader over a read-only mapping | Unsafe constructor requires backing-file immutability; borrowed uncompressed views; opening alone does not verify payload |
 | Rust/C/Python golden reports | Header bytes, parsed string/shape/tensor/chunk fields, section SHA-256, chunk/tensor digests, payload bytes | One unsigned/uncompressed F32 tensor containing `[1.0, 2.0]`, original and reordered control sections |
 | Cross-language negative fixtures | Payload corruption, overflowing index length, truncation, oversized rank with consistent root | All three processes must fail; this is not a general invalid-artifact equivalence proof |
 | Linux resource limits | Six 64 MiB tensor/alias fixtures verified in separate processes with a 48 MiB address-space limit; overlapping unknown index names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunk sizes; not a universal peak-memory bound |

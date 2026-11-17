@@ -39,7 +39,9 @@ pub fn exercise_single(data: &[u8]) {
     let file = FileReader::open(&path);
     assert_eq!(memory.is_ok(), file.is_ok());
     if let Ok(reader) = memory {
-        let mapped = MappedFile::open(&path).unwrap();
+        // SAFETY: this process exclusively owns the scratch file. The mapping
+        // is dropped before the next fuzz input rewrites it.
+        let mapped = unsafe { MappedFile::open(&path) }.unwrap();
         assert!(mapped.reader().is_ok());
         if !bounded_lengths(reader.tensors().iter().map(|tensor| tensor.raw_length)) {
             return;

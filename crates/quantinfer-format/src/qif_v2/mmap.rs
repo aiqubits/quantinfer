@@ -13,13 +13,29 @@ use super::Reader;
 ///
 /// The unsafe operating-system mapping is isolated in this module. Callers
 /// receive the same validated reader as the in-memory API and cannot access an
-/// unvalidated byte range through this type.
+/// unvalidated byte range through this type. File immutability is a separate
+/// caller obligation; a read-only mapping alone does not establish it.
 pub struct MappedFile {
     mapping: Mmap,
 }
 
 impl MappedFile {
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+    /// Map a file whose contents will remain immutable for this mapping's lifetime.
+    ///
+    /// # Safety
+    ///
+    /// The backing file must not be modified or truncated, by any thread or
+    /// process, until this mapping and every borrowed reader/view are dropped.
+    /// Read-only permissions, an open file handle and format/hash validation
+    /// alone do not provide this guarantee. Use `FileReader` when the caller
+    /// cannot uphold it.
+    ///
+    /// ```compile_fail,E0133
+    /// use quantinfer_format::qif::MappedFile;
+    /// // File-backed mmap requires an explicit immutability safety argument.
+    /// let _ = MappedFile::open("model.qif");
+    /// ```
+    pub unsafe fn open(path: impl AsRef<Path>) -> Result<Self> {
         let file = File::open(path.as_ref())
             .map_err(|error| FormatError::Io(format!("cannot open QIF for mmap: {error}")))?;
         let length = file
@@ -31,8 +47,9 @@ impl MappedFile {
                 "cannot mmap an empty QIF file".to_owned(),
             ));
         }
-        // SAFETY: the mapping is read-only, the File is kept open until the
-        // mapping has been created, and Mmap owns the resulting mapping.
+        // SAFETY: the caller guarantees the backing file remains immutable
+        // for the mapping's lifetime, including all borrowed readers/views.
+        // Mmap owns the OS mapping after this File handle is closed.
         let mapping = unsafe { MmapOptions::new().map(&file) }
             .map_err(|error| FormatError::Io(format!("cannot mmap QIF: {error}")))?;
         Ok(Self { mapping })
