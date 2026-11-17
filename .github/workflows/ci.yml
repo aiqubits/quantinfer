@@ -19,6 +19,7 @@ jobs:
       - run: cargo run --locked -p quantinfer-xtask -- bench
       - run: cargo run --locked -p quantinfer-xtask -- qif-bench
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: python3 -m unittest discover -s benches -p 'test_*.py'
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
       - name: Install the independent C golden reader hash dependency
         run: |

@@ -27,8 +27,9 @@ The benchmark uses five fixed input tokens, eight greedy output tokens, a
 64-token context, and one CPU thread. It records model load time, prefill time,
 time from prefill to the first selected token, throughput between the first
 and last selected tokens, peak process RSS on Linux, and KV cache usage and
-capacity. It also records the CPU model, source revision, and GGUF hash. Energy
-is marked unmeasured.
+capacity. It also records the CPU model, source revision, GGUF hash, executable
+hash and declared code commit (`QUANTINFER_BENCH_CODE_COMMIT`, or `GITHUB_SHA`
+inside CI; otherwise `unknown`). Energy is marked unmeasured.
 
 Model Conformance publishes reports for the F32, Q8_0 and Q4_0 variants of
 both models. SmolLM2 quantized runs use the GGML output-row layout.
@@ -41,6 +42,28 @@ KV cache sizes. On a CPU with a recorded timing baseline, it allows up to 35%
 more prefill, first-token, and decode latency, and requires at least 70% of
 baseline decode throughput. On other CPUs of the same architecture, it still
 checks memory and publishes the timings.
+
+To avoid skipping timing gates when GitHub assigns an unrecorded CPU, Model
+Conformance also rebuilds pinned commit
+`3cd5745116c3e5e6edf3ec20b943ddec201b4686` in a separate target directory with
+the same Rust toolchain. For each model's F32, Q8_0 and Q4_0 variants, it runs
+three fresh processes per executable, interleaving reference/current order,
+and gates per-metric medians using the same limits above. Both sides use the
+exact same GGUF file, CPU, token sequence and runtime configuration. Reports
+must agree on these identities, KV sizes and generated tokens; missing or
+non-finite metrics fail. Raw samples, medians, code commits and binary hashes
+are uploaded. This measures regression relative to that fixed implementation;
+it is not an absolute performance guarantee. File caches and host load remain
+uncontrolled, and historical baseline checks still run separately.
+
+```sh
+python3 benches/paired-model.py --current-cli /path/current/quantinfer-cli \
+  --current-commit FULL_SHA --reference-cli /path/reference/quantinfer-cli \
+  --reference-commit 3cd5745116c3e5e6edf3ec20b943ddec201b4686 \
+  --model-id HuggingFaceTB/SmolLM2-135M \
+  --source-revision 93efa2f097d58c2a74874c7e644dbc9b0cee75a2 \
+  --variant f32 --model /path/model.gguf --output-prefix /tmp/smollm2-paired
+```
 
 | Model | Variant | Quality | Performance and memory | llama.cpp comparison |
 | --- | --- | --- | --- | --- |

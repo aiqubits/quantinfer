@@ -2,18 +2,13 @@
 
 import argparse
 import json
-import math
 from pathlib import Path
 
-LATENCY_RATIO_LIMIT = 1.35
-MIN_THROUGHPUT_RATIO = 0.70
-PEAK_RSS_RATIO_LIMIT = 1.10
+from regression import check_metrics, read_report
 
 
 def check_report(report_path, baselines):
-    report = dict(
-        line.split("=", 1) for line in report_path.read_text().splitlines() if "=" in line
-    )
+    report = read_report(report_path)
     identity = ("model_id", "source_revision", "variant")
     profiles = [
         (baseline, run)
@@ -31,30 +26,13 @@ def check_report(report_path, baselines):
         raise ValueError(f"{report_path}: missing baseline for this model and benchmark configuration")
 
     name = f"{report['model_id']} {report['variant']}"
-    failures = []
-
-    def gate(key, expected, minimum, maximum):
-        ratio = float(report[key]) / expected
-        print(f"{name} {key} ratio={ratio:.3f} allowed=[{minimum:.2f}, {maximum:.2f}]")
-        if not math.isfinite(ratio) or not minimum <= ratio <= maximum:
-            failures.append(key)
-
     same_cpu = [run for profile, run in profiles if profile["cpu_model"] == report["cpu_model"]]
     memory = same_cpu or [run for _, run in profiles]
-    gate("peak_rss_kib", max(run["peak_rss_kib"] for run in memory), 0.0, PEAK_RSS_RATIO_LIMIT)
-    for key in ("kv_cache_bytes", "kv_cache_capacity_bytes"):
-        gate(key, memory[0][key], 1.0, 1.0)
-
-    if same_cpu:
-        for key in ("prefill_ms", "ttft_ms", "profile_decode_ms"):
-            gate(key, same_cpu[0][key], 0.0, LATENCY_RATIO_LIMIT)
-        gate("profile_decode_tokens_per_sec", same_cpu[0]["profile_decode_tokens_per_sec"],
-             MIN_THROUGHPUT_RATIO, math.inf)
-    else:
+    expected = dict(memory[0])
+    expected["peak_rss_kib"] = max(run["peak_rss_kib"] for run in memory)
+    check_metrics(report, expected, name, timing=bool(same_cpu))
+    if not same_cpu:
         print(f"{name} timing comparison unavailable for CPU {report['cpu_model']}")
-
-    if failures:
-        raise ValueError(f"{name} exceeded regression limits for {', '.join(failures)}")
 
 
 def main():
