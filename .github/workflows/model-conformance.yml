@@ -224,10 +224,21 @@ jobs:
           test "$gguf" = "$qif"
           cargo run --release --locked -p quantinfer-xtask -- qif-bench \
             --qif smollm2-q4_0.qif --safetensors model.safetensors --gguf smollm2-q4_0.gguf \
+            --qif-tensor token_embd.weight --gguf-tensor token_embd.weight \
+            --safetensors-tensor model.embed_tokens.weight \
             | tee smollm2-qif-comparison.txt
           grep -E '^qif_full_verify_ns=[0-9]+' smollm2-qif-comparison.txt
           grep -E '^safetensors_first_range_ns=[0-9]+' smollm2-qif-comparison.txt
           grep -E '^gguf_first_range_ns=[0-9]+' smollm2-qif-comparison.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          metrics = dict(line.split('=', 1) for line in Path('smollm2-qif-comparison.txt').read_text().splitlines() if '=' in line)
+          formats = ('qif', 'safetensors', 'gguf')
+          assert len({metrics[f'{kind}_process_id'] for kind in formats}) == 3
+          assert all(metrics[f'{kind}_range_bytes'] == '4096' for kind in formats)
+          assert metrics['qif_range_sha256'] == metrics['gguf_range_sha256']
+          assert metrics['benchmark_cache_state'] == 'uncontrolled'
+          PY
       - name: Apply PEFT LoRA to quantized SmolLM2
         shell: bash
         run: |

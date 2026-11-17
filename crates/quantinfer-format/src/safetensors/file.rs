@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
+use std::ops::Range;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -188,90 +189,69 @@ impl SafeTensorFileReader {
         &self.tensors
     }
 
-    pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
-        let path = &self.path;
+    /// Read a byte range within one tensor without loading other payload bytes.
+    pub fn read_range(&self, name: &str, range: Range<usize>) -> Result<Vec<u8>> {
         let info = self
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
+        let length = info.data_offsets.1 - info.data_offsets.0;
+        if range.start > range.end || range.end > length {
+            return Err(FormatError::Invalid(
+                "SafeTensors range exceeds tensor".to_owned(),
+            ));
+        }
+        if range.is_empty() {
+            return Ok(Vec::new());
+        }
         let byte_start = self
             .data_start
             .checked_add(info.data_offsets.0)
+            .and_then(|offset| offset.checked_add(range.start))
             .ok_or_else(|| {
                 FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
             })?;
-        let byte_length = info.data_offsets.1 - info.data_offsets.0;
+        let path = &self.path;
         let mut file = open_readonly_nofollow(path)
             .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
         file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
             |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
         )?))
         .map_err(|error| FormatError::Io(format!("cannot seek {}: {error}", path.display())))?;
-        let mut bytes = vec![0_u8; byte_length];
+        let mut bytes = vec![0; range.end - range.start];
         file.read_exact(&mut bytes).map_err(|error| {
             FormatError::Io(format!(
                 "cannot read tensor {name} from {}: {error}",
                 path.display()
             ))
         })?;
+        Ok(bytes)
+    }
+
+    pub fn tensor_f32(&self, name: &str) -> Result<Vec<f32>> {
+        let info = self
+            .tensors
+            .get(name)
+            .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
+        let bytes = self.read_range(name, 0..info.data_offsets.1 - info.data_offsets.0)?;
         decode_tensor_f32(info, &bytes, name)
     }
 
     pub fn tensor_u32(&self, name: &str) -> Result<Vec<u32>> {
-        let path = &self.path;
         let info = self
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
-        let byte_start = self
-            .data_start
-            .checked_add(info.data_offsets.0)
-            .ok_or_else(|| {
-                FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
-            })?;
-        let byte_length = info.data_offsets.1 - info.data_offsets.0;
-        let mut file = open_readonly_nofollow(path)
-            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
-        file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
-            |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
-        )?))
-        .map_err(|error| FormatError::Io(format!("cannot seek {}: {error}", path.display())))?;
-        let mut bytes = vec![0_u8; byte_length];
-        file.read_exact(&mut bytes).map_err(|error| {
-            FormatError::Io(format!(
-                "cannot read tensor {name} from {}: {error}",
-                path.display()
-            ))
-        })?;
+        let bytes = self.read_range(name, 0..info.data_offsets.1 - info.data_offsets.0)?;
         decode_tensor_u32(info, &bytes, name)
     }
 
     pub fn tensor_u64(&self, name: &str) -> Result<Vec<u64>> {
-        let path = &self.path;
         let info = self
             .tensors
             .get(name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown SafeTensors tensor {name}")))?;
-        let byte_start = self
-            .data_start
-            .checked_add(info.data_offsets.0)
-            .ok_or_else(|| {
-                FormatError::Invalid("SafeTensors start offset overflows usize".to_owned())
-            })?;
-        let byte_length = info.data_offsets.1 - info.data_offsets.0;
-        let mut file = open_readonly_nofollow(path)
-            .map_err(|error| FormatError::Io(format!("cannot read {}: {error}", path.display())))?;
-        file.seek(SeekFrom::Start(u64::try_from(byte_start).map_err(
-            |_| FormatError::Invalid(format!("tensor {name} offset overflows u64")),
-        )?))
-        .map_err(|error| FormatError::Io(format!("cannot seek {}: {error}", path.display())))?;
-        let mut bytes = vec![0_u8; byte_length];
-        file.read_exact(&mut bytes).map_err(|error| {
-            FormatError::Io(format!(
-                "cannot read tensor {name} from {}: {error}",
-                path.display()
-            ))
-        })?;
+        let bytes = self.read_range(name, 0..info.data_offsets.1 - info.data_offsets.0)?;
         decode_tensor_u64(info, &bytes, name)
     }
 }

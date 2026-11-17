@@ -471,7 +471,7 @@ file-backed/PACKAGE 能力描述为默认推理入口已经具有相同能力。
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 比较原始及控制区重排两个布局，并要求三者拒绝四类损坏输入。C/Python 工具限于此 golden wire profile，不是通用 ModelManifest/QMB、codec、PACKAGE 或签名验证器；范围见 [QIF conformance](qif-conformance.md)；
-9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 报告三种格式的 open、selected-layer range、artifact size、RSS 和 page-fault 指标；QIF 额外报告 full-verify，并明确 SafeTensors/GGUF 不提供本容器定义的 checksum verify。当前 GGUF 计时排除了整文件读入，QIF 资源区间包含 full-verify，测量口径必须统一后才能比较；
+9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
 ## 11. 从当前仓库迁移

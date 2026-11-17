@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File};
+use std::fs;
 use std::hint::black_box;
-use std::io::{Read, Seek, SeekFrom};
+use std::process::Command;
 use std::time::Instant;
 
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
@@ -13,6 +13,7 @@ use quantinfer_format::{GgufReader, ModelManifest, SafeTensorFileReader, TensorM
 #[derive(Clone, Copy, Default)]
 struct ResourceSnapshot {
     rss_kb: Option<u64>,
+    peak_rss_kb: Option<u64>,
     minor_faults: Option<u64>,
     major_faults: Option<u64>,
 }
@@ -35,6 +36,7 @@ pub(crate) fn run() {
 }
 
 fn run_synthetic() {
+    println!("qif_benchmark_mode=synthetic_memory");
     let payload = (0..(1024 * 1024 / 4))
         .flat_map(|value| (value as f32).to_le_bytes())
         .collect::<Vec<_>>();
@@ -79,52 +81,143 @@ fn run_external(
     gguf_path: Option<&str>,
     tensor_name: Option<&str>,
 ) {
-    if let Some(path) = qif_path {
-        benchmark_qif(path, tensor_name);
+    println!("benchmark_process_isolation=1");
+    println!("benchmark_cache_state=uncontrolled");
+    for (format, path) in [
+        ("qif", qif_path),
+        ("safetensors", safetensors_path),
+        ("gguf", gguf_path),
+    ] {
+        let Some(path) = path else {
+            continue;
+        };
+        let name = super::option_value(&format!("--{format}-tensor"))
+            .or_else(|| tensor_name.map(str::to_owned));
+        let mut command =
+            Command::new(std::env::current_exe().expect("benchmark executable exists"));
+        command.args(["qif-bench-worker", "--format", format, "--input", path]);
+        if let Some(name) = name {
+            command.args(["--tensor", &name]);
+        }
+        assert!(
+            command
+                .status()
+                .expect("benchmark worker should start")
+                .success(),
+            "{format} benchmark worker failed"
+        );
     }
-    if let Some(path) = safetensors_path {
-        benchmark_safetensors(path, tensor_name);
+}
+
+pub(crate) fn run_worker() {
+    let format = super::option_value("--format").expect("worker requires --format");
+    let path = super::option_value("--input").expect("worker requires --input");
+    let name = super::option_value("--tensor");
+    println!("{format}_process_id={}", std::process::id());
+    println!(
+        "{format}_tensor_selection={}",
+        if name.is_some() {
+            "explicit"
+        } else {
+            "format_default"
+        }
+    );
+    match format.as_str() {
+        "qif" => benchmark_qif(&path, name.as_deref()),
+        "safetensors" => benchmark_safetensors(&path, name.as_deref()),
+        "gguf" => benchmark_gguf(&path, name.as_deref()),
+        _ => panic!("unsupported benchmark format {format}"),
     }
-    if let Some(path) = gguf_path {
-        benchmark_gguf(path, tensor_name);
-    }
+}
+
+fn print_range_report(
+    prefix: &str,
+    name: &str,
+    dtype: &str,
+    bytes: &[u8],
+    timings: (u128, u128, u128),
+    before: ResourceSnapshot,
+    after: ResourceSnapshot,
+) {
+    println!("{prefix}_tensor={name}");
+    println!("{prefix}_dtype={dtype}");
+    println!("{prefix}_open_ns={}", timings.0);
+    println!("{prefix}_first_range_ns={}", timings.1);
+    println!("{prefix}_open_to_first_range_ns={}", timings.2);
+    println!("{prefix}_range_bytes={}", bytes.len());
+    println!(
+        "{prefix}_range_sha256={}",
+        quantinfer_format::sha256_hex(bytes)
+    );
+    print_resource_delta(prefix, before, after);
 }
 
 fn benchmark_qif(path: &str, requested_tensor: Option<&str>) {
+    println!("qif_open_strategy=file_backed_control");
     let before = resources();
-    let started = Instant::now();
+    let total_started = Instant::now();
     let mut reader = QifFileReader::open(path).expect("QIF file should open");
-    let open_ns = started.elapsed().as_nanos();
+    let open_ns = total_started.elapsed().as_nanos();
     let name = requested_tensor
         .map(str::to_owned)
         .unwrap_or_else(|| reader.tensors()[0].name.clone());
-    let info = reader.tensor_info(&name).expect("QIF tensor should exist");
-    let length = usize::try_from(info.raw_length).expect("QIF tensor length should fit usize");
+    let info = reader
+        .tensor_info(&name)
+        .expect("QIF tensor should exist")
+        .clone();
+    let length = usize::try_from(info.raw_length).expect("QIF tensor size fits usize");
     let started = Instant::now();
-    black_box(
-        reader
-            .read_range(&name, 0..length.min(4096))
-            .expect("QIF range should read"),
-    );
+    let bytes = reader
+        .read_range(&name, 0..length.min(4096))
+        .expect("QIF range should read");
+    black_box(&bytes);
     let range_ns = started.elapsed().as_nanos();
+    let total_ns = total_started.elapsed().as_nanos();
+    let after = resources();
+    let dtype = format!(
+        "{:?}",
+        reader
+            .manifest()
+            .tensors
+            .iter()
+            .find(|tensor| tensor.name == name)
+            .unwrap()
+            .descriptor
+            .dtype
+    );
+    print_range_report(
+        "qif",
+        &name,
+        &dtype,
+        &bytes,
+        (open_ns, range_ns, total_ns),
+        before,
+        after,
+    );
+    println!("qif_tensor_raw_bytes={}", info.raw_length);
+    println!("qif_physical_encoding_id={}", info.physical_encoding);
+    println!("qif_codec_id={}", info.codec);
+    println!("qif_layout_id={}", info.layout);
+    println!(
+        "qif_artifact_bytes={}",
+        fs::metadata(path).expect("QIF file should stat").len()
+    );
+    println!("qif_verify_supported=1");
+    let verify_before = resources();
     let started = Instant::now();
     reader.verify().expect("QIF verification should pass");
     let verify_ns = started.elapsed().as_nanos();
-    let after = resources();
-    let bytes = fs::metadata(path).expect("QIF file should stat").len();
-    println!("qif_tensor={name}");
-    println!("qif_open_ns={open_ns}");
-    println!("qif_first_range_ns={range_ns}");
+    let verify_after = resources();
     println!("qif_full_verify_ns={verify_ns}");
-    println!("qif_artifact_bytes={bytes}");
-    print_resource_delta("qif", before, after);
+    print_resource_delta("qif_verify", verify_before, verify_after);
 }
 
 fn benchmark_safetensors(path: &str, requested_tensor: Option<&str>) {
+    println!("safetensors_open_strategy=file_backed_control");
     let before = resources();
-    let started = Instant::now();
+    let total_started = Instant::now();
     let reader = SafeTensorFileReader::open(path).expect("SafeTensors file should open");
-    let open_ns = started.elapsed().as_nanos();
+    let open_ns = total_started.elapsed().as_nanos();
     let name = requested_tensor.map(str::to_owned).unwrap_or_else(|| {
         reader
             .tensors()
@@ -133,76 +226,86 @@ fn benchmark_safetensors(path: &str, requested_tensor: Option<&str>) {
             .expect("tensor exists")
             .clone()
     });
-    let info = reader
-        .tensors()
-        .get(&name)
-        .expect("SafeTensors tensor should exist");
-    let file_len = fs::metadata(path)
-        .expect("SafeTensors file should stat")
-        .len();
-    let mut file = File::open(path).expect("SafeTensors file should open for range");
-    let header_size = read_u64(&mut file).expect("SafeTensors header should read") as usize;
-    let start = 8usize + header_size + info.data_offsets.0;
-    let length = (info.data_offsets.1 - info.data_offsets.0).min(4096);
-    file.seek(SeekFrom::Start(start as u64))
-        .expect("SafeTensors range should seek");
+    let info = &reader.tensors()[&name];
+    let length = info.data_offsets.1 - info.data_offsets.0;
     let started = Instant::now();
-    let mut bytes = vec![0_u8; length];
-    file.read_exact(&mut bytes)
+    let bytes = reader
+        .read_range(&name, 0..length.min(4096))
         .expect("SafeTensors range should read");
-    black_box(bytes);
+    black_box(&bytes);
     let range_ns = started.elapsed().as_nanos();
+    let total_ns = total_started.elapsed().as_nanos();
     let after = resources();
-    println!("safetensors_tensor={name}");
-    println!("safetensors_open_ns={open_ns}");
-    println!("safetensors_first_range_ns={range_ns}");
-    println!("safetensors_artifact_bytes={file_len}");
+    print_range_report(
+        "safetensors",
+        &name,
+        &format!("{:?}", info.dtype),
+        &bytes,
+        (open_ns, range_ns, total_ns),
+        before,
+        after,
+    );
+    println!("safetensors_tensor_raw_bytes={length}");
+    println!(
+        "safetensors_artifact_bytes={}",
+        fs::metadata(path)
+            .expect("SafeTensors file should stat")
+            .len()
+    );
     println!("safetensors_verify_supported=0");
-    print_resource_delta("safetensors", before, after);
 }
 
 fn benchmark_gguf(path: &str, requested_tensor: Option<&str>) {
+    println!("gguf_open_strategy=eager_file");
     let before = resources();
+    let total_started = Instant::now();
     let file_bytes = fs::read(path).expect("GGUF file should read");
-    let started = Instant::now();
     let reader = GgufReader::open(file_bytes).expect("GGUF file should open");
-    let open_ns = started.elapsed().as_nanos();
+    let open_ns = total_started.elapsed().as_nanos();
     let name = requested_tensor
         .map(str::to_owned)
         .unwrap_or_else(|| reader.tensors()[0].name.clone());
+    let info = reader.tensor_info(&name).expect("GGUF tensor should exist");
     let started = Instant::now();
-    let bytes = reader.tensor_bytes(&name).expect("GGUF tensor should read");
-    black_box(&bytes[..bytes.len().min(4096)]);
+    let payload = reader.tensor_bytes(&name).expect("GGUF tensor should read");
+    let bytes = payload[..payload.len().min(4096)].to_vec();
+    black_box(&bytes);
     let range_ns = started.elapsed().as_nanos();
+    let total_ns = total_started.elapsed().as_nanos();
     let after = resources();
-    println!("gguf_tensor={name}");
-    println!("gguf_open_ns={open_ns}");
-    println!("gguf_first_range_ns={range_ns}");
+    print_range_report(
+        "gguf",
+        &name,
+        &format!("{:?}", info.dtype),
+        &bytes,
+        (open_ns, range_ns, total_ns),
+        before,
+        after,
+    );
+    println!("gguf_tensor_raw_bytes={}", info.size);
     println!(
         "gguf_artifact_bytes={}",
         fs::metadata(path).expect("GGUF file should stat").len()
     );
     println!("gguf_verify_supported=0");
-    print_resource_delta("gguf", before, after);
-}
-
-fn read_u64(file: &mut File) -> std::io::Result<u64> {
-    let mut bytes = [0_u8; 8];
-    file.read_exact(&mut bytes)?;
-    Ok(u64::from_le_bytes(bytes))
 }
 
 fn resources() -> ResourceSnapshot {
     #[cfg(target_os = "linux")]
     {
-        let rss_kb = fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|text| {
-                text.lines()
-                    .find(|line| line.starts_with("VmRSS:"))
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .and_then(|value| value.parse().ok())
-            });
+        let status = fs::read_to_string("/proc/self/status").ok();
+        let memory = |key: &str| {
+            status
+                .as_ref()?
+                .lines()
+                .find(|line| line.starts_with(key))?
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()
+        };
+        let rss_kb = memory("VmRSS:");
+        let peak_rss_kb = memory("VmHWM:");
         let faults = fs::read_to_string("/proc/self/stat")
             .ok()
             .and_then(|text| text.rsplit_once(") ").map(|(_, rest)| rest.to_owned()))
@@ -212,6 +315,7 @@ fn resources() -> ResourceSnapshot {
             });
         return ResourceSnapshot {
             rss_kb,
+            peak_rss_kb,
             minor_faults: faults.map(|value| value.0),
             major_faults: faults.map(|value| value.1),
         };
@@ -221,8 +325,14 @@ fn resources() -> ResourceSnapshot {
 }
 
 fn print_resource_delta(prefix: &str, before: ResourceSnapshot, after: ResourceSnapshot) {
+    if let Some(peak) = after.peak_rss_kb {
+        println!("{prefix}_peak_rss_kb={peak}");
+    }
     if let (Some(start), Some(end)) = (before.rss_kb, after.rss_kb) {
-        println!("{prefix}_rss_kb_delta={}", end.saturating_sub(start));
+        println!(
+            "{prefix}_rss_kb_delta={}",
+            i128::from(end) - i128::from(start)
+        );
     }
     if let (Some(start), Some(end)) = (before.minor_faults, after.minor_faults) {
         println!(

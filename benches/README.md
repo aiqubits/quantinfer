@@ -52,3 +52,44 @@ checks memory and publishes the timings.
 
 The SmolLM2 quantized CLI tests also verify termination by setting the EOS ID
 to the first expected token for the fixed prompt.
+
+## QIF / SafeTensors / GGUF storage measurements
+
+```sh
+cargo run --release --locked -p quantinfer-xtask -- qif-bench \
+  --qif /path/to/model.qif --gguf /path/to/model.gguf \
+  --safetensors /path/to/model.safetensors \
+  --qif-tensor token_embd.weight --gguf-tensor token_embd.weight \
+  --safetensors-tensor model.embed_tokens.weight
+```
+
+Each artifact runs in a fresh child process so prior format allocations and
+allocator state do not contaminate its RSS/page-fault measurements. The output
+records process IDs, selected names, dtypes, raw tensor sizes, range byte counts
+and hashes. Select corresponding tensors/variants explicitly; format-default
+ordering is not a semantic mapping. Layout or quantization changes can make
+raw range hashes differ even for related model weights.
+The pinned SmolLM2 source checkpoint and converted artifacts can also have
+different storage precision. Its CI selects the corresponding embedding by
+name and requires identical QIF/GGUF range bytes; the original SafeTensors
+dtype and range hash are reported, not assumed equal to converted F32 bytes.
+
+`open_ns` includes all file reads performed while opening the reader, including
+the current GGUF reader's eager full-file read. QIF and SafeTensors use their
+file-backed control readers. All first-range operations materialize at most
+4096 bytes; SafeTensors range timing includes opening/seeking its payload file.
+`open_to_first_range_ns` measures the full interval including tensor lookup.
+The different reader strategies are printed and should be considered when
+interpreting individual phase timings.
+
+QIF full verification is measured separately from open/range, including its own
+resource deltas. SafeTensors and GGUF report checksum verification unsupported.
+On Linux, RSS/page-fault counters come from procfs; `peak_rss_kb` is the process
+high-water mark at the end of a phase, not an independently reset phase peak.
+RSS deltas may be negative. Other platforms may omit these counters.
+
+The OS file cache is **uncontrolled**. Process isolation does not create cold
+storage caches or remove system load. These measurements compare the supplied
+artifacts and current reader implementations; they do not establish an
+intrinsic format speed advantage. Without paths the command remains an
+in-memory synthetic smoke measurement, labelled `synthetic_memory`.

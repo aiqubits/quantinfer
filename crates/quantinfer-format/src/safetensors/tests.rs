@@ -14,6 +14,45 @@ fn reads_f32_tensor_and_metadata() {
 }
 
 #[test]
+fn file_ranges_are_bounded_and_preserve_numeric_decoders() {
+    let header=br#"{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]},"signed":{"dtype":"I32","shape":[1],"data_offsets":[4,8]},"wide":{"dtype":"U64","shape":[1],"data_offsets":[8,16]}}"#;
+    let mut bytes = (header.len() as u64).to_le_bytes().to_vec();
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&0x12345678u32.to_le_bytes());
+    bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+    let path = std::env::temp_dir().join(format!(
+        "quantinfer-safe-range-{}.safetensors",
+        std::process::id()
+    ));
+    std::fs::write(&path, &bytes).unwrap();
+    let reader = super::SafeTensorFileReader::open(&path).unwrap();
+    assert_eq!(reader.tensor_f32("weight").unwrap(), [1.0]);
+    assert_eq!(reader.tensor_u32("signed").unwrap(), [0x12345678]);
+    assert_eq!(reader.tensor_u64("wide").unwrap(), [u64::MAX]);
+    assert_eq!(reader.read_range("signed", 1..3).unwrap(), [0x56, 0x34]);
+    assert!(reader.read_range("weight", 4..4).unwrap().is_empty());
+    assert!(reader.read_range("weight", 0..usize::MAX).is_err());
+    assert!(reader
+        .read_range("weight", std::ops::Range { start: 3, end: 2 })
+        .is_err());
+    assert!(reader.read_range("missing", 0..0).is_err());
+    // A missing tail after open must not affect a read of the first tensor.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_len((8 + header.len() + 4) as u64)
+        .unwrap();
+    assert_eq!(
+        reader.read_range("weight", 0..4).unwrap(),
+        1.0f32.to_le_bytes()
+    );
+    assert!(reader.tensor_u64("wide").is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn rejects_non_finite_floating_tensors() {
     let header = br#"{"weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}"#;
     let mut bytes = Vec::new();
