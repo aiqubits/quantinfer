@@ -2265,6 +2265,7 @@ dependencies = [
  "quantinfer-model",
  "quantinfer-quant",
  "quantinfer-tokenizer",
+ "semver",
  "serde",
  "serde_json",
 ]

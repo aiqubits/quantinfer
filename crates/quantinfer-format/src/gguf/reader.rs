@@ -46,6 +46,57 @@ impl PackedTensorReader {
         }
     }
 
+    /// Check each declared tensor against this artifact's dtype and model shape view.
+    /// Runtime feature/version policy is checked by the runtime separately.
+    pub fn validate_manifest(&self, manifest: &ModelManifest) -> Result<()> {
+        use quantinfer_core::DType;
+        manifest.validate()?;
+        let ggml_layout = self.uses_ggml_output_rows()?;
+        for tensor in &manifest.tensors {
+            let info = self.tensor_info(&tensor.name).map_err(|_| {
+                FormatError::Invalid(format!(
+                    "model manifest tensor {} is missing from the tensor file",
+                    tensor.name
+                ))
+            })?;
+            let expected_dtype = match tensor.descriptor.dtype {
+                DType::F32 => GgmlType::F32,
+                DType::F16 => GgmlType::F16,
+                DType::BF16 => GgmlType::BF16,
+                DType::Q8_0 => GgmlType::Q8_0,
+                DType::Q4_0 => GgmlType::Q4_0,
+                DType::Q4_K => GgmlType::Q4_K,
+                DType::Q5_K => GgmlType::Q5_K,
+                DType::Q6_K => GgmlType::Q6_K,
+            };
+            if info.dtype != expected_dtype {
+                return Err(FormatError::Invalid(format!(
+                    "model manifest tensor {} declares {:?}, but the tensor file stores {:?}",
+                    tensor.name, expected_dtype, info.dtype
+                )));
+            }
+            let declared_shape = tensor.descriptor.logical_shape.dims();
+            let shape_matches = if ggml_layout
+                && (self.embedded_manifest().is_some() || tensor.name == "token_embd.weight")
+            {
+                if declared_shape.len() == 2 {
+                    info.shape.as_slice() == [declared_shape[1], declared_shape[0]]
+                } else {
+                    info.shape.as_slice() == declared_shape
+                }
+            } else {
+                info.shape.as_slice() == declared_shape
+            };
+            if !shape_matches {
+                return Err(FormatError::Invalid(format!(
+                    "model manifest tensor {} declares shape {:?}, but the tensor file stores {:?}",
+                    tensor.name, declared_shape, info.shape
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn embedded_manifest(&self) -> Option<&ModelManifest> {
         self.embedded_manifest.as_ref()
     }

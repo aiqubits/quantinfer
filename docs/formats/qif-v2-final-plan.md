@@ -151,6 +151,16 @@ manifest MUST：
 
 manifest MUST NOT 保存任意可执行对象。
 
+格式库允许检查和转存带有未来运行时要求的 artifact；执行模型前必须单独检查
+compatibility。`minimum_quantinfer_version` 指 QuantInfer runtime 的 SemVer，
+不是 QIF wire version。当前 runtime 检查最低版本、已登记的 operation 名称与
+所选 provider 的能力；数值 kernel requirement 指定时必须大于零。
+`required_features` 和 tensor 的 `backend_requirements` 尚无已实现的字符串
+registry，非空必需列表会被明确拒绝，不会按可忽略 hint 处理。
+operation 名称固定为 `matmul`、`quantized_matmul`、`attention`、`rms_norm`、
+`activation`、`rope`、`embedding`；未知名称拒绝执行。版本、feature 和 provider
+检查不能替代格式完整性验证。
+
 ### 4.2 Metadata
 
 metadata 使用 QuantInfer 定义的 QMB（QIF Metadata Binary）typed map，而不是
@@ -300,7 +310,8 @@ v2.0 的 section 和 chunk offset MUST 是 4096 字节的倍数。默认 alignme
 是 2 的幂，且不小于 4096 字节。
 
 无压缩 chunk MUST 可以通过 offset/length 直接读取；压缩 chunk MUST 可以独立解压和
-独立校验，禁止使用跨 chunk 的连续压缩流。mmap 只适用于无压缩 chunk。
+独立校验，禁止使用跨 chunk 的连续压缩流。mmap 的零拷贝 tensor 视图只适用于
+无压缩 chunk；映射压缩文件仍需要为解压后的数据分配空间。
 物理 chunk 的 `raw_length` 和 `stored_length` MUST 大于零；空 chunk 不允许出现在
 index 中，避免不同读取与验证路径对空压缩流产生不同解释。
 

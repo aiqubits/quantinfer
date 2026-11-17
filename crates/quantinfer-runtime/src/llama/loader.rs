@@ -93,6 +93,9 @@ pub fn uses_ggml_layout(reader: &GgufReader) -> Result<bool> {
 }
 
 fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfig> {
+    if let Some(manifest) = reader.embedded_manifest() {
+        crate::validate_manifest_for_runtime(manifest)?;
+    }
     let embedding_name = dense_storage_name(TensorRole::TokenEmbedding, None);
     let embedding = reader.tensor_info(&embedding_name)?;
     let (hidden_axis, vocab_axis) = if ggml_layout { (0, 1) } else { (1, 0) };

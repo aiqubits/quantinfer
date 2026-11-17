@@ -33,6 +33,7 @@ fn resolve_backend_impl(
     manifest: Option<&ModelManifest>,
     profile: Option<&InferenceProfile>,
 ) -> Result<CpuScalar> {
+    let manifest = manifest.or(reader.embedded_manifest());
     let resolver = ExecutionResolver::with_default_cpu();
     let mut request = ExecutionRequest::cpu(DType::F32, QuantizationScheme::None);
     let _architecture = model_architecture(reader, manifest)?;
@@ -40,48 +41,7 @@ fn resolve_backend_impl(
     request.tensor_layout = "row_major".to_owned();
     request.operation = Some(Operation::Matmul);
     if let Some(manifest) = manifest {
-        for tensor in &manifest.tensors {
-            let info = reader.tensor_info(&tensor.name).map_err(|_| {
-                RuntimeError::InvalidInput(format!(
-                    "model manifest tensor {} is missing from the tensor file",
-                    tensor.name
-                ))
-            })?;
-            let expected_dtype = match tensor.descriptor.dtype {
-                DType::F32 => GgmlType::F32,
-                DType::F16 => GgmlType::F16,
-                DType::BF16 => GgmlType::BF16,
-                DType::Q8_0 => GgmlType::Q8_0,
-                DType::Q4_0 => GgmlType::Q4_0,
-                DType::Q4_K => GgmlType::Q4_K,
-                DType::Q5_K => GgmlType::Q5_K,
-                DType::Q6_K => GgmlType::Q6_K,
-            };
-            if info.dtype != expected_dtype {
-                return Err(RuntimeError::InvalidInput(format!(
-                    "model manifest tensor {} declares {:?}, but the tensor file stores {:?}",
-                    tensor.name, expected_dtype, info.dtype
-                )));
-            }
-            let declared_shape = tensor.descriptor.logical_shape.dims();
-            let shape_matches = if ggml_layout
-                && (reader.embedded_manifest().is_some() || tensor.name == "token_embd.weight")
-            {
-                if declared_shape.len() == 2 {
-                    info.shape.as_slice() == [declared_shape[1], declared_shape[0]]
-                } else {
-                    info.shape.as_slice() == declared_shape
-                }
-            } else {
-                info.shape.as_slice() == declared_shape
-            };
-            if !shape_matches {
-                return Err(RuntimeError::InvalidInput(format!(
-                    "model manifest tensor {} declares shape {:?}, but the tensor file stores {:?}",
-                    tensor.name, declared_shape, info.shape
-                )));
-            }
-        }
+        reader.validate_manifest(manifest)?;
         request.head_dimension = manifest.kernel_requirements.head_dimension;
         request.maximum_sequence_length = manifest.kernel_requirements.maximum_sequence_length;
         request.alignment = manifest.kernel_requirements.alignment;
@@ -96,6 +56,31 @@ fn resolve_backend_impl(
         }
     }
     let mut plan = resolver.resolve(&request)?;
+    if let Some(manifest) = manifest {
+        for operation in quantinfer_runtime::required_manifest_operations(manifest)? {
+            if operation == Operation::QuantizedMatmul {
+                if !reader.tensors().iter().any(|tensor| {
+                    !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
+                }) {
+                    return Err(RuntimeError::InvalidInput(
+                        "required quantized_matmul has no quantized tensor dtype to resolve"
+                            .to_owned(),
+                    ));
+                }
+                // Concrete quantized dtypes are resolved in the tensor loop below.
+                continue;
+            }
+            let required = resolver.resolve(&ExecutionRequest {
+                operation: Some(operation),
+                ..request.clone()
+            })?;
+            if required.provider_name != plan.provider_name {
+                return Err(RuntimeError::InvalidInput(
+                    "required operation needs an incompatible provider".to_owned(),
+                ));
+            }
+        }
+    }
     let mixed = manifest.is_some_and(|manifest| manifest.quantization == QuantizationScheme::Mixed);
     let mut mixed_plans = if mixed {
         vec![plan.clone()]
@@ -324,6 +309,49 @@ mod tests {
         let mut manifest = ModelManifest::new("fixture", "qwen3");
         manifest.quantization = QuantizationScheme::Q4_0;
         assert!(resolve_backend(&reader, Some(&manifest)).is_err());
+    }
+
+    #[test]
+    fn cpu_resolver_rejects_unsupported_mandatory_manifest_requirements() {
+        let mut writer = GgufWriter::new();
+        writer
+            .add_f32_tensor("weight", vec![2], &[0.0, 1.0])
+            .unwrap();
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let mut manifest = ModelManifest::new("requirements", "llama");
+        manifest.kernel_requirements.operations = [
+            "matmul",
+            "attention",
+            "rms_norm",
+            "activation",
+            "rope",
+            "embedding",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        resolve_backend(&reader, Some(&manifest)).unwrap();
+        for field in 0..4 {
+            let mut invalid = manifest.clone();
+            match field {
+                0 => invalid.compatibility.minimum_quantinfer_version = Some("999.0.0".into()),
+                1 => invalid
+                    .compatibility
+                    .required_features
+                    .push("future-feature".into()),
+                2 => invalid
+                    .kernel_requirements
+                    .operations
+                    .push("future-operation".into()),
+                _ => invalid
+                    .kernel_requirements
+                    .operations
+                    .push("quantized_matmul".into()),
+            }
+            assert!(
+                resolve_backend(&reader, Some(&invalid)).is_err(),
+                "field {field}"
+            );
+        }
     }
 
     #[test]

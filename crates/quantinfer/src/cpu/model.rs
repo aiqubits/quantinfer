@@ -162,7 +162,7 @@ pub fn model_architecture<'a>(
     manifest: Option<&'a ModelManifest>,
 ) -> Result<&'a str> {
     if let Some(manifest) = manifest {
-        manifest.validate().map_err(|error| {
+        quantinfer_runtime::validate_manifest_for_runtime(manifest).map_err(|error| {
             RuntimeError::InvalidInput(format!("invalid model manifest: {error}"))
         })?;
     }

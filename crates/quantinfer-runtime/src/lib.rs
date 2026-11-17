@@ -16,6 +16,7 @@ mod model;
 pub mod profile;
 pub mod provider;
 pub mod qwen3;
+mod requirements;
 pub mod scheduler;
 pub mod session;
 mod storage;
@@ -36,6 +37,7 @@ pub(crate) use model::{lm_head_source, tensor_source};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
 pub use qwen3::{Qwen3LayerWeights, Qwen3Model};
+pub use requirements::{required_manifest_operations, validate_manifest_for_runtime};
 pub use scheduler::{DecodeEvent, DecodeScheduler};
 pub use session::{DecodeSession, DecodeStopReason};
 pub use storage::{
