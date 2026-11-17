@@ -5,11 +5,13 @@
 //! chunk table so a file-backed reader can locate tensors without scanning
 //! payload bytes.
 
+mod chunk;
 mod codec;
 mod encoding;
 mod metadata;
 mod mmap;
 mod package;
+mod payload;
 mod reader;
 mod reshard;
 mod signature;
@@ -60,6 +62,26 @@ pub(crate) fn canonicalize_manifest_layouts(manifest: &mut ModelManifest) {
 
 pub(crate) fn invalid(message: impl std::fmt::Display) -> FormatError {
     FormatError::Invalid(format!("QIF {message}"))
+}
+
+pub(super) fn bytes_with_capacity(length: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|error| invalid(format!("cannot allocate {length} bytes: {error}")))?;
+    Ok(bytes)
+}
+
+pub(super) fn zeroed_bytes(length: usize) -> Result<Vec<u8>> {
+    let mut bytes = bytes_with_capacity(length)?;
+    bytes.resize(length, 0);
+    Ok(bytes)
+}
+
+pub(super) fn copy_bytes(source: &[u8]) -> Result<Vec<u8>> {
+    let mut bytes = bytes_with_capacity(source.len())?;
+    bytes.extend_from_slice(source);
+    Ok(bytes)
 }
 
 /// Reject excessively nested JSON before serde recursively builds a value.

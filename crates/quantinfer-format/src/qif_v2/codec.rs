@@ -3,9 +3,23 @@ use std::io::{Cursor, Read};
 use super::{invalid, CODEC_LZ4, CODEC_NONE, CODEC_ZSTD};
 use crate::Result;
 
+pub(super) const DEFAULT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const MAX_DECODED_CHUNK_BYTES: usize = 128 * 1024 * 1024;
+pub(super) const MAX_STORED_CHUNK_BYTES: usize = MAX_DECODED_CHUNK_BYTES + 1024 * 1024;
+
+pub(super) fn validate_lengths(codec: u32, raw_length: u64, stored_length: u64) -> Result<()> {
+    if codec != CODEC_NONE
+        && (raw_length > MAX_DECODED_CHUNK_BYTES as u64
+            || stored_length > MAX_STORED_CHUNK_BYTES as u64)
+    {
+        return Err(invalid("compressed chunk exceeds reader resource limits"));
+    }
+    Ok(())
+}
+
 pub(crate) fn compress(codec: u32, bytes: &[u8]) -> Result<Vec<u8>> {
     match codec {
-        CODEC_NONE => Ok(bytes.to_vec()),
+        CODEC_NONE => super::copy_bytes(bytes),
         CODEC_ZSTD => zstd::stream::encode_all(Cursor::new(bytes), 3)
             .map_err(|error| invalid(format!("zstd compression failed: {error}"))),
         CODEC_LZ4 => Ok(lz4_flex::compress_prepend_size(bytes)),
@@ -14,12 +28,13 @@ pub(crate) fn compress(codec: u32, bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub(crate) fn decompress(codec: u32, bytes: &[u8], expected_length: usize) -> Result<Vec<u8>> {
+    validate_lengths(codec, expected_length as u64, bytes.len() as u64)?;
     let output = match codec {
         CODEC_NONE => {
             if bytes.len() != expected_length {
                 return Err(invalid("uncompressed chunk length mismatch"));
             }
-            bytes.to_vec()
+            super::copy_bytes(bytes)?
         }
         CODEC_ZSTD => {
             let mut decoder = zstd::stream::read::Decoder::new(Cursor::new(bytes))

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{ModelManifest, TensorManifest};
 
+mod resources;
 mod validation;
 
 fn sample_manifest() -> ModelManifest {

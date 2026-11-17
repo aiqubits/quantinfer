@@ -267,7 +267,7 @@ impl ModelSource {
                         "cannot verify model package tensor file: {error}"
                     ))
                 })?;
-                GgufReader::open_artifact(bytes).map_err(|error| {
+                GgufReader::open_artifact_with_memory_budget(bytes, budget).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot parse packaged model: {error}"))
                 })
             }
@@ -276,7 +276,7 @@ impl ModelSource {
                 let bytes = read_file_nofollow(path).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
                 })?;
-                GgufReader::open_artifact(bytes).map_err(|error| {
+                GgufReader::open_artifact_with_memory_budget(bytes, budget).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot parse model: {error}"))
                 })
             }

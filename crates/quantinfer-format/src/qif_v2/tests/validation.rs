@@ -13,11 +13,11 @@ use super::super::{
 };
 use super::sample_manifest;
 
-fn u64_at(bytes: &[u8], offset: usize) -> usize {
+pub(super) fn u64_at(bytes: &[u8], offset: usize) -> usize {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize
 }
 
-fn refresh_root(bytes: &mut [u8]) {
+pub(super) fn refresh_root(bytes: &mut [u8]) {
     let mut hash = Sha256::new();
     for offset in [24, 40, 56] {
         let start = u64_at(bytes, offset);

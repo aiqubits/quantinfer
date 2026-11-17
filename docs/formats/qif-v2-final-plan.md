@@ -317,8 +317,19 @@ QIF2-SINGLE/QIF2-PACKAGE v2.0 core codec：
 每个压缩 chunk 独立编码、独立解码和独立校验；reader 不使用跨 chunk 连续压缩流。
 内部 `Reader::tensor_data` 与 file/package reader 会按需解压当前 tensor 数据。
 解码输出 MUST 受 index 的 `raw_length` 约束，禁止先无限展开再检查长度。
-当前 zstd reader 限制解码 window 不超过 128 MiB；超出该资源 profile 的 frame
-返回错误。LZ4 的长度前缀 MUST 与 `raw_length` 相同，并在输出分配前检查。
+当前实现的压缩资源 profile 限制单 chunk 的 `raw_length` 不超过 128 MiB、
+`stored_length` 不超过 129 MiB，并限制 zstd 解码 window 不超过 128 MiB；
+超限输入在分配压缩块或解码输出之前返回错误。这是当前 reader 的资源限制，
+不改变 wire 中的长度字段。writer 默认将压缩 tensor 切分为不超过 4 MiB 的
+raw chunk；PACKAGE 还受 shard 大小与压缩后大小约束。无压缩 chunk 不受上述
+压缩块大小上限限制。LZ4 的长度前缀 MUST 与 `raw_length` 相同，并在输出分配前检查。
+
+文件和 PACKAGE 的 `verify()` 增量计算 tensor hash 并校验有限数值：无压缩块
+使用固定大小缓冲区，压缩块逐块解码，alias 不重复物化或校验相同物理 payload。
+这不表示任意资源配置都能加载整个模型；默认 packed loader 仍需物化压缩权重。
+带内存预算的默认模型入口会在解压前检查输入大小加物理权重物化大小，alias
+只计一次；该检查是最低存储需求的预检，不包括 allocator、解码 workspace 或
+推理状态的全部峰值开销。
 
 ### 6.3 量化编码
 

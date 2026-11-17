@@ -8,10 +8,12 @@ use sha2::{Digest, Sha256};
 
 use crate::{DuplicateFreeJson, FormatError, ModelManifest, Result};
 
+use super::chunk::Chunk as PackageChunk;
 use super::codec::{compress, decompress};
 use super::metadata::MetadataValue;
+use super::payload::{validate_payload, PayloadVerifier};
 use super::reader::{read_shape_ref, read_string_ref, validate_tensor_descriptor, TensorInfo};
-use super::writer::{validate_payload, Codec};
+use super::writer::Codec;
 use super::{
     align, canonicalize_manifest_layouts, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
     CODEC_ZSTD, HASH_SIZE, INDEX_MAGIC, INDEX_VERSION, MAX_CHUNKS, MAX_INDEX_BYTES, MAX_RANK,
@@ -150,7 +152,7 @@ fn write_package_contents<'a>(
         }
         validate_payload(tensor.descriptor.dtype, bytes, &tensor.name)?;
         tensor.checksum_sha256 = Some(crate::sha256_hex(bytes));
-        payloads.push(bytes.to_vec());
+        payloads.push(bytes);
     }
 
     let mut strings = Vec::new();
@@ -232,7 +234,12 @@ fn write_package_contents<'a>(
                     return Err(invalid("package chunk count exceeds the limit"));
                 }
                 let remaining = payload.len() - raw_offset;
-                let mut take = remaining.min(max_shard_bytes);
+                let raw_limit = if codec == CODEC_NONE {
+                    usize::MAX
+                } else {
+                    super::codec::DEFAULT_CHUNK_BYTES
+                };
+                let mut take = remaining.min(max_shard_bytes).min(raw_limit);
                 let mut stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
                 while stored.len() > max_shard_bytes {
                     if take == 1 {
@@ -364,17 +371,6 @@ pub struct PackageReader {
     chunks: Vec<PackageChunk>,
     shards: BTreeMap<String, File>,
     entries: BTreeMap<String, ShardManifest>,
-}
-
-#[derive(Clone)]
-struct PackageChunk {
-    shard_id: u32,
-    codec: u32,
-    raw_offset: u64,
-    raw_length: u64,
-    stored_offset: u64,
-    stored_length: u64,
-    checksum_sha256: [u8; HASH_SIZE],
 }
 
 impl PackageReader {
@@ -582,7 +578,7 @@ impl PackageReader {
         if range.start > range.end || range.end > raw_length {
             return Err(invalid("tensor range exceeds the stored tensor"));
         }
-        let mut output = vec![0_u8; range.end - range.start];
+        let mut output = super::zeroed_bytes(range.end - range.start)?;
         for index in tensor.chunk_start..tensor.chunk_start + tensor.chunk_count {
             let chunk = &self.chunks[index];
             let start = usize::try_from(chunk.raw_offset)
@@ -616,11 +612,10 @@ impl PackageReader {
                 )?;
                 continue;
             }
-            let mut stored = vec![
-                0_u8;
+            let mut stored = super::zeroed_bytes(
                 usize::try_from(chunk.stored_length)
-                    .map_err(|_| invalid("chunk length overflows usize"))?
-            ];
+                    .map_err(|_| invalid("chunk length overflows usize"))?,
+            )?;
             read_at(file, chunk.stored_offset, &mut stored)?;
             let decoded = decompress(chunk.codec, &stored, end - start)?;
             let source_start = copy_start - start;
@@ -632,34 +627,20 @@ impl PackageReader {
         Ok(output)
     }
     pub fn verify(&mut self) -> Result<()> {
-        for tensor in self.tensors.clone() {
-            let bytes = self.read_range(
-                &tensor.name,
-                0..usize::try_from(tensor.raw_length)
-                    .map_err(|_| invalid("tensor length overflows usize"))?,
-            )?;
-            validate_payload(dtype_from_id(tensor.dtype)?, &bytes, &tensor.name)?;
-            let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
-            if digest != tensor.checksum_sha256 {
-                return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
+        for tensor in &self.tensors {
+            if tensor.alias_of.is_some() {
+                continue;
             }
-        }
-        for chunk in self.chunks.clone() {
-            let path = format!("shard-{:05}.qifd", chunk.shard_id);
-            let file = self
-                .shards
-                .get_mut(&path)
-                .ok_or_else(|| invalid("package shard is missing"))?;
-            let mut stored = vec![
-                0_u8;
-                usize::try_from(chunk.stored_length)
-                    .map_err(|_| invalid("chunk length overflows usize"))?
-            ];
-            read_at(file, chunk.stored_offset, &mut stored)?;
-            let digest: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
-            if digest != chunk.checksum_sha256 {
-                return Err(invalid("package chunk checksum mismatch"));
+            let mut verifier = PayloadVerifier::new(dtype_from_id(tensor.dtype)?, &tensor.name);
+            for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
+                let path = format!("shard-{:05}.qifd", chunk.shard_id);
+                let file = self
+                    .shards
+                    .get_mut(&path)
+                    .ok_or_else(|| invalid("package shard is missing"))?;
+                chunk.verify_file(file, 0, &mut verifier)?;
             }
+            verifier.finish(tensor.raw_length, &tensor.checksum_sha256)?;
         }
         for (path, entry) in &self.entries {
             let file = self
@@ -750,6 +731,7 @@ fn parse_package_index(
         if chunk.raw_length == 0 || chunk.stored_length == 0 {
             return Err(invalid("empty physical chunks are not allowed"));
         }
+        super::codec::validate_lengths(chunk.codec, chunk.raw_length, chunk.stored_length)?;
         if !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4)
             || chunk.raw_offset.checked_add(chunk.raw_length).is_none()
             || chunk
@@ -763,6 +745,11 @@ fn parse_package_index(
         chunks.push(chunk);
     }
     let mut tensors: Vec<TensorInfo> = Vec::with_capacity(tensor_count);
+    let by_name = manifest
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect::<BTreeMap<_, _>>();
     let mut names = BTreeSet::new();
     let mut referenced = vec![false; chunk_count];
     for index in 0..tensor_count {
@@ -772,7 +759,12 @@ fn parse_package_index(
             return Err(invalid("package tensor ids are not contiguous"));
         }
         let name = read_string_ref(bytes, strings_start, strings_len, u32_at(bytes, offset + 8))?;
-        if !names.insert(name.clone()) {
+        let manifest_tensor = by_name.get(name.as_str()).copied().ok_or_else(|| {
+            invalid(format!(
+                "package index tensor {tensor_id} is not in manifest"
+            ))
+        })?;
+        if !names.insert(manifest_tensor.name.as_str()) {
             return Err(invalid("duplicate package tensor name"));
         }
         let shape = read_shape_ref(bytes, shapes_start, shapes_len, u32_at(bytes, offset + 12))?;
@@ -819,11 +811,6 @@ fn parse_package_index(
             chunk_start,
             chunk_count: chunk_count_for_tensor,
         };
-        let manifest_tensor = manifest
-            .tensors
-            .iter()
-            .find(|candidate| candidate.name == tensor.name)
-            .ok_or_else(|| invalid("package index tensor is not in manifest"))?;
         validate_tensor_descriptor(&tensor, manifest_tensor)?;
         if let Some(alias) = tensor.alias_of {
             let target = tensors

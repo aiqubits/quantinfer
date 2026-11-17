@@ -33,6 +33,12 @@ jobs:
           python3 tests/conformance/qif_v2_cross_language.py --input "$RUNNER_TEMP/qif-v2-fixture.qif" \
             --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_v2_report" \
             --c-reader "$RUNNER_TEMP/qif-v2-c-reader"
+      - name: Verify QIF tensor, chunk and alias resource bounds
+        run: |
+          cargo build --locked -p quantinfer-format --example qif_verify --example qif_resource_fixture
+          python3 tests/conformance/qif_resource_bounds.py \
+            --generator "$GITHUB_WORKSPACE/target/debug/examples/qif_resource_fixture" \
+            --verifier "$GITHUB_WORKSPACE/target/debug/examples/qif_verify"
 
   qif-fuzz:
     runs-on: ubuntu-latest

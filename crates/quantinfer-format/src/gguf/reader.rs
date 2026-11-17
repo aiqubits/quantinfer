@@ -27,8 +27,20 @@ pub type GgufReader = PackedTensorReader;
 impl PackedTensorReader {
     /// Open GGUF or QIF based on its file magic.
     pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
+        Self::open_artifact_with_memory_budget(bytes, None)
+    }
+
+    /// Reject artifacts whose input plus required QIF materialized weights
+    /// exceed the budget before decoding. This is a storage lower-bound check,
+    /// not a bound on allocator overhead, decoder workspace or runtime state.
+    pub fn open_artifact_with_memory_budget(bytes: Vec<u8>, budget: Option<usize>) -> Result<Self> {
+        if budget.is_some_and(|limit| bytes.len() > limit) {
+            return Err(FormatError::Invalid(
+                "model input exceeds memory budget".to_owned(),
+            ));
+        }
         if qif_v2::has_magic(&bytes) {
-            qif_v2::open_packed(bytes)
+            qif_v2::open_packed(bytes, budget)
         } else {
             Self::open(bytes)
         }

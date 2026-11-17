@@ -310,7 +310,9 @@ fn read_value(cursor: &mut Cursor<'_>, depth: usize) -> Result<MetadataValue> {
             if count > (cursor.bytes.len() - cursor.offset) / 5 {
                 return Err(invalid("metadata array count exceeds remaining bytes"));
             }
-            let mut values = Vec::with_capacity(count);
+            // Nested declarations can overlap the same remaining input. Grow
+            // from decoded values instead of reserving every declared count.
+            let mut values = Vec::new();
             for _ in 0..count {
                 values.push(read_value(cursor, depth + 1)?);
             }

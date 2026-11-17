@@ -14,6 +14,7 @@ use crate::gguf::GgufReader;
 use crate::{GgmlType, GgufValue, ModelManifest, Result, TensorManifest};
 
 use super::metadata::MetadataValue;
+use super::payload::validate_payload;
 use super::{
     align, canonicalize_manifest_layouts, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT,
     CODEC_LZ4, CODEC_NONE, CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC,
@@ -135,7 +136,8 @@ pub fn write_qif_v2<'a>(
     write_qif_v2_with_codec(manifest, metadata, tensor_bytes, output, Codec::None)
 }
 
-/// Write a QIF artifact using one independently compressed chunk per tensor.
+/// Write a QIF artifact using independent compressed chunks of at most 4 MiB.
+/// Uncompressed tensors retain a single directly addressable chunk.
 /// The default `write_qif_v2` uses the uncompressed profile, whose reader can
 /// return borrowed tensor views.
 pub fn write_qif_v2_with_codec<'a>(
@@ -424,25 +426,49 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
             record
         } else {
             let chunk_start = chunks.len() / 72;
-            let stored = super::codec::compress(codec, payload)?;
-            let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
-            let chunk = encode_chunk(
-                0,
-                codec,
-                0,
-                payload.len(),
-                payload_offset,
-                stored.len(),
-                stored_hash,
-            )?;
-            chunks.extend_from_slice(&chunk);
+            let chunk_bytes = if codec == CODEC_NONE {
+                payload.len().max(1)
+            } else {
+                super::codec::DEFAULT_CHUNK_BYTES
+            };
+            let first_offset = payload_offset;
+            let mut raw_offset = 0usize;
+            let mut stored_length = 0usize;
+            for raw in payload.chunks(chunk_bytes) {
+                if chunks.len() / 72 >= MAX_CHUNKS {
+                    return Err(invalid("chunk count exceeds the limit"));
+                }
+                let stored = super::codec::compress(codec, raw)?;
+                let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
+                chunks.extend_from_slice(&encode_chunk(
+                    0,
+                    codec,
+                    raw_offset,
+                    raw.len(),
+                    payload_offset,
+                    stored.len(),
+                    stored_hash,
+                )?);
+                offsets.push(payload_offset);
+                stored_length = stored_length
+                    .checked_add(stored.len())
+                    .ok_or_else(|| invalid("stored tensor length overflows"))?;
+                payload_offset = align(
+                    payload_offset
+                        .checked_add(stored.len())
+                        .ok_or_else(|| invalid("payload offset overflows"))?,
+                )?;
+                stored_payloads.push(stored);
+                raw_offset += raw.len();
+            }
             let info = PhysicalTensor {
                 chunk_start: u32::try_from(chunk_start)
                     .map_err(|_| invalid("chunk index overflows u32"))?,
-                chunk_count: 1,
+                chunk_count: u32::try_from(chunks.len() / 72 - chunk_start)
+                    .map_err(|_| invalid("chunk count overflows u32"))?,
                 raw_length: payload.len(),
-                stored_length: stored.len(),
-                data_offset: payload_offset,
+                stored_length,
+                data_offset: first_offset,
                 hash,
                 codec,
                 dtype,
@@ -452,13 +478,6 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
             };
             physical.push(Some(info));
             dedup.entry(hash).or_default().push(index);
-            offsets.push(payload_offset);
-            stored_payloads.push(stored);
-            payload_offset = align(
-                payload_offset
-                    .checked_add(stored_payloads.last().unwrap().len())
-                    .ok_or_else(|| invalid("payload offset overflows"))?,
-            )?;
             encode_tensor_record(
                 index as u64,
                 u32::try_from(name_offset)
@@ -665,52 +684,6 @@ fn descriptor_ids(descriptor: &TensorStorageDescriptor) -> Result<(u32, u32, u32
         value => return Err(invalid(format!("unsupported tensor layout {value}"))),
     };
     Ok((dtype, dtype, scheme, layout))
-}
-
-pub(crate) fn validate_payload(dtype: DType, bytes: &[u8], name: &str) -> Result<()> {
-    use half::{bf16, f16};
-    let finite = |value: f32| {
-        if value.is_finite() {
-            Ok(())
-        } else {
-            Err(invalid(format!("tensor {name} contains non-finite values")))
-        }
-    };
-    match dtype {
-        DType::F32 => {
-            for chunk in bytes.as_chunks::<4>().0 {
-                finite(f32::from_le_bytes(*chunk))?;
-            }
-        }
-        DType::F16 => {
-            for chunk in bytes.as_chunks::<2>().0 {
-                finite(f16::from_le_bytes(*chunk).to_f32())?;
-            }
-        }
-        DType::BF16 => {
-            for chunk in bytes.as_chunks::<2>().0 {
-                finite(bf16::from_le_bytes(*chunk).to_f32())?;
-            }
-        }
-        DType::Q8_0 | DType::Q4_0 | DType::Q4_K | DType::Q5_K | DType::Q6_K => {
-            let (block_bytes, scale_offsets): (usize, &[usize]) = match dtype {
-                DType::Q8_0 => (34, &[0]),
-                DType::Q4_0 => (18, &[0]),
-                DType::Q4_K => (144, &[0, 2]),
-                DType::Q5_K => (176, &[0, 2]),
-                DType::Q6_K => (210, &[208]),
-                DType::F32 | DType::F16 | DType::BF16 => unreachable!(),
-            };
-            for block in bytes.chunks_exact(block_bytes) {
-                for &offset in scale_offsets {
-                    let scale =
-                        f16::from_le_bytes(block[offset..offset + 2].try_into().unwrap()).to_f32();
-                    finite(scale)?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn repack_q4_0(bytes: &[u8]) -> Vec<u8> {

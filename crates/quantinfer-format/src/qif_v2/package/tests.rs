@@ -127,6 +127,35 @@ fn package_rejects_empty_physical_chunks() {
 }
 
 #[test]
+fn package_checks_compressed_resource_limits_before_accessing_payload() {
+    for (name, field, length) in [
+        (
+            "decoded-limit",
+            16,
+            super::super::codec::MAX_DECODED_CHUNK_BYTES + 4,
+        ),
+        (
+            "stored-limit",
+            32,
+            super::super::codec::MAX_STORED_CHUNK_BYTES + 1,
+        ),
+    ] {
+        let root = package(name);
+        edit(&root, |_, index| {
+            let chunk = index.len() - CHUNK_RECORD_SIZE;
+            index[chunk + 4..chunk + 8].copy_from_slice(&CODEC_LZ4.to_le_bytes());
+            index[chunk + field..chunk + field + 8].copy_from_slice(&(length as u64).to_le_bytes());
+        });
+        assert!(PackageReader::open(&root)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("resource limits"));
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[test]
 fn package_alias_shape_must_match_the_physical_tensor() {
     let root = path("alias-shape-regression");
     let _ = fs::remove_dir_all(&root);

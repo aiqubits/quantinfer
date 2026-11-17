@@ -11,8 +11,9 @@ use quantinfer_core::DType;
 use crate::gguf::{GgufTensorInfo, PackedTensorReader};
 use crate::{GgmlType, ModelManifest, Result};
 
+use super::chunk::Chunk as ChunkInfo;
 use super::metadata::MetadataValue;
-use super::writer::validate_payload;
+use super::payload::{validate_payload, PayloadVerifier};
 use super::{
     checked_range, invalid, metadata_to_gguf, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
     CODEC_ZSTD, HASH_SHA256, HASH_SIZE, HEADER_SIZE, INDEX_MAGIC, INDEX_VERSION, MAGIC, MAX_CHUNKS,
@@ -52,18 +53,8 @@ pub struct TensorInfo {
     pub(crate) chunk_count: usize,
 }
 
-#[derive(Debug, Clone)]
-struct ChunkInfo {
-    shard_id: u32,
-    codec: u32,
-    raw_offset: u64,
-    raw_length: u64,
-    stored_offset: u64,
-    stored_length: u64,
-    checksum_sha256: [u8; HASH_SIZE],
-}
-
-/// A fully validated QIF single-file artifact.
+/// A QIF artifact with validated control sections. Call `verify` to check all
+/// payload hashes and finite values as well.
 pub struct Reader<'a> {
     bytes: &'a [u8],
     manifest: ModelManifest,
@@ -248,7 +239,7 @@ impl<'a> Reader<'a> {
         if range.start > range.end || range.end > raw_length {
             return Err(invalid("tensor range exceeds the stored tensor"));
         }
-        let mut output = vec![0_u8; range.end - range.start];
+        let mut output = super::zeroed_bytes(range.end - range.start)?;
         for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
             let chunk_start = usize::try_from(chunk.raw_offset)
                 .map_err(|_| invalid("chunk offset overflows usize"))?;
@@ -291,26 +282,19 @@ impl<'a> Reader<'a> {
 
     pub fn verify(&self) -> Result<()> {
         for tensor in &self.tensors {
-            let bytes = self.tensor_data_by_info(tensor)?;
-            let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
-            if digest != tensor.checksum_sha256 {
-                return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
+            if tensor.alias_of.is_some() {
+                continue;
             }
-            for chunk_index in tensor.chunk_start..tensor.chunk_start + tensor.chunk_count {
-                let chunk = &self.chunks[chunk_index];
+            let mut verifier = PayloadVerifier::new(dtype_from_id(tensor.dtype)?, &tensor.name);
+            for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
                 let stored = checked_range(
                     self.bytes,
                     self.payload_offset as u64 + chunk.stored_offset,
                     chunk.stored_length,
                 )?;
-                let digest: [u8; HASH_SIZE] = Sha256::digest(stored).into();
-                if digest != chunk.checksum_sha256 {
-                    return Err(invalid(format!(
-                        "tensor {} chunk checksum mismatch",
-                        tensor.name
-                    )));
-                }
+                chunk.verify_memory(stored, &mut verifier)?;
             }
+            verifier.finish(tensor.raw_length, &tensor.checksum_sha256)?;
         }
         Ok(())
     }
@@ -358,10 +342,10 @@ impl<'a> Reader<'a> {
                 .ok_or_else(|| invalid("alias target is out of range"))?;
             return self.tensor_data_by_info(target);
         }
-        let mut output = Vec::with_capacity(
+        let mut output = super::bytes_with_capacity(
             usize::try_from(tensor.raw_length)
                 .map_err(|_| invalid("tensor length overflows usize"))?,
-        );
+        )?;
         for chunk_index in tensor.chunk_start..tensor.chunk_start + tensor.chunk_count {
             let chunk = &self.chunks[chunk_index];
             let stored = checked_range(
@@ -467,7 +451,7 @@ impl FileReader {
         if range.start > range.end || range.end > raw_length {
             return Err(invalid("tensor range exceeds the stored tensor"));
         }
-        let mut output = vec![0_u8; range.end - range.start];
+        let mut output = super::zeroed_bytes(range.end - range.start)?;
         for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
             let chunk_start = usize::try_from(chunk.raw_offset)
                 .map_err(|_| invalid("chunk offset overflows usize"))?;
@@ -496,11 +480,10 @@ impl FileReader {
                 )?;
                 continue;
             }
-            let mut stored = vec![
-                0_u8;
+            let mut stored = super::zeroed_bytes(
                 usize::try_from(chunk.stored_length)
-                    .map_err(|_| invalid("chunk length overflows usize"))?
-            ];
+                    .map_err(|_| invalid("chunk length overflows usize"))?,
+            )?;
             read_at(
                 &mut self.file,
                 self.payload_offset
@@ -524,34 +507,15 @@ impl FileReader {
     }
 
     pub fn verify(&mut self) -> Result<()> {
-        for tensor in self.tensors.clone() {
-            let tensor = resolve_tensor(&self.tensors, tensor)?;
-            let raw_length = usize::try_from(tensor.raw_length)
-                .map_err(|_| invalid("tensor length overflows usize"))?;
-            let bytes = self.read_range(&tensor.name, 0..raw_length)?;
-            validate_payload(dtype_from_id(tensor.dtype)?, &bytes, &tensor.name)?;
-            let digest: [u8; HASH_SIZE] = Sha256::digest(&bytes).into();
-            if digest != tensor.checksum_sha256 {
-                return Err(invalid(format!("tensor {} checksum mismatch", tensor.name)));
+        for tensor in &self.tensors {
+            if tensor.alias_of.is_some() {
+                continue;
             }
+            let mut verifier = PayloadVerifier::new(dtype_from_id(tensor.dtype)?, &tensor.name);
             for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
-                let mut stored = vec![
-                    0_u8;
-                    usize::try_from(chunk.stored_length)
-                        .map_err(|_| invalid("chunk length overflows usize"))?
-                ];
-                read_at(
-                    &mut self.file,
-                    self.payload_offset
-                        .checked_add(chunk.stored_offset)
-                        .ok_or_else(|| invalid("file offset overflows"))?,
-                    &mut stored,
-                )?;
-                let digest: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
-                if digest != chunk.checksum_sha256 {
-                    return Err(invalid("chunk checksum mismatch"));
-                }
+                chunk.verify_file(&mut self.file, self.payload_offset, &mut verifier)?;
             }
+            verifier.finish(tensor.raw_length, &tensor.checksum_sha256)?;
         }
         Ok(())
     }
@@ -681,7 +645,7 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
 
 fn read_section(file: &mut File, offset: u64, length: u64) -> Result<Vec<u8>> {
     let length = usize::try_from(length).map_err(|_| invalid("section length overflows usize"))?;
-    let mut bytes = vec![0_u8; length];
+    let mut bytes = super::zeroed_bytes(length)?;
     read_at(file, offset, &mut bytes)?;
     Ok(bytes)
 }
@@ -699,7 +663,7 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
         && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) == VERSION
 }
 
-pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
+pub(crate) fn open_packed(bytes: Vec<u8>, budget: Option<usize>) -> Result<PackedTensorReader> {
     let reader = Reader::open(&bytes)?;
     let ggml = match reader.metadata().get("quantinfer.qif.ggml_dimension_order") {
         Some(MetadataValue::Bool(value)) => *value,
@@ -707,16 +671,74 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         None => false,
     };
     let metadata = metadata_to_gguf(reader.metadata())?;
-    let compressed = reader.tensors.iter().any(|tensor| {
-        let physical = resolve_tensor(&reader.tensors, tensor.clone()).ok();
-        tensor.codec != CODEC_NONE || physical.is_some_and(|value| value.chunk_count != 1)
-    });
-    let mut materialized = Vec::new();
+    let compressed = reader
+        .tensors
+        .iter()
+        .filter(|tensor| tensor.alias_of.is_none())
+        .any(|tensor| tensor.codec != CODEC_NONE || tensor.chunk_count != 1);
+    let materialized_length = if compressed {
+        let length = reader
+            .tensors
+            .iter()
+            .filter(|tensor| tensor.alias_of.is_none())
+            .try_fold(0usize, |sum, tensor| {
+                sum.checked_add(usize::try_from(tensor.raw_length).ok()?)
+            })
+            .ok_or_else(|| invalid("materialized tensor lengths overflow usize"))?;
+        if let Some(limit) = budget {
+            let required = bytes
+                .len()
+                .checked_add(length)
+                .ok_or_else(|| invalid("input and materialized weights overflow memory budget"))?;
+            if required > limit {
+                return Err(invalid(format!(
+                    "input and materialized weights need at least {required} bytes, memory budget is {limit}"
+                )));
+            }
+        }
+        length
+    } else {
+        0
+    };
+    let mut materialized = super::bytes_with_capacity(materialized_length)?;
     let mut materialized_offsets = BTreeMap::new();
     if compressed {
         for tensor in &reader.tensors {
+            if let Some(target) = tensor.alias_of {
+                let location = *materialized_offsets
+                    .get(&target)
+                    .ok_or_else(|| invalid("materialized alias target is missing"))?;
+                materialized_offsets.insert(tensor.tensor_id, location);
+                continue;
+            }
             let offset = materialized.len();
-            materialized.extend_from_slice(&reader.tensor_data(&tensor.name)?);
+            for chunk in &reader.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count]
+            {
+                let stored = checked_range(
+                    &bytes,
+                    reader.payload_offset as u64 + chunk.stored_offset,
+                    chunk.stored_length,
+                )?;
+                if chunk.codec == CODEC_NONE {
+                    materialized.extend_from_slice(stored);
+                } else {
+                    let decoded = super::codec::decompress(
+                        chunk.codec,
+                        stored,
+                        usize::try_from(chunk.raw_length)
+                            .map_err(|_| invalid("chunk length overflows usize"))?,
+                    )?;
+                    materialized.extend_from_slice(&decoded);
+                }
+            }
+            if (materialized.len() - offset) as u64 != tensor.raw_length {
+                return Err(invalid("materialized tensor length disagrees with index"));
+            }
+            validate_payload(
+                dtype_from_id(tensor.dtype)?,
+                &materialized[offset..],
+                &tensor.name,
+            )?;
             materialized_offsets.insert(tensor.tensor_id, (offset, tensor.raw_length));
         }
     }
@@ -835,14 +857,6 @@ fn parse_control(
     }
     let metadata = super::metadata::decode(metadata_bytes)?;
     let (tensors, chunks) = parse_index(index_bytes, payload_length, &manifest)?;
-    for tensor in &tensors {
-        let manifest_tensor = manifest
-            .tensors
-            .iter()
-            .find(|candidate| candidate.name == tensor.name)
-            .ok_or_else(|| invalid(format!("index contains unknown tensor {}", tensor.name)))?;
-        validate_tensor_descriptor(tensor, manifest_tensor)?;
-    }
     if tensors.len() != manifest.tensors.len() {
         return Err(invalid("manifest and index tensor counts differ"));
     }
@@ -1005,6 +1019,7 @@ fn parse_index(
         if chunk.raw_length == 0 || chunk.stored_length == 0 {
             return Err(invalid("empty physical chunks are not allowed"));
         }
+        super::codec::validate_lengths(chunk.codec, chunk.raw_length, chunk.stored_length)?;
         if chunk.codec == CODEC_NONE && chunk.stored_length != chunk.raw_length {
             return Err(invalid(
                 "uncompressed chunk length disagrees with raw length",
@@ -1024,6 +1039,11 @@ fn parse_index(
     }
 
     let mut tensors = Vec::with_capacity(tensor_count);
+    let by_name = manifest
+        .tensors
+        .iter()
+        .map(|tensor| (tensor.name.as_str(), tensor))
+        .collect::<BTreeMap<_, _>>();
     let mut names = BTreeSet::new();
     let mut occupied = Vec::<(u64, u64)>::new();
     let mut referenced = vec![false; chunk_count];
@@ -1034,7 +1054,11 @@ fn parse_index(
             return Err(invalid("tensor ids must be contiguous"));
         }
         let name = read_string_ref(bytes, strings_start, strings_len, u32_at(bytes, offset + 8))?;
-        if !names.insert(name.clone()) {
+        let manifest_tensor = by_name
+            .get(name.as_str())
+            .copied()
+            .ok_or_else(|| invalid(format!("index tensor {tensor_id} is not in manifest")))?;
+        if !names.insert(manifest_tensor.name.as_str()) {
             return Err(invalid("tensor names must be unique"));
         }
         let shape = read_shape_ref(bytes, shapes_start, shapes_len, u32_at(bytes, offset + 12))?;
@@ -1130,7 +1154,7 @@ fn parse_index(
                 occupied.push((chunk.stored_offset, end));
             }
         }
-        tensors.push(TensorInfo {
+        let tensor = TensorInfo {
             tensor_id,
             name,
             shape,
@@ -1146,7 +1170,9 @@ fn parse_index(
             data_offset,
             chunk_start,
             chunk_count: chunk_count_for_tensor,
-        });
+        };
+        validate_tensor_descriptor(&tensor, manifest_tensor)?;
+        tensors.push(tensor);
     }
     if referenced.contains(&false) {
         return Err(invalid("index contains an unreferenced chunk"));
@@ -1258,6 +1284,9 @@ pub(super) fn read_string_ref(
     }
     let string_length =
         usize::try_from(u32::from_le_bytes(bytes[prefix..end].try_into().unwrap())).unwrap();
+    if string_length > MAX_MANIFEST_STRING_BYTES {
+        return Err(invalid("index name exceeds the manifest string limit"));
+    }
     let value_start = end;
     let value_end = value_start
         .checked_add(string_length)
@@ -1265,7 +1294,7 @@ pub(super) fn read_string_ref(
     if value_end > start + length {
         return Err(invalid("string reference is truncated"));
     }
-    String::from_utf8(bytes[value_start..value_end].to_vec())
+    String::from_utf8(super::copy_bytes(&bytes[value_start..value_end])?)
         .map_err(|_| invalid("index string is not UTF-8"))
 }
 
