@@ -19,6 +19,7 @@ pub struct PackedTensorReader {
     pub(crate) tensors: Vec<GgufTensorInfo>,
     pub(crate) data_start: usize,
     pub(crate) embedded_manifest: Option<ModelManifest>,
+    pub(crate) qif_metadata: Option<BTreeMap<String, qif_v2::MetadataValue>>,
 }
 
 pub type GgufReader = PackedTensorReader;
@@ -35,6 +36,12 @@ impl PackedTensorReader {
 
     pub fn embedded_manifest(&self) -> Option<&ModelManifest> {
         self.embedded_manifest.as_ref()
+    }
+
+    /// The complete native metadata when opened from QIF. The GGUF-compatible
+    /// `metadata()` view omits entries containing maps, which GGUF cannot encode.
+    pub fn qif_metadata(&self) -> Option<&BTreeMap<String, crate::qif::MetadataValue>> {
+        self.qif_metadata.as_ref()
     }
 
     /// Detect GGML dimension order and packed projection rows from generic
@@ -235,6 +242,7 @@ impl PackedTensorReader {
             tensors,
             data_start,
             embedded_manifest: None,
+            qif_metadata: None,
         })
     }
 

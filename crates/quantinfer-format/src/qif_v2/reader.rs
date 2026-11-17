@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use quantinfer_core::DType;
 
 use crate::gguf::{GgufTensorInfo, PackedTensorReader};
-use crate::{GgmlType, GgufValue, ModelManifest, Result};
+use crate::{GgmlType, ModelManifest, Result};
 
 use super::metadata::MetadataValue;
 use super::writer::validate_payload;
@@ -134,7 +134,7 @@ impl<'a> Reader<'a> {
                 return Err(invalid(format!("{name} offset is not aligned")));
             }
             let _ = checked_range(bytes, offset, length)?;
-            if name != "payload" && length > MAX_HEADER_SECTION as u64 {
+            if matches!(name, "manifest" | "metadata") && length > MAX_HEADER_SECTION as u64 {
                 return Err(invalid(format!("{name} exceeds the size limit")));
             }
         }
@@ -482,6 +482,20 @@ impl FileReader {
             if copy_start >= copy_end {
                 continue;
             }
+            if chunk.codec == CODEC_NONE {
+                let offset = self
+                    .payload_offset
+                    .checked_add(chunk.stored_offset)
+                    .and_then(|offset| offset.checked_add((copy_start - chunk_start) as u64))
+                    .ok_or_else(|| invalid("file range offset overflows"))?;
+                let output_start = copy_start - range.start;
+                read_at(
+                    &mut self.file,
+                    offset,
+                    &mut output[output_start..output_start + copy_end - copy_start],
+                )?;
+                continue;
+            }
             let mut stored = vec![
                 0_u8;
                 usize::try_from(chunk.stored_length)
@@ -610,7 +624,7 @@ fn parse_file_header(bytes: &[u8; HEADER_SIZE], file_length: u64) -> Result<File
         if offset.checked_add(length).is_none() || offset + length > file_length {
             return Err(invalid(format!("{name} range exceeds file")));
         }
-        if name != "payload" && length > MAX_HEADER_SECTION as u64 {
+        if matches!(name, "manifest" | "metadata") && length > MAX_HEADER_SECTION as u64 {
             return Err(invalid(format!("{name} exceeds the size limit")));
         }
     }
@@ -687,6 +701,11 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
 
 pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
     let reader = Reader::open(&bytes)?;
+    let ggml = match reader.metadata().get("quantinfer.qif.ggml_dimension_order") {
+        Some(MetadataValue::Bool(value)) => *value,
+        Some(_) => return Err(invalid("GGML dimension order metadata must be boolean")),
+        None => false,
+    };
     let metadata = metadata_to_gguf(reader.metadata())?;
     let compressed = reader.tensors.iter().any(|tensor| {
         let physical = resolve_tensor(&reader.tensors, tensor.clone()).ok();
@@ -702,15 +721,13 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         }
     }
     let data_start = if compressed { 0 } else { reader.payload_offset };
-    let embedded_manifest = reader.manifest.clone();
-    let index_tensors = reader.tensors.clone();
-    let index_chunks = reader.chunks.clone();
-    drop(reader);
-    let ggml = match metadata.get("quantinfer.qif.ggml_dimension_order") {
-        Some(GgufValue::Bool(value)) => *value,
-        Some(_) => return Err(invalid("GGML dimension order metadata must be boolean")),
-        None => false,
-    };
+    let Reader {
+        manifest: embedded_manifest,
+        metadata: native_metadata,
+        tensors: index_tensors,
+        chunks: index_chunks,
+        ..
+    } = reader;
     let tensors = index_tensors
         .iter()
         .map(|tensor| {
@@ -758,6 +775,7 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         tensors,
         data_start,
         embedded_manifest: Some(embedded_manifest),
+        qif_metadata: Some(native_metadata),
     })
 }
 
@@ -823,13 +841,6 @@ fn parse_control(
             .iter()
             .find(|candidate| candidate.name == tensor.name)
             .ok_or_else(|| invalid(format!("index contains unknown tensor {}", tensor.name)))?;
-        let checksum = hex_encode(&tensor.checksum_sha256);
-        if manifest_tensor.checksum_sha256.as_deref() != Some(checksum.as_str()) {
-            return Err(invalid(format!(
-                "tensor {} checksum disagrees with manifest",
-                tensor.name
-            )));
-        }
         validate_tensor_descriptor(tensor, manifest_tensor)?;
     }
     if tensors.len() != manifest.tensors.len() {
@@ -1012,6 +1023,7 @@ fn parse_index(
     let mut tensors = Vec::with_capacity(tensor_count);
     let mut names = BTreeSet::new();
     let mut occupied = Vec::<(u64, u64)>::new();
+    let mut referenced = vec![false; chunk_count];
     for index in 0..tensor_count {
         let offset = records_start + index * TENSOR_RECORD_SIZE;
         let tensor_id = u64_at(bytes, offset);
@@ -1059,6 +1071,11 @@ fn parse_index(
                 return Err(invalid(
                     "non-alias tensor must reference at least one chunk",
                 ));
+            }
+            for used in &mut referenced[chunk_start..end_chunk] {
+                if std::mem::replace(used, true) {
+                    return Err(invalid("physical chunk is referenced by multiple tensors"));
+                }
             }
             let mut raw_sum = 0u64;
             let mut stored_sum = 0u64;
@@ -1128,6 +1145,9 @@ fn parse_index(
             chunk_count: chunk_count_for_tensor,
         });
     }
+    if referenced.contains(&false) {
+        return Err(invalid("index contains an unreferenced chunk"));
+    }
     occupied.sort_unstable_by_key(|(start, _)| *start);
     if occupied.windows(2).any(|pair| pair[0].1 > pair[1].0) {
         return Err(invalid("tensor chunks overlap"));
@@ -1140,6 +1160,14 @@ pub(crate) fn validate_tensor_descriptor(
     manifest: &crate::TensorManifest,
 ) -> Result<()> {
     let descriptor = &manifest.descriptor;
+    super::encoding::validate_descriptor(descriptor)?;
+    let checksum = hex_encode(&tensor.checksum_sha256);
+    if manifest.checksum_sha256.as_deref() != Some(checksum.as_str()) {
+        return Err(invalid(format!(
+            "tensor {} checksum disagrees with manifest",
+            tensor.name
+        )));
+    }
     let expected_dtype = match descriptor.dtype {
         DType::F32 => 1,
         DType::F16 => 2,
@@ -1207,7 +1235,14 @@ pub(crate) fn validate_tensor_descriptor(
     Ok(())
 }
 
-fn read_string_ref(bytes: &[u8], start: usize, length: usize, offset: u32) -> Result<String> {
+pub(super) fn read_string_ref(
+    bytes: &[u8],
+    start: usize,
+    length: usize,
+    offset: u32,
+) -> Result<String> {
+    let bytes = checked_range(bytes, start as u64, length as u64)?;
+    let start = 0usize;
     let offset = usize::try_from(offset).unwrap();
     let prefix = start
         .checked_add(offset)
@@ -1231,7 +1266,14 @@ fn read_string_ref(bytes: &[u8], start: usize, length: usize, offset: u32) -> Re
         .map_err(|_| invalid("index string is not UTF-8"))
 }
 
-fn read_shape_ref(bytes: &[u8], start: usize, length: usize, offset: u32) -> Result<Vec<u64>> {
+pub(super) fn read_shape_ref(
+    bytes: &[u8],
+    start: usize,
+    length: usize,
+    offset: u32,
+) -> Result<Vec<u64>> {
+    let bytes = checked_range(bytes, start as u64, length as u64)?;
+    let start = 0usize;
     let offset = usize::try_from(offset).unwrap();
     let prefix = start
         .checked_add(offset)

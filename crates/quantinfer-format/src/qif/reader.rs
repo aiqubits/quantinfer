@@ -50,6 +50,7 @@ pub(crate) fn open_packed(bytes: Vec<u8>) -> Result<PackedTensorReader> {
         tensors,
         data_start: 0,
         embedded_manifest: Some(manifest),
+        qif_metadata: None,
     })
 }
 

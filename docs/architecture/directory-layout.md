@@ -19,8 +19,10 @@ first implementation file lands.
   facade is in `src/lib.rs`; GGUF and SafeTensors are directory modules split
   by reader, writer/decoder, metadata, physical layout, and test
   responsibilities. Manifest schema, package access, and hashing are split
-  under `manifest/`; QIF is split into reader, writer, transcode, and test
-  modules under `qif/`.
+  under `manifest/`; the current public `qif` API is implemented under
+  `qif_v2/`, with reader, writer, encoding, metadata, codec, package, mmap,
+  signature, resharding, and test modules. `qif/` contains only private legacy
+  implementation and historical fixtures.
 - `crates/quantinfer-model` owns model configuration and semantic adapters.
   `ModelSpec` contains only architecture semantics and a tensor-role map; it
   contains no GGUF, SafeTensors, or other storage names. Format readers and

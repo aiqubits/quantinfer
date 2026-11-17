@@ -49,6 +49,14 @@ impl From<&GgufValue> for MetadataValue {
 }
 
 impl MetadataValue {
+    pub(crate) fn can_project_to_gguf(&self) -> bool {
+        match self {
+            Self::Map(_) => false,
+            Self::Array(values) => values.iter().all(Self::can_project_to_gguf),
+            _ => true,
+        }
+    }
+
     pub fn to_gguf(&self) -> Result<GgufValue> {
         match self {
             Self::U32(value) => Ok(GgufValue::U32(*value)),
@@ -116,6 +124,9 @@ fn write_map(
 }
 
 fn write_value(output: &mut Vec<u8>, value: &MetadataValue, depth: usize) -> Result<()> {
+    if depth > MAX_DEPTH {
+        return Err(invalid("metadata nesting limit exceeded"));
+    }
     match value {
         MetadataValue::U32(value) => {
             output.extend_from_slice(&TAG_U32.to_le_bytes());

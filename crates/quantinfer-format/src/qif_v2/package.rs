@@ -10,7 +10,7 @@ use crate::{DuplicateFreeJson, FormatError, ModelManifest, Result};
 
 use super::codec::{compress, decompress};
 use super::metadata::MetadataValue;
-use super::reader::{validate_tensor_descriptor, TensorInfo};
+use super::reader::{read_shape_ref, read_string_ref, validate_tensor_descriptor, TensorInfo};
 use super::writer::{validate_payload, Codec};
 use super::{
     align, canonicalize_manifest_layouts, invalid, ALIAS_NONE, ALIGNMENT, CODEC_LZ4, CODEC_NONE,
@@ -94,6 +94,7 @@ pub fn write_qif_v2_package_with_codec<'a>(
 ) -> Result<()> {
     canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
+    super::reader::validate_manifest_limits(&manifest)?;
     let output_dir = output_dir.as_ref();
     if output_dir.exists() {
         return Err(invalid(format!(
@@ -227,11 +228,25 @@ fn write_package_contents<'a>(
             let mut stored_total = 0usize;
             let mut first_stored_offset = None;
             while raw_offset < payload.len() {
+                if chunks.len() / CHUNK_RECORD_SIZE >= MAX_CHUNKS {
+                    return Err(invalid("package chunk count exceeds the limit"));
+                }
                 let remaining = payload.len() - raw_offset;
-                let take = remaining.min(max_shard_bytes);
-                let stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                let mut take = remaining.min(max_shard_bytes);
+                let mut stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                while stored.len() > max_shard_bytes {
+                    if take == 1 {
+                        return Err(invalid("shard size limit is too small for codec framing"));
+                    }
+                    take /= 2;
+                    stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                }
                 if shard_bytes.last().is_some_and(|shard| {
-                    !shard.is_empty() && shard.len().saturating_add(stored.len()) > max_shard_bytes
+                    !shard.is_empty()
+                        && align(shard.len())
+                            .ok()
+                            .and_then(|start| start.checked_add(stored.len()))
+                            .is_none_or(|end| end > max_shard_bytes)
                 }) {
                     shard_bytes.push(Vec::new());
                     shard_tensors.push(BTreeSet::new());
@@ -335,6 +350,9 @@ fn write_package_contents<'a>(
     let unsigned = serde_json::to_vec(&package).map_err(json_error)?;
     package.root_hash = package_root_hash(&unsigned, &metadata_bytes, &index, &package.shards);
     let package_bytes = serde_json::to_vec(&package).map_err(json_error)?;
+    if package_bytes.len() > MAX_PACKAGE_MANIFEST_BYTES {
+        return Err(invalid("package manifest exceeds the size limit"));
+    }
     write_atomic_file(&output_dir.join("qif.json"), &package_bytes)
 }
 
@@ -585,6 +603,19 @@ impl PackageReader {
                 .shards
                 .get_mut(&shard_name)
                 .ok_or_else(|| invalid("package shard is missing"))?;
+            if chunk.codec == CODEC_NONE {
+                let offset = chunk
+                    .stored_offset
+                    .checked_add((copy_start - start) as u64)
+                    .ok_or_else(|| invalid("package range offset overflows"))?;
+                let output_start = copy_start - range.start;
+                read_at(
+                    file,
+                    offset,
+                    &mut output[output_start..output_start + copy_end - copy_start],
+                )?;
+                continue;
+            }
             let mut stored = vec![
                 0_u8;
                 usize::try_from(chunk.stored_length)
@@ -636,9 +667,7 @@ impl PackageReader {
                 .get_mut(path)
                 .ok_or_else(|| invalid("package shard is missing"))?;
             file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).map_err(io_error)?;
-            if crate::sha256_hex(&bytes) != entry.sha256 {
+            if crate::sha256_reader(file).map_err(io_error)? != entry.sha256 {
                 return Err(invalid(format!("package shard {path} checksum mismatch")));
             }
         }
@@ -694,9 +723,15 @@ fn parse_package_index(
         return Err(invalid("package index lengths are invalid"));
     }
     let strings_start = INDEX_HEADER_SIZE;
-    let shapes_start = strings_start + strings_len;
-    let records_start = shapes_start + shapes_len;
-    let chunks_start = records_start + records_len;
+    let shapes_start = strings_start
+        .checked_add(strings_len)
+        .ok_or_else(|| invalid("package string table overflows"))?;
+    let records_start = shapes_start
+        .checked_add(shapes_len)
+        .ok_or_else(|| invalid("package shape table overflows"))?;
+    let chunks_start = records_start
+        .checked_add(records_len)
+        .ok_or_else(|| invalid("package tensor records overflow"))?;
     if chunks_start.checked_add(chunks_len) != Some(bytes.len()) || bytes.len() > MAX_INDEX_BYTES {
         return Err(invalid("package index bounds are invalid"));
     }
@@ -726,6 +761,7 @@ fn parse_package_index(
     }
     let mut tensors: Vec<TensorInfo> = Vec::with_capacity(tensor_count);
     let mut names = BTreeSet::new();
+    let mut referenced = vec![false; chunk_count];
     for index in 0..tensor_count {
         let offset = records_start + index * TENSOR_RECORD_SIZE;
         let tensor_id = u64_at(bytes, offset);
@@ -793,7 +829,8 @@ fn parse_package_index(
             if target.alias_of.is_some() || target.chunk_count == 0 {
                 return Err(invalid("package alias target must be physical"));
             }
-            if tensor.dtype != target.dtype
+            if tensor.shape != target.shape
+                || tensor.dtype != target.dtype
                 || tensor.physical_encoding != target.physical_encoding
                 || tensor.quantization_scheme != target.quantization_scheme
                 || tensor.layout != target.layout
@@ -808,6 +845,13 @@ fn parse_package_index(
         } else {
             if chunk_count_for_tensor == 0 {
                 return Err(invalid("non-alias package tensor has no chunks"));
+            }
+            for used in &mut referenced[chunk_start..end_chunk] {
+                if std::mem::replace(used, true) {
+                    return Err(invalid(
+                        "package physical chunk is referenced by multiple tensors",
+                    ));
+                }
             }
             if tensor.codec != chunks[chunk_start].codec
                 || chunks[chunk_start..end_chunk]
@@ -852,6 +896,9 @@ fn parse_package_index(
             }
         }
         tensors.push(tensor);
+    }
+    if referenced.contains(&false) {
+        return Err(invalid("package index contains an unreferenced chunk"));
     }
     Ok((tensors, chunks))
 }
@@ -955,7 +1002,7 @@ fn encode_chunk(
 fn descriptor_ids(
     descriptor: &quantinfer_core::TensorStorageDescriptor,
 ) -> Result<(u32, u32, u32)> {
-    descriptor.validate()?;
+    super::encoding::validate_descriptor(descriptor)?;
     let dtype = match descriptor.dtype {
         quantinfer_core::DType::F32 => 1,
         quantinfer_core::DType::F16 => 2,
@@ -985,7 +1032,7 @@ fn descriptor_ids(
 }
 
 fn package_payload_size(descriptor: &quantinfer_core::TensorStorageDescriptor) -> Result<usize> {
-    descriptor.validate()?;
+    super::encoding::validate_descriptor(descriptor)?;
     let dtype = match descriptor.dtype {
         quantinfer_core::DType::F32 => crate::GgmlType::F32,
         quantinfer_core::DType::F16 => crate::GgmlType::F16,
@@ -1087,41 +1134,6 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
 }
-fn read_string_ref(bytes: &[u8], start: usize, length: usize, offset: u32) -> Result<String> {
-    let offset = start + offset as usize;
-    let end = offset + 4;
-    if end > start + length {
-        return Err(invalid("package string reference is outside table"));
-    }
-    let size = u32_at(bytes, offset) as usize;
-    let end = end
-        .checked_add(size)
-        .ok_or_else(|| invalid("package string range overflows"))?;
-    if end > start + length {
-        return Err(invalid("package string reference is truncated"));
-    }
-    String::from_utf8(bytes[offset + 4..end].to_vec())
-        .map_err(|_| invalid("package string is not UTF-8"))
-}
-fn read_shape_ref(bytes: &[u8], start: usize, length: usize, offset: u32) -> Result<Vec<u64>> {
-    let offset = start + offset as usize;
-    if offset + 4 > start + length {
-        return Err(invalid("package shape reference is outside table"));
-    }
-    let rank = u32_at(bytes, offset) as usize;
-    if rank > MAX_RANK || offset + 4 + rank * 8 > start + length {
-        return Err(invalid("package shape reference is invalid"));
-    }
-    let mut shape = Vec::with_capacity(rank);
-    for index in 0..rank {
-        let dimension = u64_at(bytes, offset + 4 + index * 8);
-        if dimension == 0 {
-            return Err(invalid("package tensor dimension is zero"));
-        }
-        shape.push(dimension);
-    }
-    Ok(shape)
-}
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -1131,3 +1143,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     }
     output
 }
+
+#[cfg(test)]
+mod tests;

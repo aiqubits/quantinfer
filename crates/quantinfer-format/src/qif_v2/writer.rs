@@ -136,7 +136,8 @@ pub fn write_qif_v2<'a>(
 }
 
 /// Write a QIF artifact using one independently compressed chunk per tensor.
-/// The default `write_qif_v2` remains the zero-copy, uncompressed profile.
+/// The default `write_qif_v2` uses the uncompressed profile, whose reader can
+/// return borrowed tensor views.
 pub fn write_qif_v2_with_codec<'a>(
     manifest: ModelManifest,
     metadata: &BTreeMap<String, MetadataValue>,
@@ -178,6 +179,7 @@ fn write_qif_v2_inner<'a>(
     }
     canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
+    super::reader::validate_manifest_limits(&manifest)?;
     let metadata_bytes = super::metadata::encode(metadata)?;
 
     let mut payloads = Vec::with_capacity(manifest.tensors.len());
@@ -608,7 +610,7 @@ fn write_error(error: std::io::Error) -> crate::FormatError {
 }
 
 fn payload_size(descriptor: &TensorStorageDescriptor) -> Result<usize> {
-    descriptor.validate()?;
+    super::encoding::validate_descriptor(descriptor)?;
     let dtype = match descriptor.dtype {
         DType::F32 => GgmlType::F32,
         DType::F16 => GgmlType::F16,
@@ -636,7 +638,7 @@ fn descriptor_parts(dtype: GgmlType) -> Result<(DType, QuantizationScheme, usize
 }
 
 fn descriptor_ids(descriptor: &TensorStorageDescriptor) -> Result<(u32, u32, u32, u32)> {
-    descriptor.validate()?;
+    super::encoding::validate_descriptor(descriptor)?;
     let dtype = match descriptor.dtype {
         DType::F32 => 1,
         DType::F16 => 2,

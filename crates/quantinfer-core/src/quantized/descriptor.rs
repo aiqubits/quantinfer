@@ -141,6 +141,14 @@ impl TensorStorageDescriptor {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if matches!(self.quantization_axis, QuantizationAxis::Axis(axis)
+            if axis >= self.logical_shape.dims().len())
+            || self.group_size == Some(0)
+        {
+            return Err(CoreError::InvalidData(
+                "quantization axis or group size is invalid".to_owned(),
+            ));
+        }
         if self.logical_shape.dims().contains(&0) {
             return Err(CoreError::InvalidShape(
                 "storage descriptor dimensions must be greater than zero".to_owned(),

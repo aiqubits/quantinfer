@@ -6,6 +6,7 @@
 //! payload bytes.
 
 mod codec;
+mod encoding;
 mod metadata;
 mod mmap;
 mod package;
@@ -137,6 +138,7 @@ pub(crate) fn metadata_to_gguf(
 ) -> Result<BTreeMap<String, GgufValue>> {
     values
         .iter()
+        .filter(|(_, value)| value.can_project_to_gguf())
         .map(|(key, value)| Ok((key.clone(), value.to_gguf()?)))
         .collect()
 }

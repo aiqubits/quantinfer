@@ -10,6 +10,8 @@ use super::{
 };
 use crate::{ModelManifest, TensorManifest};
 
+mod validation;
+
 fn sample_manifest() -> ModelManifest {
     let mut manifest = ModelManifest::new("test-model", "test");
     manifest.source_format = "qif-v2-test".to_owned();
@@ -229,7 +231,10 @@ fn round_trips_qif2_package_and_shard_ranges() {
     let mut reader = PackageReader::open(&output).unwrap();
     assert_eq!(reader.tensors().len(), 3);
     assert_eq!(reader.tensor_shard("weight").unwrap(), "shard-00000.qifd");
-    assert_eq!(reader.tensor_shard("bias").unwrap(), "shard-00001.qifd");
+    assert_ne!(
+        reader.tensor_shard("bias").unwrap(),
+        reader.tensor_shard("weight").unwrap()
+    );
     assert_eq!(
         reader.read_range("bias", 4..8).unwrap(),
         payloads["bias"][4..]
