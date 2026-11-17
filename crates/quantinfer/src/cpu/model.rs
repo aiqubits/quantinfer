@@ -166,7 +166,7 @@ pub fn model_architecture<'a>(
             RuntimeError::InvalidInput(format!("invalid model manifest: {error}"))
         })?;
     }
-    let archive_architecture = match reader.metadata().get("general.architecture") {
+    let archive_architecture = match reader.metadata_value("general.architecture")? {
         Some(GgufValue::String(value)) => Some(value.as_str()),
         Some(_) => {
             return Err(RuntimeError::InvalidInput(
@@ -317,7 +317,7 @@ pub fn load_gguf_tokenizer(reader: &GgufReader) -> Result<GgufBpeTokenizer> {
 }
 
 fn metadata_string_array(reader: &GgufReader, key: &str) -> Result<Vec<String>> {
-    let value = reader.metadata().get(key).ok_or_else(|| {
+    let value = reader.metadata_value(key)?.ok_or_else(|| {
         RuntimeError::InvalidInput(format!("GGUF is missing tokenizer metadata {key}"))
     })?;
     let invalid =
@@ -335,7 +335,7 @@ fn metadata_string_array(reader: &GgufReader, key: &str) -> Result<Vec<String>> 
 }
 
 fn metadata_string_array_or_empty(reader: &GgufReader, key: &str) -> Result<Vec<String>> {
-    if reader.metadata().contains_key(key) {
+    if reader.metadata_value(key)?.is_some() {
         metadata_string_array(reader, key)
     } else {
         Ok(Vec::new())
@@ -343,7 +343,7 @@ fn metadata_string_array_or_empty(reader: &GgufReader, key: &str) -> Result<Vec<
 }
 
 fn metadata_string_optional(reader: &GgufReader, key: &str) -> Result<Option<String>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     match value {
@@ -355,7 +355,7 @@ fn metadata_string_optional(reader: &GgufReader, key: &str) -> Result<Option<Str
 }
 
 fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     let overflow = |_| RuntimeError::InvalidInput(format!("GGUF metadata {key} overflows usize"));

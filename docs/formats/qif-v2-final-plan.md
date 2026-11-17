@@ -331,6 +331,11 @@ raw chunk；PACKAGE 还受 shard 大小与压缩后大小约束。无压缩 chun
 只计一次；该检查是最低存储需求的预检，不包括 allocator、解码 workspace 或
 推理状态的全部峰值开销。
 
+packed reader 原生保留 QIF Map 元数据；其 GGUF 兼容 metadata 视图只暴露可转换
+的值。模型适配器通过 `metadata_value()` 查询已知参数，遇到包含 Map 的值时
+报类型错误，不能将“已存在但类型不支持”当作缺失并使用默认值。未知可选 hint
+无需被模型适配器读取，仍可被忽略。
+
 ### 6.3 量化编码
 
 量化描述 MUST 至少包含：

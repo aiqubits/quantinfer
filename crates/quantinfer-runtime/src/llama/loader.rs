@@ -154,8 +154,7 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfi
             }
         }
         if reader
-            .metadata()
-            .get("llama.rope.scaling.type")
+            .metadata_value("llama.rope.scaling.type")?
             .is_some_and(|value| value != &GgufValue::String("none".to_owned()))
         {
             return Err(RuntimeError::InvalidInput(
@@ -173,7 +172,7 @@ fn required_metadata_usize(reader: &GgufReader, key: &str) -> Result<usize> {
 }
 
 fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     let value = match value {
@@ -195,7 +194,7 @@ fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
 }
 
 fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     match value {
@@ -210,7 +209,7 @@ fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
 }
 
 fn metadata_bool(reader: &GgufReader, key: &str) -> Result<Option<bool>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     match value {

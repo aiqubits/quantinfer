@@ -262,6 +262,23 @@ impl PackedTensorReader {
         &self.metadata
     }
 
+    /// Look up a parameter without treating an unprojectable native QIF value
+    /// as absent. Model adapters should use this when applying defaults.
+    pub fn metadata_value(&self, key: &str) -> Result<Option<&GgufValue>> {
+        let value = self.metadata.get(key);
+        if value.is_none()
+            && self
+                .qif_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.contains_key(key))
+        {
+            return Err(FormatError::Invalid(format!(
+                "QIF metadata {key} contains a map, unsupported for this model parameter"
+            )));
+        }
+        Ok(value)
+    }
+
     pub fn file_size_bytes(&self) -> usize {
         self.bytes.len()
     }

@@ -125,9 +125,11 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<Qwen3Confi
     let lm_head_name = dense_storage_name(TensorRole::LmHead, None);
     let tie_word_embeddings = metadata_bool(reader, "qwen3.tie_word_embeddings")?
         .unwrap_or_else(|| ggml_layout && reader.tensor_info(&lm_head_name).is_err());
-    let architectures = metadata_architectures(reader)
-        .or_else(|| metadata_architectures_from_key(reader, "qwen3.architectures"))
-        .unwrap_or_else(|| vec!["Qwen3ForCausalLM".to_owned()]);
+    let architectures = match metadata_architectures_from_key(reader, "general.architectures")? {
+        Some(values) => values,
+        None => metadata_architectures_from_key(reader, "qwen3.architectures")?
+            .unwrap_or_else(|| vec!["Qwen3ForCausalLM".to_owned()]),
+    };
     let config = Qwen3Config {
         vocab_size,
         hidden_size,
@@ -158,8 +160,7 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<Qwen3Confi
             }
         }
         if reader
-            .metadata()
-            .get("qwen3.rope.scaling.type")
+            .metadata_value("qwen3.rope.scaling.type")?
             .is_some_and(|value| !matches!(value, GgufValue::String(kind) if kind == "none"))
         {
             return Err(RuntimeError::InvalidInput(
@@ -177,7 +178,7 @@ fn required_metadata_usize(reader: &GgufReader, key: &str) -> Result<usize> {
 }
 
 fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     let value = match value {
@@ -199,7 +200,7 @@ fn metadata_usize(reader: &GgufReader, key: &str) -> Result<Option<usize>> {
 }
 
 fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     match value {
@@ -214,7 +215,7 @@ fn metadata_f32(reader: &GgufReader, key: &str) -> Result<Option<f32>> {
 }
 
 fn metadata_bool(reader: &GgufReader, key: &str) -> Result<Option<bool>> {
-    let Some(value) = reader.metadata().get(key) else {
+    let Some(value) = reader.metadata_value(key)? else {
         return Ok(None);
     };
     match value {
@@ -225,21 +226,19 @@ fn metadata_bool(reader: &GgufReader, key: &str) -> Result<Option<bool>> {
     }
 }
 
-fn metadata_architectures(reader: &GgufReader) -> Option<Vec<String>> {
-    metadata_architectures_from_key(reader, "general.architectures")
-}
-
-fn metadata_architectures_from_key(reader: &GgufReader, key: &str) -> Option<Vec<String>> {
-    match reader.metadata().get(key) {
-        Some(GgufValue::Array(values)) => Some(
-            values
-                .iter()
-                .filter_map(|value| match value {
-                    GgufValue::String(value) => Some(value.clone()),
-                    _ => None,
-                })
-                .collect(),
-        ),
-        _ => None,
+fn metadata_architectures_from_key(reader: &GgufReader, key: &str) -> Result<Option<Vec<String>>> {
+    let invalid =
+        || RuntimeError::InvalidInput(format!("model metadata {key} must be an array of strings"));
+    match reader.metadata_value(key)? {
+        Some(GgufValue::Array(values)) => values
+            .iter()
+            .map(|value| match value {
+                GgufValue::String(value) => Ok(value.clone()),
+                _ => Err(invalid()),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        None => Ok(None),
+        Some(_) => Err(invalid()),
     }
 }
