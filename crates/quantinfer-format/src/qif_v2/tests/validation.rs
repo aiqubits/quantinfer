@@ -83,6 +83,25 @@ fn rejects_noncanonical_json_after_root_validation() {
 }
 
 #[test]
+fn tensor_checksum_hex_case_matches_the_model_manifest_contract() {
+    let mut bytes = single(&[0; 8]);
+    let mut manifest = Reader::open(&bytes).unwrap().manifest().clone();
+    let checksum = manifest.tensors[0].checksum_sha256.as_mut().unwrap();
+    *checksum = checksum.to_ascii_uppercase();
+    manifest.validate().unwrap();
+    let encoded = serde_json::to_vec(&manifest).unwrap();
+    let start = u64_at(&bytes, 24);
+    assert_eq!(encoded.len(), u64_at(&bytes, 32));
+    bytes[start..start + encoded.len()].copy_from_slice(&encoded);
+    refresh_root(&mut bytes);
+    Reader::open(&bytes).unwrap().verify().unwrap();
+    let path = std::env::temp_dir().join(format!("qif-hex-case-{}.qif", std::process::id()));
+    fs::write(&path, bytes).unwrap();
+    FileReader::open(&path).unwrap().verify().unwrap();
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn rejects_each_incompatible_quantized_encoding_field_on_write_and_read() {
     let descriptor = TensorStorageDescriptor::quantized(
         DType::Q4_0,

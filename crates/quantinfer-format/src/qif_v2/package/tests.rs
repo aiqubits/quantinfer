@@ -86,6 +86,17 @@ fn manifest_checksum_must_match_the_global_index() {
 }
 
 #[test]
+fn package_tensor_checksum_hex_case_matches_the_model_manifest_contract() {
+    let root = package("checksum-hex-case");
+    edit(&root, |manifest, _| {
+        let checksum = manifest.model.tensors[0].checksum_sha256.as_mut().unwrap();
+        *checksum = checksum.to_ascii_uppercase();
+    });
+    PackageReader::open(&root).unwrap().verify().unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn package_rejects_unreferenced_chunks() {
     let root = package("orphan-regression");
     edit(&root, |_, index| {

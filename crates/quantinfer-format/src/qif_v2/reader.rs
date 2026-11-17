@@ -1191,7 +1191,11 @@ pub(crate) fn validate_tensor_descriptor(
     let descriptor = &manifest.descriptor;
     super::encoding::validate_descriptor(descriptor)?;
     let checksum = hex_encode(&tensor.checksum_sha256);
-    if manifest.checksum_sha256.as_deref() != Some(checksum.as_str()) {
+    if !manifest
+        .checksum_sha256
+        .as_deref()
+        .is_some_and(|expected| expected.eq_ignore_ascii_case(&checksum))
+    {
         return Err(invalid(format!(
             "tensor {} checksum disagrees with manifest",
             tensor.name

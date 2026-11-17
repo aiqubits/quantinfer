@@ -377,6 +377,10 @@ tensor hash = SHA-256(raw tensor bytes)
 root hash = SHA-256(canonical manifest + canonical metadata + binary index)
 ```
 
+复用 `ModelManifest` 的 tensor checksum 按 SHA-256 十六进制值比较，允许大写
+或小写十六进制字母；writer 输出小写。root hash 仍覆盖实际 canonical manifest
+字节，不按 checksum 字符串大小写进行额外规范化。
+
 reader 打开时至少验证 header、manifest、metadata、index 和 root hash；显式
 `verify()` 必须读取并验证所有 tensor、payload chunk，并拒绝非有限标准浮点/量化 scale。
 v2.0 不定义命令行
