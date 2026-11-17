@@ -103,6 +103,30 @@ fn package_rejects_unreferenced_chunks() {
 }
 
 #[test]
+fn package_rejects_empty_physical_chunks() {
+    let root = package("empty-chunk");
+    edit(&root, |_, index| {
+        let length = index.len();
+        let record = 48 + u64_at(index, 16) as usize + u64_at(index, 24) as usize;
+        let mut chunk = index[length - 72..].to_vec();
+        for (offset, value) in [(8, 8u64), (16, 0), (24, 0), (32, 0)] {
+            chunk[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        chunk[40..72].copy_from_slice(&Sha256::digest([]));
+        index.extend_from_slice(&chunk);
+        index[12..16].copy_from_slice(&2u32.to_le_bytes());
+        index[40..48].copy_from_slice(&144u64.to_le_bytes());
+        index[record + 44..record + 48].copy_from_slice(&2u32.to_le_bytes());
+    });
+    assert!(PackageReader::open(&root)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("empty physical"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn package_alias_shape_must_match_the_physical_tensor() {
     let root = path("alias-shape-regression");
     let _ = fs::remove_dir_all(&root);

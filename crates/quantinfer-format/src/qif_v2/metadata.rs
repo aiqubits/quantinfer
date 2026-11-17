@@ -304,6 +304,12 @@ fn read_value(cursor: &mut Cursor<'_>, depth: usize) -> Result<MetadataValue> {
             if count > MAX_ITEMS {
                 return Err(invalid("metadata array item limit exceeded"));
             }
+            // A tagged bool is the smallest value (4-byte tag + 1 byte).
+            // Reject impossible counts before reserving a Vec for untrusted
+            // input, including nested arrays with large declared counts.
+            if count > (cursor.bytes.len() - cursor.offset) / 5 {
+                return Err(invalid("metadata array count exceeds remaining bytes"));
+            }
             let mut values = Vec::with_capacity(count);
             for _ in 0..count {
                 values.push(read_value(cursor, depth + 1)?);

@@ -360,7 +360,10 @@ name = "quantinfer-format-fuzz"
 version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
+ "quantinfer-core",
  "quantinfer-format",
+ "serde_json",
+ "sha2 0.11.1",
 ]
 
 [[package]]

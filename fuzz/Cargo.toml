@@ -10,10 +10,20 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 quantinfer-format = { path = "../crates/quantinfer-format" }
+quantinfer-core = { path = "../crates/quantinfer-core" }
+serde_json = "1"
+sha2 = "0.11"
 
 [[bin]]
 name = "qif_v2_reader"
 path = "fuzz_targets/qif_v2_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qif_v2_package"
+path = "fuzz_targets/qif_v2_package.rs"
 test = false
 doc = false
 bench = false

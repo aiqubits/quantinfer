@@ -390,3 +390,49 @@ fn ggml_quantized_projection_preserves_axis_layout_bytes_and_shape() {
         quantized
     );
 }
+
+#[test]
+fn empty_chunks_cannot_disagree_between_memory_and_file_verification() {
+    for codec in [Codec::None, Codec::Zstd, Codec::Lz4] {
+        let mut bytes = Vec::new();
+        write_qif_v2_with_codec(
+            sample_manifest(),
+            &BTreeMap::new(),
+            |_| Ok(&[0; 8]),
+            &mut bytes,
+            codec,
+        )
+        .unwrap();
+        let index = u64_at(&bytes, 56);
+        let length = u64_at(&bytes, 64);
+        let record = index + 48 + u64_at(&bytes, index + 16) + u64_at(&bytes, index + 24);
+        let mut chunk = bytes[index + length - 72..index + length].to_vec();
+        for (offset, value) in [(8, 8u64), (16, 0), (24, 4096), (32, 0)] {
+            chunk[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        chunk[40..72].copy_from_slice(&Sha256::digest([]));
+        bytes[index + length..index + length + 72].copy_from_slice(&chunk);
+        bytes[index + 12..index + 16].copy_from_slice(&2u32.to_le_bytes());
+        bytes[index + 40..index + 48].copy_from_slice(&144u64.to_le_bytes());
+        bytes[record + 44..record + 48].copy_from_slice(&2u32.to_le_bytes());
+        bytes[64..72].copy_from_slice(&((length + 72) as u64).to_le_bytes());
+        refresh_root(&mut bytes);
+        assert!(Reader::open(&bytes)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("empty physical"));
+        let path = std::env::temp_dir().join(format!(
+            "qif-empty-chunk-{}-{}.qif",
+            codec.id(),
+            std::process::id()
+        ));
+        fs::write(&path, bytes).unwrap();
+        assert!(FileReader::open(&path)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("empty physical"));
+        fs::remove_file(path).unwrap();
+    }
+}

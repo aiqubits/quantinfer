@@ -747,6 +747,9 @@ fn parse_package_index(
             stored_length: u64_at(bytes, offset + 32),
             checksum_sha256: bytes[offset + 40..offset + 72].try_into().unwrap(),
         };
+        if chunk.raw_length == 0 || chunk.stored_length == 0 {
+            return Err(invalid("empty physical chunks are not allowed"));
+        }
         if !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4)
             || chunk.raw_offset.checked_add(chunk.raw_length).is_none()
             || chunk

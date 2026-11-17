@@ -26,10 +26,31 @@ jobs:
           python3 tests/conformance/qif_v2_reader.py --input "$RUNNER_TEMP/qif-v2-fixture.qif"
           cc -std=c11 -Wall -Wextra -Werror tests/conformance/qif_v2_reader.c -o "$RUNNER_TEMP/qif-v2-c-reader"
           "$RUNNER_TEMP/qif-v2-c-reader" "$RUNNER_TEMP/qif-v2-fixture.qif"
-      - name: Smoke-test the QIF2 fuzz corpus
+
+  qif-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: nightly-2026-07-21
+          components: rust-src, rustfmt
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo fetch --manifest-path fuzz/Cargo.toml --locked
+      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+      - name: Exercise QIF parsing, codecs, verification and packages with ASan and coverage
+        shell: bash
         run: |
-          cargo run --manifest-path fuzz/Cargo.toml --bin qif_v2_reader -- \
-            -runs=128 fuzz/corpus/qif_v2_reader
+          for target in qif_v2_reader qif_v2_package; do
+            corpus="$RUNNER_TEMP/$target-corpus"
+            mkdir -p "$corpus"
+            cp "fuzz/corpus/$target/"* "$corpus/"
+            cargo fuzz run "$target" "$corpus" -- \
+              -runs=1024 -max_len=65536 -rss_limit_mb=1024 -timeout=5 2>&1 | tee "$target.log"
+            grep -Eq 'cov: [1-9][0-9]*' "$target.log"
+          done
+          git diff --exit-code -- fuzz/Cargo.lock
 
   cpu-simd:
     strategy:

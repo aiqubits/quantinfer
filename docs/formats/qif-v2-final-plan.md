@@ -4,7 +4,7 @@
 及 QIF v1 只用于内部 wire/version 实现与历史文档，不作为对外能力标识。
 
 状态：QIF-SINGLE、QIF-PACKAGE、独立压缩 chunk 和 QIF-SINGLE 的 Ed25519 签名 envelope
-已有实现，本文固定 wire 字段；跨语言 golden reader、seeded fuzz smoke test 和
+已有实现，本文固定 wire 字段；跨语言 golden reader、带 ASan/覆盖率的 seeded fuzz smoke test 和
 benchmark 已接入 CI。功能存在与 CI 通过不等于全部验收完成：跨语言验证范围、
 性能测量口径、默认模型加载器接入和长时 fuzzing 仍须分别验证。
 
@@ -301,6 +301,8 @@ v2.0 的 section 和 chunk offset MUST 是 4096 字节的倍数。默认 alignme
 
 无压缩 chunk MUST 可以通过 offset/length 直接读取；压缩 chunk MUST 可以独立解压和
 独立校验，禁止使用跨 chunk 的连续压缩流。mmap 只适用于无压缩 chunk。
+物理 chunk 的 `raw_length` 和 `stored_length` MUST 大于零；空 chunk 不允许出现在
+index 中，避免不同读取与验证路径对空压缩流产生不同解释。
 
 ### 6.2 Codec
 
@@ -481,7 +483,10 @@ file-backed/PACKAGE 能力描述为默认推理入口已经具有相同能力。
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
 5. QIF2 的 Rust fixture、dependency-free Python reader、C wire reader smoke test 和
-   `fuzz/qif_v2_reader` target 已完成；更多 malformed corpus 仍是持续验证工作。
+   `qif_v2_reader`、`qif_v2_package` fuzz target 已接入。CI 使用固定 nightly 和
+   cargo-fuzz，检查非零覆盖率；内存/文件/mmap、codec/full verify 和 PACKAGE index
+   都有受限运行路径。输入、输出和时长限制及未覆盖的 package JSON/path/shard
+   边界见 [fuzz/README.md](../../fuzz/README.md)，不能将 smoke 解释为长时或完整 fuzz 验收。
 6. 新 CLI 默认输出 QIF；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif` 直接发布当前 QIF 单文件（内部仍复用已验证的 GGUF 语义映射）。

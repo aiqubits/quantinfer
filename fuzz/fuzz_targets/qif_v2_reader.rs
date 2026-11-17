@@ -1,8 +1,14 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use quantinfer_format::qif::Reader as QifReader;
+use quantinfer_format_fuzz::{exercise_single, repair_single_root, MAX_INPUT};
 
 fuzz_target!(|data: &[u8]| {
-    let _ = QifReader::open(data);
+    if data.len() > MAX_INPUT {
+        return;
+    }
+    exercise_single(data);
+    if let Some(repaired) = repair_single_root(data) {
+        exercise_single(&repaired);
+    }
 });

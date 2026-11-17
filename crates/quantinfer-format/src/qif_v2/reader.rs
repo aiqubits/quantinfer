@@ -1002,6 +1002,9 @@ fn parse_index(
         if chunk.shard_id != 0 || !matches!(chunk.codec, CODEC_NONE | CODEC_ZSTD | CODEC_LZ4) {
             return Err(invalid("unsupported QIF single-file chunk codec"));
         }
+        if chunk.raw_length == 0 || chunk.stored_length == 0 {
+            return Err(invalid("empty physical chunks are not allowed"));
+        }
         if chunk.codec == CODEC_NONE && chunk.stored_length != chunk.raw_length {
             return Err(invalid(
                 "uncompressed chunk length disagrees with raw length",
