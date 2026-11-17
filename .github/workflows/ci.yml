@@ -20,12 +20,19 @@ jobs:
       - run: cargo run --locked -p quantinfer-xtask -- qif-bench
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
-      - name: Check the dependency-free QIF2 Python golden reader
+      - name: Install the independent C golden reader hash dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libssl-dev
+      - name: Compare QIF Rust, Python and C golden wire reports
         run: |
           cargo run --locked -p quantinfer-format --example qif_v2_fixture -- "$RUNNER_TEMP/qif-v2-fixture.qif"
-          python3 tests/conformance/qif_v2_reader.py --input "$RUNNER_TEMP/qif-v2-fixture.qif"
-          cc -std=c11 -Wall -Wextra -Werror tests/conformance/qif_v2_reader.c -o "$RUNNER_TEMP/qif-v2-c-reader"
-          "$RUNNER_TEMP/qif-v2-c-reader" "$RUNNER_TEMP/qif-v2-fixture.qif"
+          cargo build --locked -p quantinfer-format --example qif_v2_report
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            tests/conformance/qif_v2_reader.c -lcrypto -o "$RUNNER_TEMP/qif-v2-c-reader"
+          python3 tests/conformance/qif_v2_cross_language.py --input "$RUNNER_TEMP/qif-v2-fixture.qif" \
+            --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_v2_report" \
+            --c-reader "$RUNNER_TEMP/qif-v2-c-reader"
 
   qif-fuzz:
     runs-on: ubuntu-latest
