@@ -36,9 +36,9 @@ jobs:
         with:
           toolchain: nightly-2026-07-21
           components: rust-src, rustfmt
-      - run: cargo install cargo-fuzz --version 0.13.2 --locked
-      - run: cargo fetch --manifest-path fuzz/Cargo.toml --locked
-      - run: cargo fmt --manifest-path fuzz/Cargo.toml -- --check
+      - run: cargo +nightly-2026-07-21 install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +nightly-2026-07-21 fetch --manifest-path fuzz/Cargo.toml --locked
+      - run: cargo +nightly-2026-07-21 fmt --manifest-path fuzz/Cargo.toml -- --check
       - name: Exercise QIF parsing, codecs, verification and packages with ASan and coverage
         shell: bash
         run: |
@@ -46,7 +46,7 @@ jobs:
             corpus="$RUNNER_TEMP/$target-corpus"
             mkdir -p "$corpus"
             cp "fuzz/corpus/$target/"* "$corpus/"
-            cargo fuzz run "$target" "$corpus" -- \
+            cargo +nightly-2026-07-21 fuzz run "$target" "$corpus" -- \
               -runs=1024 -max_len=65536 -rss_limit_mb=1024 -timeout=5 2>&1 | tee "$target.log"
             grep -Eq 'cov: [1-9][0-9]*' "$target.log"
           done
