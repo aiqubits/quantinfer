@@ -37,8 +37,9 @@ impl ServedModel {
             .open_reader(None)
             .map_err(|error| error.to_string())?;
         let tokenizer = reader
-            .metadata()
-            .contains_key("tokenizer.ggml.tokens")
+            .metadata_value("tokenizer.ggml.tokens")
+            .map_err(|error| error.to_string())?
+            .is_some()
             .then(|| load_gguf_tokenizer(&reader))
             .transpose()
             .map_err(|error| error.to_string())?;

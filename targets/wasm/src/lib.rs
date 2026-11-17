@@ -20,8 +20,8 @@ impl WasmModel {
         let reader = PackedTensorReader::open_artifact(bytes)?;
         let decoder = CpuModel::from_gguf(&reader, None, None)?;
         let tokenizer = reader
-            .metadata()
-            .contains_key("tokenizer.ggml.tokens")
+            .metadata_value("tokenizer.ggml.tokens")?
+            .is_some()
             .then(|| load_gguf_tokenizer(&reader))
             .transpose()?;
         Ok(Self { decoder, tokenizer })

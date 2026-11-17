@@ -70,8 +70,9 @@ impl QuantInferBackend {
     ) -> Result<Graph> {
         let decoder = CpuModel::from_gguf(reader, manifest, None).map_err(invalid)?;
         let tokenizer = reader
-            .metadata()
-            .contains_key("tokenizer.ggml.tokens")
+            .metadata_value("tokenizer.ggml.tokens")
+            .map_err(invalid)?
+            .is_some()
             .then(|| load_gguf_tokenizer(reader))
             .transpose()
             .map_err(invalid)?;
@@ -101,7 +102,11 @@ impl BackendInner for QuantInferBackend {
         let mut artifact = Vec::new();
         artifact.try_reserve_exact(bytes.len()).map_err(invalid)?;
         artifact.extend_from_slice(bytes);
-        let reader = PackedTensorReader::open_artifact(artifact).map_err(invalid)?;
+        let reader = PackedTensorReader::open_artifact_with_memory_budget(
+            artifact,
+            Some(self.limits.model_bytes),
+        )
+        .map_err(invalid)?;
         self.graph(&reader, None)
     }
 
@@ -326,4 +331,55 @@ fn require_cpu(target: ExecutionTarget) -> Result<()> {
 
 fn invalid(message: impl std::fmt::Display) -> BackendError {
     BackendError::BackendAccess(wasmtime::Error::msg(message.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quantinfer::core::{DType, Shape, TensorStorageDescriptor};
+    use quantinfer::format::{
+        qif::{write_qif_with_codec, Codec},
+        TensorManifest,
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn compressed_builder_checks_materialized_weights_before_loading_the_model() {
+        let payload = vec![0; 1024 * 1024];
+        let mut manifest = ModelManifest::new("budget-fixture", "fixture");
+        manifest.tensors.push(TensorManifest {
+            name: "weight".into(),
+            descriptor: TensorStorageDescriptor::floating(
+                DType::F32,
+                Shape::from(vec![payload.len() / 4]),
+            )
+            .unwrap(),
+            checksum_sha256: None,
+        });
+        for codec in [Codec::Zstd, Codec::Lz4] {
+            let mut bytes = Vec::new();
+            write_qif_with_codec(
+                manifest.clone(),
+                &BTreeMap::new(),
+                |_| Ok(&payload),
+                &mut bytes,
+                codec,
+            )
+            .unwrap();
+            let mut backend = QuantInferBackend::new(WasiNnLimits {
+                model_bytes: bytes.len() + payload.len() - 1,
+                ..WasiNnLimits::default()
+            })
+            .unwrap();
+            let error = backend
+                .load(&[bytes.as_slice()], ExecutionTarget::Cpu)
+                .err()
+                .expect("decoded weights must not bypass the model budget");
+            let BackendError::BackendAccess(error) = error else {
+                panic!("unexpected budget error: {error:?}");
+            };
+            let error = error.to_string();
+            assert!(error.contains("memory budget"), "{error}");
+        }
+    }
 }

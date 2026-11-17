@@ -334,7 +334,7 @@ jobs:
           QUANTINFER_WASI_NN_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
         run: |
           cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
-            --features conformance --test host -- --include-ignored
+            --features conformance --lib --test host -- --include-ignored
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

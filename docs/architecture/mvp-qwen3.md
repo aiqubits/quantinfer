@@ -32,9 +32,22 @@ floating point where the model path requires it.
 The format layer supports GGUF, SafeTensors, package manifests, and the current
 QIF path. Retired QIF v1 code is limited to internal historical fixtures and is
 not accepted by the default runtime. The current QIF wire implementation is
-isolated in the private `quantinfer-format::qif_v2` boundary; package,
-compressed and cross-language conformance profiles are implemented and covered
-by the format tests and CI.
+isolated in the private `quantinfer-format::qif_v2` boundary. The format API
+supports SINGLE/PACKAGE, independent compression and file-backed reads; the
+default model loader currently materializes SINGLE artifacts and does not
+directly open native QIF-PACKAGE directories. Independent C/Python readers
+cover a fixed unsigned, uncompressed F32 golden profile. See the
+[conformance matrix](../formats/qif-conformance.md) for the tested boundaries.
+
+## Remaining plan boundaries
+
+The full general plan's later phases are not complete. GPTQ/AWQ/AutoRound/LLM
+Compressor adapters import/dequantize existing quantized artifacts rather than
+run those algorithms from floating weights. Ascend matmul and T-MAC/KleidiAI
+kernels require caller-supplied implementations. Studio currently provides
+registry browsing, generation and counters, not the full quantization,
+calibration and profile/package editing workflow. These are implementation
+gaps separate from outstanding vendor-hardware measurements.
 
 ## Repository workflow
 

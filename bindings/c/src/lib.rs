@@ -90,8 +90,9 @@ pub unsafe extern "C" fn quantinfer_model_open(
         let manifest = source.package().map(|package| &package.manifest);
         let decoder = CpuModel::from_gguf(&reader, manifest, None).map_err(runtime)?;
         let tokenizer = reader
-            .metadata()
-            .contains_key("tokenizer.ggml.tokens")
+            .metadata_value("tokenizer.ggml.tokens")
+            .map_err(runtime)?
+            .is_some()
             .then(|| load_gguf_tokenizer(&reader))
             .transpose()
             .map_err(runtime)?;

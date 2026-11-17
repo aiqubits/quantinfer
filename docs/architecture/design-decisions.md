@@ -9,15 +9,17 @@
 4. SafeTensors, GGUF, QIF, serialization, tokenizer, and numeric conversion
    libraries are boundary dependencies. Their external types are converted at
    format or adapter boundaries.
-5. WGPU, CUDA, Metal, Ascend, T-MAC, and KleidiAI implementations are backends,
-   not definitions of the core runtime.
+5. WGPU, CUDA, Metal, Ascend, T-MAC, and KleidiAI belong to backend boundaries,
+   not definitions of the core runtime. Current Ascend matmul and T-MAC/KleidiAI
+   kernel adapters require caller-supplied executors/kernels.
 6. WASI-NN is a deployment adapter, not a tensor library.
 7. Candle is an optional interoperability adapter, not a core dependency.
 8. GGUF and SafeTensors are compatibility formats. QIF v1 is retired and kept
    only as a legacy migration reference. The current QIF wire implementation is
-   isolated in the private `qif_v2` boundary; package, compression and
-   cross-language conformance paths are implemented and covered by workspace/CI
-   validation.
+   isolated in the private `qif_v2` boundary. PACKAGE and compression are format
+   API capabilities; the default model loader currently opens SINGLE artifacts.
+   Independent cross-language validation covers the fixed golden profile in the
+   [conformance matrix](../formats/qif-conformance.md).
 9. Quantization schemes are selected through logical core descriptors and
    provider contracts. Current native paths include Q8_0, Q4_0, Q4_K, Q5_K,
    Q6_K, mixed-precision plans, and imatrix statistics.
