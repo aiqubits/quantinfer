@@ -255,6 +255,9 @@ jobs:
               if [[ "$profile" == package ]]; then options+=(--max-shard-bytes 16777216); fi
               target/release/quantinfer-convert from-gguf --input smollm2-q4_0.gguf \
                 --output "$artifact" "${options[@]}"
+              cargo run --release --locked -p quantinfer-cli -- inspect --input "$artifact" --json \
+                > "qif-inspect-$profile-$codec.json"
+              cargo run --release --locked -p quantinfer-cli -- verify --input "$artifact" --json
               QUANTINFER_SMOLLM2_GGUF="$PWD/smollm2-q4_0.gguf" QUANTINFER_SMOLLM2_QIF="$PWD/$artifact" \
                 QUANTINFER_SMOLLM2_VARIANT=q4_0 cargo test --release --locked -p quantinfer-runtime \
                 --test smollm2_conformance -- --ignored --nocapture

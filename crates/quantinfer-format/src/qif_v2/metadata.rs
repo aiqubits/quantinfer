@@ -18,7 +18,8 @@ const MAX_DEPTH: usize = 32;
 const MAX_ITEMS: usize = 1_048_576;
 const MAX_STRING_BYTES: usize = 16 * 1024 * 1024;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "type", content = "value")]
 pub enum MetadataValue {
     U32(u32),
     U64(u64),

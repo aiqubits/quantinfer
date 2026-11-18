@@ -31,6 +31,8 @@ MappedFile, Codec}` 等稳定名称。`MappedFile::open` 为 unsafe 构造函数
 quantinfer-convert from-gguf --input model.gguf --output model-qif \
   --qif-profile package --qif-codec zstd --max-shard-bytes 16777216
 quantinfer-cli generate --input model-qif --tokens 1,2,3 --max-new-tokens 8
+quantinfer-cli inspect --input model-qif --json
+quantinfer-cli verify --input model-qif --json
 ```
 
 The Rust entry point `PackedTensorReader::open_path` accepts a SINGLE file or
@@ -41,3 +43,10 @@ reports that cache, counting aliases once. `verify_qif` streams all native
 payload/shard checks without filling it. `manifest.json` model packages retain
 their separately verified owned-file snapshot path. Neither API implies a
 hard process-memory bound or layer-level out-of-core execution.
+
+`inspect` reads native controls and reports typed QMB metadata (including maps),
+logical shapes, encoding/codec IDs and aliases. It marks `payload_verified=false`.
+`verify` streams every tensor/chunk and PACKAGE shard checksum, returning nonzero
+on failure and `payload_verified=true` only on success. Both commands report
+`publisher_trust=not_evaluated`: checking an embedded signature does not establish
+trust in that key. `inspect-gguf` retains its compatibility JSON for GGUF users.

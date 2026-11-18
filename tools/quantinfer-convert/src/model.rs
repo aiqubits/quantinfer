@@ -215,16 +215,18 @@ impl ConversionModel {
                 GgufValue::Bool(tie_word_embeddings),
             );
         }
-        writer.insert_metadata(
-            format!("{prefix}.architectures"),
-            GgufValue::Array(
-                architectures
-                    .iter()
-                    .cloned()
-                    .map(GgufValue::String)
-                    .collect(),
-            ),
-        );
+        if !architectures.is_empty() {
+            writer.insert_metadata(
+                format!("{prefix}.architectures"),
+                GgufValue::Array(
+                    architectures
+                        .iter()
+                        .cloned()
+                        .map(GgufValue::String)
+                        .collect(),
+                ),
+            );
+        }
         Ok(())
     }
 

@@ -2,13 +2,11 @@
 
 pub(crate) mod common;
 mod generate;
+mod inspect;
 mod package;
 
-use std::env;
-use std::path::PathBuf;
-
-use quantinfer::cpu::ModelSource;
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode};
+use std::env;
 
 use crate::calibration;
 
@@ -42,33 +40,11 @@ pub(crate) fn run() -> Result<(), String> {
         }
         Some("inspect-gguf") => {
             validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
-            let path = option_value(&arguments[1..], "--input")?
-                .map(PathBuf::from)
-                .ok_or_else(|| "inspect-gguf requires --input".to_owned())?;
-            let source = ModelSource::open(&path).map_err(|error| error.to_string())?;
-            let reader = source
-                .open_reader(None)
-                .map_err(|error| error.to_string())?;
-            if has_flag(&arguments[1..], "--json") {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "metadata": reader.metadata(),
-                        "tensors": reader.tensors(),
-                    })
-                );
-                return Ok(());
-            }
-            println!("metadata: {}", reader.metadata().len());
-            for key in reader.metadata().keys() {
-                println!("metadata_key={key}");
-            }
-            for tensor in reader.tensors() {
-                println!(
-                    "{} {:?} {:?} {} bytes",
-                    tensor.name, tensor.dtype, tensor.shape, tensor.size
-                );
-            }
+            inspect::inspect_gguf(&arguments[1..])?;
+        }
+        Some("inspect" | "verify") => {
+            validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
+            inspect::native(&arguments[1..], arguments[0] == "verify")?;
         }
         Some("verify-package") => {
             validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;

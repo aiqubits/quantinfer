@@ -166,9 +166,13 @@ operation 名称固定为 `matmul`、`quantized_matmul`、`attention`、`rms_nor
 metadata 使用 QuantInfer 定义的 QMB（QIF Metadata Binary）typed map，而不是
 强制引入第三方 object serialization。QMB 的 key 按 UTF-8 编码字节排序，所有
 map/array 使用 definite-length 编码，因此同一逻辑 metadata 只有一种 wire
-表示。当前 `quantinfer-cli inspect-gguf --input MODEL.qif --json` 可检查兼容加载器
-支持的 QIF 单文件；其 GGUF metadata 视图不包含 Map，完整原生 metadata 由
-`qif::Reader::metadata()` 或 `PackedTensorReader::qif_metadata()` 取得。
+表示。`quantinfer-cli inspect --input MODEL.qif|PACKAGE_DIR --json` 按原生控制区
+展示完整 metadata、manifest、logical shape、encoding/codec ID 与 alias。
+metadata 的 JSON 展示采用 `{ "type": "U32", "value": 1 }` 等带类型表示，保留
+QMB 数值宽度、数组与 Map；该表示是检查结果，不是另一种权重 wire 编码。
+兼容命令 `inspect-gguf` 保留 GGUF 视图，省略含 Map 的 metadata 条目。
+完整原生 metadata 也可由 `qif::Reader::metadata()` 或
+`PackedTensorReader::qif_metadata()` 取得。
 JSON 不是 payload wire format。
 
 允许的值类型：
@@ -337,10 +341,11 @@ raw chunk；PACKAGE 还受 shard 大小与压缩后大小约束。无压缩 chun
 
 文件和 PACKAGE 的 `verify()` 增量计算 tensor hash 并校验有限数值：无压缩块
 使用固定大小缓冲区，压缩块逐块解码，alias 不重复物化或校验相同物理 payload。
-这不表示任意资源配置都能加载整个模型；默认 packed loader 仍需物化压缩权重。
-带内存预算的默认模型入口会在解压前检查输入大小加物理权重物化大小，alias
-只计一次；该检查是最低存储需求的预检，不包括 allocator、解码 workspace 或
-推理状态的全部峰值开销。
+这不表示任意资源配置都能加载整个模型；文件后端请求 tensor 时仍需物化所选
+tensor 的 raw bytes，Dense model 构造还需要解码后的权重。
+带内存预算的默认模型入口会在解压前检查最低存储需求：原生 QIF 文件后端检查
+序列化控制区加物理权重大小，owned buffer 入口还计入其保留的输入。alias
+只计一次；该检查不包括 allocator、解码 workspace 或推理状态的全部峰值开销。
 
 packed reader 原生保留 QIF Map 元数据；其 GGUF 兼容 metadata 视图只暴露可转换
 的值。模型适配器通过 `metadata_value()` 查询已知参数，遇到包含 Map 的值时
@@ -486,6 +491,9 @@ API 要求：
   并仍需通过同一 QIF reader 校验。只读映射和 hash 校验不提供文件不变性保证；
   不能满足该前提时使用安全的 `FileReader`；
 - reader 可选择调用 `verify` 执行全 payload 校验；
+- CLI `inspect` 仅校验控制区并标记 `payload_verified=false`；`verify` 对原生
+  SINGLE/PACKAGE 执行流式全量校验，失败返回非零退出码。嵌入签名的数学有效性
+  不等于发布者已受信任，检查结果的 `publisher_trust=not_evaluated` 明确此边界；
 - 文件、内存 buffer 和 package shard 使用同一逻辑 tensor/chunk 校验规则；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
 
