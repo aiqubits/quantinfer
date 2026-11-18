@@ -124,3 +124,75 @@ and omit `QUANTINFER_K_QUANT_CONVERTER` when running the test.
 When evaluating exports, use the data re-read from the published artifact;
 an F32 in-memory scale can change when stored as F16. A correct in-memory
 report alone does not establish the exported artifact's reconstruction error.
+`QuantizedData::with_storage_precision()` preserves codes and returns a copy
+with the current block formats' F16 scales; Float remains F32.
+`error_report_for_storage()` evaluates this precision without changing the
+source Core tensor or existing quantizer output bytes. It detects underflow
+and rejects unrepresentable F16 scales. Neither method verifies a file.
+
+## Measured precision optimization
+
+Use `--mixed-precision-optimize` to choose encodings from measured reconstruction
+errors under a global byte budget. This mode is separate from suffix-based
+policies and explicit assignments. It accepts floating SafeTensors inputs in
+the native QuantInfer layout. Embeddings, the output head and other nonprojection
+weights remain F32 and consume the fixed part of the budget.
+
+```json
+{
+  "maximum_encoded_weight_bytes": 195000000,
+  "candidates": ["q4_k", "q5_k", "q6_k", "q8_0"],
+  "importance_weights": "optimized-imatrix.json",
+  "max_history_states": 4194304
+}
+```
+
+The optional importance path is relative to the policy file and uses the
+collector's JSON or the supported GGUF imatrix input. It must cover every
+projection exactly. Without importance weights the objective is ordinary
+reconstruction SSE. With them, it is the diagonal activation proxy
+`sum_i E[x_i²] * sum_j (W[i,j] - restored[i,j])²` for native `[input, output]`
+weights. It does not model channel correlations or directly optimize task
+accuracy. Candidate evaluation includes F16 storage rounding and records
+unaligned/nonrepresentable candidates as unavailable. F32 is eligible only
+when explicitly listed as `f32`.
+
+```sh
+quantinfer-convert --config config.json --weights model.safetensors \
+  --tokenizer tokenizer.json --mixed-precision-optimize policy.json \
+  --mixed-precision-report NEW_REPORT.json \
+  --output-format gguf --output model-optimized.gguf
+```
+
+QIF publication uses the same options with `--output-format qif` and its normal
+profile/codec options. The report must be a new file, distinct from the artifact,
+manifest and checksum output. Other quantization/mixed/imatrix flags cannot be
+combined with optimization; the policy owns those decisions.
+
+The budget is the sum of encoded **logical tensor payload** bytes, including
+fixed F32 tensors. It excludes alias deduplication, container metadata/alignment,
+codec effects, decoded Core storage, KV and workspace. It is neither a file-size
+nor a process-memory limit. This makes the same plan usable across containers;
+QIF deduplication may reduce the physical payload further.
+
+The solver keeps a Pareto frontier and returns the minimum summed measured F64
+objective among the supplied candidates that fit this budget. It prefers fewer
+bytes on equal error and then deterministic traversal order. It does not use a
+greedy upgrade heuristic or silently fall back to an approximate plan. The
+default frontier/history limits are 65,536/1,048,576 states; configurable ceilings
+are 1,048,576/4,194,304. Infeasible budgets, exhausted limits and unrepresentable
+aggregate objectives fail explicitly. Independent exhaustive assignments test
+the optimum, including a case where greedy upgrades lose.
+
+Planning reads projections before the writing pass and rechecks their F32 input
+hashes during writing. Every candidate is quantized from floating weights;
+the chosen export is not quantized from another quantized candidate. Reports
+record source projection hashes, per-candidate costs/errors, unavailable choices,
+selections, limits, policy/calibration hashes and the published artifact hashes.
+This adds conversion work and does not imply faster model loading or inference.
+
+The fixed SmolLM2 CI case calibrates on three declared prompts, selects among
+four encodings under 195,000,000 logical payload bytes, and checks the written
+artifact against F32, SINGLE/none and PACKAGE/zstd. It retains full logits,
+KL/Top-K, weight error, generation and KV checks. This is a fixed-model
+acceptance case, not a universal quality guarantee for other policies/models.

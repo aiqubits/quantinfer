@@ -254,6 +254,30 @@ jobs:
           target/release/quantinfer-cli generate --input smollm2-imatrix-q4_0.gguf \
             --prompt 'The capital of France is' --max-new-tokens 8 --max-sequence-length 64 \
             | grep -Fx 'generated_tokens=[260, 3575, 282, 260, 1798, 30, 657, 314]'
+      - name: Optimize native precision from calibrated reconstruction errors
+        shell: bash
+        env:
+          QUANTINFER_OPTIMIZED_MODEL: smollm2
+          QUANTINFER_OPTIMIZED_DIR: ${{ github.workspace }}
+          QUANTINFER_TEST_QIF_PUBLISHER: ${{ github.workspace }}/target/release/quantinfer-convert
+          QUANTINFER_OPTIMIZED_QUALITY_REPORT: ${{ github.workspace }}/smollm2-optimized-quality.json
+        run: |
+          printf '%s\n' '"Hello from the CPU runtime."' \
+            '"A short example of model quantization."' \
+            '"Numbers and words have different patterns."' > optimized-calibration.jsonl
+          target/release/quantinfer-cli collect-imatrix --input smollm2-f32.gguf \
+            --dataset optimized-calibration.jsonl --output optimized-imatrix.json --max-sequence-length 64
+          jq -n '{maximum_encoded_weight_bytes:195000000,
+            candidates:["q4_k","q5_k","q6_k","q8_0"],
+            importance_weights:"optimized-imatrix.json",max_history_states:4194304}' \
+            > smollm2-precision-policy.json
+          target/release/quantinfer-convert --config config.json --weights model.safetensors \
+            --tokenizer tokenizer.json --mixed-precision-optimize smollm2-precision-policy.json \
+            --mixed-precision-report smollm2-precision-report.json \
+            --output-format gguf --output smollm2-optimized.gguf
+          cargo test --release --locked -p quantinfer-runtime --test optimized_precision_conformance \
+            -- --ignored --nocapture | tee smollm2-optimized-quality.log
+          rm -- smollm2-optimized.gguf
       - name: Transcode SmolLM2 Q4_0 to QIF and verify inference
         shell: bash
         run: |
@@ -388,6 +412,10 @@ jobs:
           path: |
             smollm2-k-quant-*.json
             smollm2-k-quant-quality.log
+            smollm2-precision-*.json
+            smollm2-optimized-quality.*
+            optimized-calibration.jsonl
+            optimized-imatrix.json
             smollm2-*.inventory
             smollm2-*-benchmark.txt
             smollm2-*-paired-*.txt

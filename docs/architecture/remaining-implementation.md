@@ -12,7 +12,7 @@
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
-| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 误差报告的 F64 累加、相对 L2 与非有限结果处理已修复；K-quant 生产端与扩展矩阵本轮推进，见下方；复杂策略仍未完成 |
+| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵远端通过；全局校准预算策略已本地闭环并接入 CI，当前批远端验证待完成，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
@@ -159,3 +159,27 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   不把实现边界改写成已完成高级量化或完整 Studio。
   `62644a1` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44264709769)
   六个 job 均通过。
+- `c8c558c` 的八项工作流均成功，包括 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44266091791)
+  与 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44266091876)。
+  [SmolLM2 job](https://github.com/aiqubits/quantinfer/actions/runs/44266091876/job/134670856824)
+  和 [Qwen3 job](https://github.com/aiqubits/quantinfer/actions/runs/44266091876/job/134671746180)
+  各实际记录三种 K quality、六次 QIF parity，包含每份临时产物的 hash；数值与上述
+  本地结果一致。原有独立参考、生成、RSS/KV、同机性能门禁也通过。
+- 新的 `--mixed-precision-optimize` 从浮点投影的实际存储精度重建误差建立候选，
+  用精确 Pareto frontier 在全局逻辑 payload 字节预算内选型，可用实际激活 imatrix
+  的对角权重。solver 有独立穷举、反贪心样例、alias group、确定性、溢出、不可行
+  与资源耗尽检查；达到上限明确失败，不返回假称最优的近似结果。转换器保留两个
+  pass 的输入 hash 检查、实际编码成本、选择和产物 hash 报告。该预算不是容器
+  大小或进程内存预算，不把校准代理目标称为任务准确率。
+- 原生 block 的 `with_storage_precision` / `error_report_for_storage` 显式评估 F16
+  scale 的存储精度；F32 Core 对象和旧 quantizer 的输出 bytes 保持原语义。
+  三个格式 round-trip 回归覆盖六种数据变体、极小值和范围拒绝，并与实际 GGUF
+  重读结果比较。新模式关闭时，Qwen3 F32/Q8_0 的完整文件 hash 仍与固定基线一致。
+- 本地 SmolLM2 以三个独立声明的提示采集 210 个投影的 imatrix，在 195,000,000
+  字节上限内选出 194,999,328 逻辑 payload 字节：Q4_K 6、Q5_K 91、Q6_K 85、
+  Q8_0 28 个投影。固定质量提示的 KL 为 0.0084698 nats、Top-10 重合 10，
+  生成 token 与 F32 golden 一致；SINGLE/none 与 PACKAGE/zstd 的所有 tensor
+  inventory/raw hash、logits、generation、stream/KV 对照通过。该校准预算方案的
+  真实质量样例目前是 SmolLM2，不扩大为任意模型和政策；Qwen3 的 K 矩阵单独验收。
+  本地 workspace 合计 236 passed / 0 failed / 5 ignored，Clippy、两个 xtask smoke
+  通过；当前批校准预算 workflow 的远端结果待对应提交验证。

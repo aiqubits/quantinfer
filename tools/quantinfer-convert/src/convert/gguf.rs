@@ -25,6 +25,7 @@ use crate::common::{
     validate_options,
 };
 use crate::model::ConversionModel;
+use crate::optimize::{OptimizationOptions, OptimizedConversion};
 use crate::policy::{
     load_mixed_precision, load_mixed_precision_policy, parse_quantization, q8_provider,
 };
@@ -75,6 +76,8 @@ pub(crate) fn run() -> Result<(), String> {
             ("--quantize", true),
             ("--mixed-precision", true),
             ("--mixed-precision-policy", true),
+            ("--mixed-precision-optimize", true),
+            ("--mixed-precision-report", true),
             ("--imatrix", true),
             ("--ggml", false),
             ("--gguf-layout", true),
@@ -147,6 +150,14 @@ pub(crate) fn run() -> Result<(), String> {
     };
     let tokenizer_pre = optional_value(&arguments, "--tokenizer-pre");
     let use_ggml = arguments.iter().any(|argument| argument == "--ggml");
+    let optimization_options = OptimizationOptions::parse(
+        &arguments,
+        &output_path,
+        manifest_path.as_deref(),
+        ggml_layout,
+    )?;
+    let optimize_path = optimization_options.as_ref().map(|o| o.policy.as_path());
+    let precision_report = optimization_options.as_ref().map(|o| o.report.as_path());
     if use_ggml && quantization != QuantizationScheme::Q8_0 {
         return Err("--ggml requires --quantize q8_0".to_owned());
     }
@@ -194,9 +205,25 @@ pub(crate) fn run() -> Result<(), String> {
         None
     };
     let weights = WeightSource::open(&weights_path, weights_checksums.as_deref())?;
+    let optimized = optimize_path
+        .map(|path| OptimizedConversion::prepare(&weights, path))
+        .transpose()?;
+    let artifact_quantization = optimized.as_ref().map_or_else(
+        || {
+            if mixed_precision.is_some() || mixed_precision_policy.is_some() {
+                QuantizationScheme::Mixed
+            } else {
+                quantization
+            }
+        },
+        |plan| plan.variant,
+    );
 
     let mut writer = GgufWriter::new();
     model.write_metadata(&mut writer, ggml_file_type)?;
+    if let Some(plan) = &optimized {
+        plan.metadata(&mut writer);
+    }
     let mut imatrix = if let Some(path) = imatrix_path {
         let bytes =
             fs::read(&path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
@@ -323,6 +350,9 @@ pub(crate) fn run() -> Result<(), String> {
             values.len()
         };
         let is_projection = is_quantizable_linear(output_name);
+        if let Some(plan) = &optimized {
+            plan.validate_input(output_name, &values)?;
+        }
         let assignment = mixed_precision
             .as_ref()
             .and_then(|plan| plan.scheme_for(output_name))
@@ -330,6 +360,11 @@ pub(crate) fn run() -> Result<(), String> {
                 mixed_precision_policy
                     .as_ref()
                     .and_then(|policy| policy.scheme_for(output_name))
+            })
+            .or_else(|| {
+                optimized
+                    .as_ref()
+                    .and_then(|plan| plan.plan.scheme_for(output_name))
             });
         let requested_scheme = assignment.unwrap_or(quantization);
         let block_size = match requested_scheme {
@@ -482,6 +517,9 @@ pub(crate) fn run() -> Result<(), String> {
             .and_then(|value| value.to_str())
             .unwrap_or("model");
         qif_options.publish(&reader, model_id, &output_path)?;
+        if let (Some(plan), Some(path)) = (&optimized, &precision_report) {
+            plan.write_report(path, &output_path)?;
+        }
         println!(
             "converted {} tensors to {}",
             weights.tensor_count(),
@@ -515,11 +553,7 @@ pub(crate) fn run() -> Result<(), String> {
     if let (Some(manifest_path), Some(checksum)) = (manifest_path, checksum) {
         let mut manifest = ModelManifest::new(model.architecture(), model.architecture());
         manifest.source_format = "safetensors-to-gguf".to_owned();
-        manifest.quantization = if mixed_precision.is_some() || mixed_precision_policy.is_some() {
-            QuantizationScheme::Mixed
-        } else {
-            quantization
-        };
+        manifest.quantization = artifact_quantization;
         manifest.tensors = manifest_tensors;
         manifest.execution_variants.push(ExecutionVariant {
             name: "cpu-scalar".to_owned(),
@@ -542,6 +576,9 @@ pub(crate) fn run() -> Result<(), String> {
             fs::write(parent.join("checksums.sha256"), manifest.checksums_sha256())
                 .map_err(|error| format!("cannot write checksums.sha256: {error}"))?;
         }
+    }
+    if let (Some(plan), Some(path)) = (&optimized, &precision_report) {
+        plan.write_report(path, &output_path)?;
     }
     println!(
         "converted {} tensors to {}",

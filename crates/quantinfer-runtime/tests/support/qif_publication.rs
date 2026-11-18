@@ -2,6 +2,7 @@
 use std::{
     collections::BTreeMap,
     env,
+    ffi::OsStr,
     fs::{self, File},
     path::{Path, PathBuf},
     process::Command,
@@ -18,13 +19,19 @@ pub(super) struct Artifacts {
 
 impl Artifacts {
     pub fn open_or_publish(root: &Path, kind: &str, variant: &str) -> Self {
-        let Some(converter) = env::var_os("QUANTINFER_K_QUANT_CONVERTER") else {
+        let Some(converter) = env::var_os("QUANTINFER_TEST_QIF_PUBLISHER")
+            .or_else(|| env::var_os("QUANTINFER_K_QUANT_CONVERTER"))
+        else {
             return Self {
                 single: root.join(format!("{kind}-{variant}.qif")),
                 package: root.join(format!("{kind}-{variant}-package")),
                 owned: None,
             };
         };
+        Self::publish_input(&root.join(format!("{kind}-{variant}.gguf")), &converter)
+    }
+
+    fn publish_input(input: &Path, converter: &OsStr) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let owned = (0..100)
             .find_map(|_| {
@@ -49,11 +56,11 @@ impl Artifacts {
             ("single", "none", &artifacts.single),
             ("package", "zstd", &artifacts.package),
         ] {
-            let mut command = Command::new(&converter);
+            let mut command = Command::new(converter);
             command
                 .arg("from-gguf")
                 .arg("--input")
-                .arg(root.join(format!("{kind}-{variant}.gguf")))
+                .arg(input)
                 .arg("--output")
                 .arg(output)
                 .args(["--qif-profile", profile, "--qif-codec", codec]);

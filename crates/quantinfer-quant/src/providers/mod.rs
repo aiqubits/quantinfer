@@ -153,6 +153,15 @@ pub trait QuantizationProvider {
         }
         Ok(report)
     }
+    /// Measure the reconstruction after rounding the current block encodings'
+    /// scales to their F16 storage precision. This does not verify a file.
+    fn error_report_for_storage(
+        &self,
+        reference: &Tensor,
+        input: &QuantizedData,
+    ) -> Result<QuantizationErrorReport> {
+        self.error_report(reference, &input.with_storage_precision()?)
+    }
     fn export_layout(&self) -> &'static str;
 }
 
@@ -162,6 +171,7 @@ mod q4_k;
 mod q5_k;
 mod q6_k;
 mod q8;
+mod storage;
 
 #[cfg(test)]
 mod tests;

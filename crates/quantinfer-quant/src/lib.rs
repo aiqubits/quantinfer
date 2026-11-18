@@ -5,11 +5,17 @@
 pub type Result<T> = std::result::Result<T, QuantizationError>;
 
 mod imatrix;
+mod mixed_precision;
 mod providers;
 mod schemes;
 mod types;
 
 pub use imatrix::ImatrixQ4_0Provider;
+pub use mixed_precision::{
+    measure_linear_precision_candidates, optimize_mixed_precision, OptimizedPrecisionPlan,
+    PrecisionCandidate, PrecisionGroup, PrecisionMeasurements, PrecisionSearchLimits,
+    UnavailablePrecision,
+};
 pub use providers::{
     FloatProvider, GgmlQ8_0Provider, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
     NativeQ6KProvider, NativeQ8_0Provider, QuantizationErrorReport, QuantizationProvider,
