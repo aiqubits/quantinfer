@@ -2,7 +2,7 @@
 use quantinfer::{
     cpu::{CpuModel, ModelSource},
     format::{
-        qif::{import_gguf_package, import_gguf_with_codec, Codec},
+        qif::{import_gguf_package, import_gguf_with_codec, write_qif, Codec, Reader},
         GgufReader, GgufValue, GgufWriter,
     },
     runtime::DecoderModel,
@@ -62,6 +62,40 @@ fn default_model_source_loads_both_native_profiles_without_retaining_raw_weights
     let logits = expected
         .forward(&[1, 2], &mut expected.new_cache(16).unwrap())
         .unwrap();
+    let mut required_bytes = Vec::new();
+    import_gguf_with_codec(&original, "required", &mut required_bytes, Codec::None).unwrap();
+    let native = Reader::open(&required_bytes).unwrap();
+    let mut required = native.manifest().clone();
+    required.compatibility.required_features = quantinfer::runtime::RUNTIME_FEATURES
+        .iter()
+        .map(|name| (*name).into())
+        .collect();
+    required.tensors[0].descriptor.backend_requirements = vec!["cpu".into()];
+    let payloads: BTreeMap<_, _> = native
+        .tensors()
+        .iter()
+        .map(|info| (info.name.clone(), native.tensor_data(&info.name).unwrap()))
+        .collect();
+    let mut bytes = Vec::new();
+    write_qif(
+        required.clone(),
+        native.metadata(),
+        |name| Ok(payloads[name].as_slice()),
+        &mut bytes,
+    )
+    .unwrap();
+    let supported = GgufReader::open_artifact(bytes).unwrap();
+    let loaded = CpuModel::from_gguf(&supported, None, None).unwrap();
+    let actual = loaded
+        .forward(&[1, 2], &mut loaded.new_cache(16).unwrap())
+        .unwrap();
+    assert_eq!(actual.as_f32().unwrap(), logits.as_f32().unwrap());
+    required.tensors[0].descriptor.backend_requirements = vec!["cuda".into()];
+    assert!(CpuModel::from_gguf(&supported, Some(&required), None)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("backend requirement cuda"));
     let root = std::env::temp_dir().join(format!("native-runtime-{}", std::process::id()));
     fs::create_dir(&root).unwrap();
     for codec in [Codec::None, Codec::Zstd, Codec::Lz4] {

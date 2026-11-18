@@ -21,6 +21,9 @@ impl<B: quantinfer_kernel::KernelBackend> LlamaModel<B> {
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
+        if let Some(manifest) = reader.embedded_manifest() {
+            crate::validate_manifest_for_backend(manifest, &backend)?;
+        }
         let ggml_layout = uses_ggml_layout(reader)?;
         let adapter = LlamaAdapter::new(config_from_gguf(reader, ggml_layout)?, "llama")
             .map_err(RuntimeError::InvalidInput)?;

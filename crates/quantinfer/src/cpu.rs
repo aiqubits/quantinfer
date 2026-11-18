@@ -163,6 +163,12 @@ fn resolve_backend_impl(
             }
         }
     }
+    if let Some(manifest) = manifest {
+        quantinfer_runtime::validate_manifest_for_backend_id(
+            manifest,
+            Some(quantinfer_kernel::BackendId::Cpu),
+        )?;
+    }
     match plan.provider_name.as_str() {
         "cpu-scalar" => Ok(CpuScalar::with_config(CpuRuntimeConfig {
             threads: profile.map_or(1, |profile| profile.thread_count),

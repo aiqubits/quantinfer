@@ -142,6 +142,10 @@ impl RuntimeProvider for CudaBackend {
 }
 
 impl KernelBackend for CudaBackend {
+    fn backend_id(&self) -> Option<quantinfer_kernel::BackendId> {
+        Some(quantinfer_kernel::BackendId::Cuda)
+    }
+
     fn reuse_workspace(&self) -> bool {
         self.cpu.reuse_workspace()
     }

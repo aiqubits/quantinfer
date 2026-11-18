@@ -37,7 +37,10 @@ pub(crate) use model::{lm_head_source, tensor_source};
 pub use profile::{InferenceProfile, MemoryPlan};
 pub use provider::*;
 pub use qwen3::{Qwen3LayerWeights, Qwen3Model};
-pub use requirements::{required_manifest_operations, validate_manifest_for_runtime};
+pub use requirements::{
+    required_manifest_operations, validate_manifest_for_backend, validate_manifest_for_backend_id,
+    validate_manifest_for_runtime, RUNTIME_FEATURES,
+};
 pub use scheduler::{DecodeEvent, DecodeScheduler};
 pub use session::{DecodeSession, DecodeStopReason};
 pub use storage::{

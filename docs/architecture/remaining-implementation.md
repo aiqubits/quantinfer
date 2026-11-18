@@ -7,10 +7,10 @@
 | 项目 | 要求和完成证据 | 当前状态 |
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
-| QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | 发布选项及六种组合回归已实现；原生 inspect/verify 已有本地回归，等待远端验收 |
+| QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | 未完成 |
-| 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | 三个 ASan target、JSON/QMB/path/shard corpus、每日定时及缓存/日志/失败 artifact 已接入；本地时间预算运行通过，等待远端首轮验收 |
-| 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | 未完成 |
+| 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
+| 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | 已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 均核对实际后端，本地回归通过，等待远端验收；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际库绑定及 executor/kernel 实现、能力声明、可执行 ABI/契约测试；硬件实测单列 | 未完成 |
@@ -26,6 +26,9 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   通过。本地 201 项运行时测试通过、3 ignored；format release 87 项通过，另有
   mmap 编译失败 doctest。六个 64 MiB 样本分别经原生 reader 和默认运行时 reader
   在 48 MiB 地址空间下完成流式校验，共 12 次进程级检查。
+  [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44225308990)
+  的两模型 job、数值/生成/同机性能门禁均已通过；custom external-artifact job
+  因无输入按配置 skipped。
 - 同一提交的 [SmolLM2 job](https://github.com/aiqubits/quantinfer/actions/runs/44225308990/job/134536924695)
   已通过 Q4_0 的六种原生 QIF 组合（tensor/forward/generation 对照）、F32 原生
   PACKAGE 的 HTTP、C/Python binding 和 WASI-NN guest 检查；不扩大为全部 dtype
@@ -33,9 +36,21 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
 - 原生 `inspect`/`verify` 的本地回归保留 Map、整数宽度、逻辑 shape、alias、codec，
   区分控制区检查、全量 payload 校验与发布者信任。SafeTensors 发布另有六种组合
   对照，并修复省略可选 `architectures` 时空 GGUF array 导致发布失败的问题。
-  此批本地 workspace 为 204 passed / 0 failed / 3 ignored；远端证据待提交验收。
+  此批 `184e7ca` 本地 workspace 为 204 passed / 0 failed / 3 ignored；
+  [远端 CI](https://github.com/aiqubits/quantinfer/actions/runs/44226860535) 已通过，
+  [SmolLM2 job](https://github.com/aiqubits/quantinfer/actions/runs/44226860652/job/134542024412)
+  已通过原生六种组合的真实模型 inspect/verify 和生成对照。
 - 三个 ASan fuzz target 的本地 60 秒时间预算运行均正常结束（libFuzzer 实际
   记录 61 秒）：reader 201,869、PACKAGE index 148,249、PACKAGE controls 233,865
   次；coverage 均非零。PACKAGE controls 的 90 个基线 seed 覆盖三种 codec、alias、
   重复/过深 JSON、metadata、shard 与路径；每日任务设置 900 秒/target。
   有限 fuzz 没有证明全部拓扑、并发文件系统或所有恶意输入安全。
+- `6421b63` 已接入每日持续 fuzz 与 smoke artifact 保存。90 个确定性基线 seed
+  之外还保留了首轮探索得到的 coverage corpus；[远端 CI](https://github.com/aiqubits/quantinfer/actions/runs/44227476116)
+  与 [Sustained Fuzz 首轮](https://github.com/aiqubits/quantinfer/actions/runs/44227476126)
+  均成功。该 push 首轮各运行 61 秒，reader 94,344、PACKAGE index 59,713、PACKAGE
+  controls 86,674 次；三个 job 都保存了日志/corpus artifact。每日 900 秒配置
+  不能解释为首轮已经运行 900 秒，也不以定时任务代替后续失败排查。
+- 必需能力 registry 的本地 workspace 为 206 passed / 0 failed / 3 ignored，
+  Clippy 通过；另验证 WGPU/CUDA/CPU SIMD 编译及 Ascend native 契约测试，
+  这些编译/契约证据不是厂商设备实测。

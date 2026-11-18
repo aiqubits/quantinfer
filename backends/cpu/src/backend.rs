@@ -9,6 +9,10 @@ use quantinfer_kernel::{KernelBackend, KernelError, Result};
 use super::config::CpuScalar;
 
 impl KernelBackend for CpuScalar {
+    fn backend_id(&self) -> Option<quantinfer_kernel::BackendId> {
+        Some(quantinfer_kernel::BackendId::Cpu)
+    }
+
     fn reuse_workspace(&self) -> bool {
         self.config.workspace_reuse
     }

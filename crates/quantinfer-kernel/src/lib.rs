@@ -37,8 +37,56 @@ impl From<CoreError> for KernelError {
     }
 }
 
+/// Registered implementation identities for mandatory backend requirements.
+/// Identity does not attest hardware availability or acceleration of every op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BackendId {
+    Cpu,
+    Wgpu,
+    Cuda,
+    Metal,
+    Ascend,
+    Tmac,
+    KleidiAi,
+}
+
+impl BackendId {
+    pub const ALL: &'static [Self] = &[
+        Self::Cpu,
+        Self::Wgpu,
+        Self::Cuda,
+        Self::Metal,
+        Self::Ascend,
+        Self::Tmac,
+        Self::KleidiAi,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Wgpu => "wgpu",
+            Self::Cuda => "cuda",
+            Self::Metal => "metal",
+            Self::Ascend => "ascend",
+            Self::Tmac => "t-mac",
+            Self::KleidiAi => "kleidiai",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|id| id.name() == name)
+    }
+}
+
 /// The minimal operator contract required by the first native CPU runtime.
 pub trait KernelBackend {
+    /// Custom backends default to no registered identity. This cannot satisfy
+    /// a mandatory backend declaration until explicitly implemented.
+    fn backend_id(&self) -> Option<BackendId> {
+        None
+    }
+
     /// Keep temporary buffers across calls within one sequence.
     fn reuse_workspace(&self) -> bool {
         false

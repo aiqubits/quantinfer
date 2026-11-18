@@ -1,5 +1,6 @@
 //! Runtime preflight for mandatory manifest declarations.
 use quantinfer_format::ModelManifest;
+use quantinfer_kernel::{BackendId, KernelBackend};
 use semver::Version;
 
 use crate::{Operation, Result, RuntimeError};
@@ -8,9 +9,17 @@ fn invalid(message: impl Into<String>) -> RuntimeError {
     RuntimeError::InvalidInput(message.into())
 }
 
-/// Validate runtime compatibility without preventing format-only inspection.
-/// Feature/backend requirement names have no registered implementation yet;
-/// nonempty mandatory lists must fail instead of silently being ignored.
+/// Format capabilities present in every build of the current runtime. These
+/// refer to parsing/decoding semantics, not a particular filesystem transport.
+pub const RUNTIME_FEATURES: &[&str] = &[
+    "qif.metadata.map",
+    "qif.tensor.alias",
+    "qif.codec.zstd",
+    "qif.codec.lz4",
+];
+
+/// Validate version and registered names without selecting a backend. Actual
+/// model execution must additionally call `validate_manifest_for_backend`.
 pub fn validate_manifest_for_runtime(manifest: &ModelManifest) -> Result<()> {
     manifest.validate()?;
     if let Some(minimum) = &manifest.compatibility.minimum_quantinfer_version {
@@ -24,15 +33,19 @@ pub fn validate_manifest_for_runtime(manifest: &ModelManifest) -> Result<()> {
             )));
         }
     }
-    if let Some(feature) = manifest.compatibility.required_features.first() {
-        return Err(invalid(format!("unsupported required feature {feature}")));
+    for feature in &manifest.compatibility.required_features {
+        if !RUNTIME_FEATURES.contains(&feature.as_str()) {
+            return Err(invalid(format!("unsupported required feature {feature}")));
+        }
     }
     for tensor in &manifest.tensors {
-        if let Some(requirement) = tensor.descriptor.backend_requirements.first() {
-            return Err(invalid(format!(
-                "unsupported backend requirement {requirement} for tensor {}",
-                tensor.name
-            )));
+        for requirement in &tensor.descriptor.backend_requirements {
+            if BackendId::from_name(requirement).is_none() {
+                return Err(invalid(format!(
+                    "unsupported backend requirement {requirement} for tensor {}",
+                    tensor.name
+                )));
+            }
         }
     }
     let requirements = &manifest.kernel_requirements;
@@ -45,6 +58,33 @@ pub fn validate_manifest_for_runtime(manifest: &ModelManifest) -> Result<()> {
         ));
     }
     required_manifest_operations(manifest)?;
+    Ok(())
+}
+
+pub fn validate_manifest_for_backend(
+    manifest: &ModelManifest,
+    backend: &(impl KernelBackend + ?Sized),
+) -> Result<()> {
+    validate_manifest_for_backend_id(manifest, backend.backend_id())
+}
+
+/// Separate identity check for capability planning before a GPU is initialized.
+pub fn validate_manifest_for_backend_id(
+    manifest: &ModelManifest,
+    backend: Option<BackendId>,
+) -> Result<()> {
+    validate_manifest_for_runtime(manifest)?;
+    for tensor in &manifest.tensors {
+        for name in &tensor.descriptor.backend_requirements {
+            if BackendId::from_name(name) != backend {
+                return Err(invalid(format!(
+                    "backend requirement {name} for tensor {} is not satisfied by {}",
+                    tensor.name,
+                    backend.map_or("unregistered backend", BackendId::name)
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -82,6 +122,37 @@ mod tests {
             checksum_sha256: None,
         });
         manifest
+    }
+
+    #[test]
+    fn registered_features_and_backend_names_match_the_selected_implementation() {
+        let mut manifest = manifest();
+        manifest.compatibility.required_features =
+            RUNTIME_FEATURES.iter().map(|name| (*name).into()).collect();
+        validate_manifest_for_runtime(&manifest).unwrap();
+        let mut names = std::collections::BTreeSet::new();
+        for &backend in BackendId::ALL {
+            assert!(names.insert(backend.name()));
+            assert_eq!(BackendId::from_name(backend.name()), Some(backend));
+            manifest.tensors[0].descriptor.backend_requirements = vec![backend.name().into()];
+            validate_manifest_for_runtime(&manifest).unwrap();
+            validate_manifest_for_backend_id(&manifest, Some(backend)).unwrap();
+            assert!(validate_manifest_for_backend_id(&manifest, None).is_err());
+            for &other in BackendId::ALL {
+                assert_eq!(
+                    validate_manifest_for_backend_id(&manifest, Some(other)).is_ok(),
+                    backend == other
+                );
+            }
+        }
+        manifest.tensors[0].descriptor.backend_requirements = vec!["cpu".into(), "cuda".into()];
+        assert!(validate_manifest_for_backend_id(&manifest, Some(BackendId::Cpu)).is_err());
+        manifest.tensors[0].descriptor.backend_requirements.clear();
+        manifest
+            .compatibility
+            .required_features
+            .push("qif.codec.unknown".into());
+        assert!(validate_manifest_for_runtime(&manifest).is_err());
     }
 
     #[test]

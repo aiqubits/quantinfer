@@ -64,6 +64,9 @@ impl<B: KernelBackend> DenseModel<B> {
         reader: &GgufReader,
         manifest: Option<&ModelManifest>,
     ) -> Result<Self> {
+        if let Some(manifest) = manifest.or(reader.embedded_manifest()) {
+            quantinfer_runtime::validate_manifest_for_backend(manifest, &backend)?;
+        }
         let architecture = model_architecture(reader, manifest)?;
         Self::load(backend, reader, architecture)
     }

@@ -21,6 +21,9 @@ impl<B: quantinfer_kernel::KernelBackend> Qwen3Model<B> {
     }
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
+        if let Some(manifest) = reader.embedded_manifest() {
+            crate::validate_manifest_for_backend(manifest, &backend)?;
+        }
         let ggml_layout = reader.uses_ggml_output_rows()?;
         let adapter = Qwen3Adapter::new(config_from_gguf(reader, ggml_layout)?, "qwen3")
             .map_err(RuntimeError::InvalidInput)?;

@@ -155,8 +155,10 @@ manifest MUST NOT 保存任意可执行对象。
 compatibility。`minimum_quantinfer_version` 指 QuantInfer runtime 的 SemVer，
 不是 QIF wire version。当前 runtime 检查最低版本、已登记的 operation 名称与
 所选 provider 的能力；数值 kernel requirement 指定时必须大于零。
-`required_features` 和 tensor 的 `backend_requirements` 尚无已实现的字符串
-registry，非空必需列表会被明确拒绝，不会按可忽略 hint 处理。
+`required_features` 通过明确的能力 registry 检查；tensor 的 `backend_requirements`
+还必须匹配实际选中的 backend identity。未知字符串和不匹配的后端均拒绝。
+已登记名称与其语义见 [requirements registry](../architecture/requirements-registry.md)；
+这些声明不等同于硬件实测、每个算子均在该设备执行或额外的 transport 支持。
 operation 名称固定为 `matmul`、`quantized_matmul`、`attention`、`rms_norm`、
 `activation`、`rope`、`embedding`；未知名称拒绝执行。版本、feature 和 provider
 检查不能替代格式完整性验证。
@@ -289,7 +291,9 @@ ggml_output_rows
 
 当前 QIF2-SINGLE 与 QIF2-PACKAGE writer 会在 tensor descriptor 和原始 payload
 一致时自动去重并生成 alias record；reader、file-backed reader 和 package reader
-都会沿 alias 解析到物理 tensor，并继续执行相同的 checksum 校验。
+都会沿 alias 解析到物理 tensor。低层 `tensor_data`/`read_range` 与显式全量
+`verify` 的校验范围不同：前者不承诺全量 hash 校验，默认运行时 packed accessor
+额外检查所选 tensor 的 raw hash，`verify` 检查全部存储块、tensor 及 PACKAGE shard。
 
 ## 6. Payload、chunk 和 codec
 

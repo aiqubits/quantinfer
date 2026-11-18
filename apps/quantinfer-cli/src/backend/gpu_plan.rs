@@ -14,8 +14,11 @@ pub(super) fn validate<P: RuntimeProvider + ?Sized>(
 
     let manifest = manifest.or(reader.embedded_manifest());
     if let Some(manifest) = manifest {
-        quantinfer_runtime::validate_manifest_for_runtime(manifest)
-            .map_err(|error| error.to_string())?;
+        quantinfer_runtime::validate_manifest_for_backend_id(
+            manifest,
+            quantinfer::kernel::BackendId::from_name(backend.name()),
+        )
+        .map_err(|error| error.to_string())?;
     }
     if let Some(manifest) = manifest {
         reader
@@ -126,7 +129,7 @@ mod tests {
 
     impl RuntimeProvider for GpuFixture {
         fn name(&self) -> &str {
-            "test-gpu"
+            "wgpu"
         }
         fn capabilities(&self) -> &[KernelCapability] {
             &self.0
@@ -180,6 +183,13 @@ mod tests {
             .operations
             .push("matmul".into());
         validate(&reader, Some(&manifest), &provider()).unwrap();
+        manifest.tensors[0].descriptor.backend_requirements = vec!["wgpu".into()];
+        validate(&reader, Some(&manifest), &provider()).unwrap();
+        manifest.tensors[0].descriptor.backend_requirements = vec!["cuda".into()];
+        assert!(validate(&reader, Some(&manifest), &provider())
+            .unwrap_err()
+            .contains("backend requirement cuda"));
+        manifest.tensors[0].descriptor.backend_requirements.clear();
         for field in 0..5 {
             let mut invalid = manifest.clone();
             match field {

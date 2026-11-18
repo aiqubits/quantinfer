@@ -117,6 +117,10 @@ macro_rules! fallback_kernel {
 }
 
 impl<K: TmacKernel> KernelBackend for TmacBackend<K> {
+    fn backend_id(&self) -> Option<quantinfer_kernel::BackendId> {
+        Some(quantinfer_kernel::BackendId::Tmac)
+    }
+
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
         self.kernel.matmul_q4_0(lhs, rhs)
     }

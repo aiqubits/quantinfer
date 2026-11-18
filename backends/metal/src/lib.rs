@@ -45,6 +45,10 @@ mod native {
     }
 
     impl KernelBackend for MetalBackend {
+        fn backend_id(&self) -> Option<quantinfer_kernel::BackendId> {
+            Some(quantinfer_kernel::BackendId::Metal)
+        }
+
         delegate! {
             reuse_workspace() -> bool,
             matmul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor>,

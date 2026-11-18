@@ -75,6 +75,10 @@ macro_rules! fallback_kernel {
 }
 
 impl<E: AscendMatmulExecutor> KernelBackend for AscendBackend<E> {
+    fn backend_id(&self) -> Option<quantinfer_kernel::BackendId> {
+        Some(quantinfer_kernel::BackendId::Ascend)
+    }
+
     fn matmul(&self, lhs: &Tensor, rhs: &Tensor) -> KernelResult<Tensor> {
         self.executor.matmul_f32(lhs, rhs)
     }
