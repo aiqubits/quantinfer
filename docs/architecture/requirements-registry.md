@@ -31,8 +31,10 @@ selected backend; it does not mean an OR choice or an offload plan.
 Backend identity does not attest that every operation runs on that device.
 Some implementations have CPU fallbacks. Kernel capability, dtype/layout,
 alignment, context/head limits and operator checks remain separate. Registering
-Ascend/T-MAC/KleidiAI names does not supply their missing vendor kernels or
-complete hardware acceptance.
+these names does not supply a kernel implementation or complete hardware
+acceptance. Ascend's concrete F32 executor and ABI tests are documented in the
+[backend README](../../backends/ascend/README.md); T-MAC/KleidiAI implementations
+remain separate work.
 
 `KernelBackend::backend_id()` defaults to `None` for custom implementations.
 Without an explicit registered identity they can execute models with no

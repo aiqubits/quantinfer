@@ -2,7 +2,8 @@
     test,
     all(feature = "wgpu", not(target_arch = "wasm32")),
     all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
-    all(feature = "metal", target_os = "macos")
+    all(feature = "metal", target_os = "macos"),
+    all(feature = "ascend", target_os = "linux")
 ))]
 mod gpu_plan;
 
@@ -22,6 +23,8 @@ pub enum Backend {
     Cuda,
     #[cfg(all(feature = "metal", target_os = "macos"))]
     Metal,
+    #[cfg(all(feature = "ascend", target_os = "linux"))]
+    Ascend,
 }
 
 impl Backend {
@@ -67,8 +70,21 @@ impl Backend {
                     )
                 }
             }
+            "ascend" => {
+                #[cfg(all(feature = "ascend", target_os = "linux"))]
+                {
+                    Ok(Self::Ascend)
+                }
+                #[cfg(not(all(feature = "ascend", target_os = "linux")))]
+                {
+                    Err(
+                        "Ascend generation requires a Linux CLI built with --features ascend"
+                            .into(),
+                    )
+                }
+            }
             name => Err(format!(
-                "unknown --backend {name}; use cpu, wgpu, cuda, or metal"
+                "unknown --backend {name}; use cpu, wgpu, cuda, metal, or ascend"
             )),
         }
     }
@@ -91,6 +107,13 @@ impl Backend {
             Self::Cuda => load_gpu(reader, manifest, || quantinfer::cuda::CudaBackend::open(0)),
             #[cfg(all(feature = "metal", target_os = "macos"))]
             Self::Metal => load_gpu(reader, manifest, quantinfer::metal::MetalBackend::open),
+            #[cfg(all(feature = "ascend", target_os = "linux"))]
+            Self::Ascend => load_accelerator(
+                reader,
+                manifest,
+                || quantinfer::ascend::AscendBackend::open(0),
+                quantinfer::core::Device::Npu,
+            ),
         }
     }
 }
@@ -105,6 +128,21 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     manifest: Option<&ModelManifest>,
     open: impl FnOnce() -> quantinfer::kernel::Result<B>,
 ) -> Result<Box<dyn Generator>, String> {
+    load_accelerator(reader, manifest, open, quantinfer::core::Device::Gpu)
+}
+
+#[cfg(any(
+    all(feature = "wgpu", not(target_arch = "wasm32")),
+    all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
+    all(feature = "metal", target_os = "macos"),
+    all(feature = "ascend", target_os = "linux")
+))]
+fn load_accelerator<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+    open: impl FnOnce() -> quantinfer::kernel::Result<B>,
+    device: quantinfer::core::Device,
+) -> Result<Box<dyn Generator>, String> {
     let manifest = manifest.or(reader.embedded_manifest());
     if let Some(manifest) = manifest {
         quantinfer_runtime::validate_manifest_for_runtime(manifest)
@@ -114,7 +152,7 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
             .map_err(|error| error.to_string())?;
     }
     let backend = open().map_err(|error| error.to_string())?;
-    gpu_plan::validate(reader, manifest, &backend)?;
+    gpu_plan::validate_on_device(reader, manifest, &backend, device)?;
     DenseModel::with_backend(backend, reader, manifest)
         .map(|model| Box::new(model) as Box<dyn Generator>)
         .map_err(|error| error.to_string())

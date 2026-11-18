@@ -10,8 +10,10 @@
    libraries are boundary dependencies. Their external types are converted at
    format or adapter boundaries.
 5. WGPU, CUDA, Metal, Ascend, T-MAC, and KleidiAI belong to backend boundaries,
-   not definitions of the core runtime. Current Ascend matmul and T-MAC/KleidiAI
+   not definitions of the core runtime. Current T-MAC/KleidiAI
    kernel adapters require caller-supplied executors/kernels.
+   Ascend has a concrete optional CANN F32 executor and CLI entry point; its C
+   ABI contract tests do not replace actual NPU acceptance.
 6. WASI-NN is a deployment adapter, not a tensor library.
 7. Candle is an optional interoperability adapter, not a core dependency.
 8. GGUF and SafeTensors are compatibility formats. QIF v1 is retired and kept

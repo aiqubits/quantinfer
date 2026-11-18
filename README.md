@@ -13,7 +13,11 @@ quantinfer facade
   -> CPU / WGPU / CUDA / Metal / Ascend backends
 ```
 
-The first implementation target is native CPU execution with GGUF and SafeTensors loading. WGPU, QIF, vendor backends, Candle interoperability, and WASI-NN deployment remain optional extensions.
+The default path executes Dense models on a native CPU and publishes QIF weights.
+GGUF remains a runtime compatibility input; SafeTensors can be converted to QIF
+or GGUF. WGPU, CUDA, Metal, Ascend, Candle interoperability and WASI-NN deployment
+are optional. Ascend's concrete F32 CANN binding and its tested boundaries are
+documented in the [backend README](backends/ascend/README.md).
 
 ## Checks
 

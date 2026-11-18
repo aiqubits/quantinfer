@@ -10,10 +10,10 @@
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | 未完成 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
-| 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | 已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 均核对实际后端，本地回归通过，等待远端验收；语义见 [registry](requirements-registry.md) |
+| 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
-| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际库绑定及 executor/kernel 实现、能力声明、可执行 ABI/契约测试；硬件实测单列 | 未完成 |
+| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际库绑定及 executor/kernel 实现、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend 已有具体 F32 CANN executor、CLI、失败清理与 C ABI 契约回归，本地通过、等待远端；T-MAC/KleidiAI 仍未完成；设备实测单列 |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
@@ -54,8 +54,20 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
 - 必需能力 registry 的本地 workspace 为 206 passed / 0 failed / 3 ignored，
   Clippy 通过；另验证 WGPU/CUDA/CPU SIMD 编译及 Ascend native 契约测试，
   这些编译/契约证据不是厂商设备实测。
+  `5c4c262` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44228340333)
+  与 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44228340266)
+  均成功；`184e7ca` 的完整 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44226860652)
+  也已通过两模型门禁。
 - Ascend native 专项复核发现两个公开方法可将无效裸指针传入 CANN 的 P1 安全
   边界问题。prepare/execute 现有明确 unsafe 契约，执行消费单次 plan；两个
   compile-fail doctest 和 native Clippy 门禁防止回退。另修复 aclInit 成功后
-  device query 失败路径未 finalize 的清理遗漏。实际 Ascend executor 仍待实现，
-  不以本安全修复替代厂商 kernel 闭环。
+  device query 失败路径未 finalize 的清理遗漏。`d1af7c9` 的
+  [专项工作流](https://github.com/aiqubits/quantinfer/actions/runs/44228896531)
+  与 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44228896402) 均成功。
+- 随后的实际 [Ascend executor](../../backends/ascend/README.md) 管理 F32 tensor、
+  设备分配、拷贝、context/stream、两阶段 ACLNN、显式 executor 销毁和同步；CLI
+  增加可选 `ascend`。独立 C double 延迟执行到同步，检查结果、调用次数、线程迁移、
+  context 恢复和各失败阶段资源清理；未知完成状态保留资源并隔离运行时。
+  本地默认 workspace 207 passed / 0 failed / 3 ignored；native 另有 5 项运行时
+  测试通过、2 项编译失败 doctest，通过的契约测试不计作 NPU 测量。一个真实设备
+  F32 fixture 测试明确 ignored；本轮不把未执行的硬件测试标为通过。

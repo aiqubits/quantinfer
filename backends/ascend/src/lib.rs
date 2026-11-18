@@ -1,4 +1,4 @@
-//! Optional Ascend CANN runtime probe.
+//! Optional Ascend CANN execution and runtime interfaces.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -10,3 +10,6 @@ pub use native::{
     AscendBackend, AscendMatmulExecutor, AscendMatmulPlan, AscendProvider, AscendRuntime,
     AscendRuntimeError,
 };
+
+#[cfg(feature = "native")]
+pub use native::CannMatmulExecutor;

@@ -2,12 +2,22 @@
 use quantinfer_format::{GgufReader, ModelManifest};
 use quantinfer_runtime::RuntimeProvider;
 
+#[cfg(test)]
 pub(super) fn validate<P: RuntimeProvider + ?Sized>(
     reader: &GgufReader,
     manifest: Option<&ModelManifest>,
     backend: &P,
 ) -> Result<(), String> {
-    use quantinfer_core::{DType, Device, QuantizationScheme, OUTPUT_ROWS_LAYOUT};
+    validate_on_device(reader, manifest, backend, quantinfer_core::Device::Gpu)
+}
+
+pub(super) fn validate_on_device<P: RuntimeProvider + ?Sized>(
+    reader: &GgufReader,
+    manifest: Option<&ModelManifest>,
+    backend: &P,
+    device: quantinfer_core::Device,
+) -> Result<(), String> {
+    use quantinfer_core::{DType, QuantizationScheme, OUTPUT_ROWS_LAYOUT};
     use quantinfer_format::GgmlType;
     use quantinfer_format::GGML_OUTPUT_ROWS_LAYOUT;
     use quantinfer_runtime::{ExecutionRequest, Operation};
@@ -29,7 +39,7 @@ pub(super) fn validate<P: RuntimeProvider + ?Sized>(
         .uses_ggml_output_rows()
         .map_err(|error| error.to_string())?;
     let request = ExecutionRequest {
-        device: Device::Gpu,
+        device,
         tensor_layout: "row_major".to_owned(),
         operation: Some(Operation::Matmul),
         alignment: manifest.and_then(|manifest| manifest.kernel_requirements.alignment),
@@ -147,6 +157,19 @@ mod tests {
             head_dimension: Some(64),
             maximum_sequence_length: Some(128),
         }])
+    }
+
+    #[test]
+    fn npu_capabilities_are_matched_against_the_requested_device() {
+        let mut writer = GgufWriter::new();
+        writer
+            .add_f32_tensor("weight", vec![2], &[1.0, 2.0])
+            .unwrap();
+        let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
+        let mut npu = provider();
+        npu.0[0].device = Device::Npu;
+        validate_on_device(&reader, None, &npu, Device::Npu).unwrap();
+        assert!(validate(&reader, None, &npu).is_err());
     }
 
     #[test]

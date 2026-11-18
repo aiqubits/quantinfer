@@ -7,6 +7,8 @@ pub mod cpu;
 
 #[cfg(feature = "candle")]
 pub use quantinfer_adapter_candle as candle;
+#[cfg(all(feature = "ascend", target_os = "linux"))]
+pub use quantinfer_backend_ascend as ascend;
 #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
 pub use quantinfer_backend_cuda as cuda;
 #[cfg(all(feature = "metal", target_os = "macos"))]

@@ -20,6 +20,7 @@ jobs:
           components: clippy
       - run: cargo test --locked -p quantinfer-backend-ascend --features native
       - run: cargo clippy --locked -p quantinfer-backend-ascend --features native --all-targets -- -D warnings
+      - run: cargo clippy --locked -p quantinfer-cli --features ascend --all-targets -- -D warnings
 
   native:
     if: ${{ github.event_name == 'workflow_dispatch' && vars.QUANTINFER_ASCEND_RUNNER != '' }}
