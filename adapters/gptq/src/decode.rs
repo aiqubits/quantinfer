@@ -13,6 +13,27 @@ pub fn dequantize<S: GptqTensorSource + ?Sized>(
     prefix: &str,
     config: &GptqConfig,
 ) -> Result<Tensor, String> {
+    dequantize_impl(source, prefix, config, None)
+}
+
+/// Decode a checkpoint with an explicit zero-point layout. Use this for
+/// nonstandard transposed/direct tables whose shape is ambiguous. The ordinary
+/// entry point gives the standard group-major packed layout precedence.
+pub fn dequantize_with_zero_point_layout<S: GptqTensorSource + ?Sized>(
+    source: &S,
+    prefix: &str,
+    config: &GptqConfig,
+    layout: ZeroPointLayout,
+) -> Result<Tensor, String> {
+    dequantize_impl(source, prefix, config, Some(layout))
+}
+
+fn dequantize_impl<S: GptqTensorSource + ?Sized>(
+    source: &S,
+    prefix: &str,
+    config: &GptqConfig,
+    explicit_layout: Option<ZeroPointLayout>,
+) -> Result<Tensor, String> {
     config.validate()?;
     let qweight_name = format!("{prefix}.qweight");
     let qzeros_name = format!("{prefix}.qzeros");
@@ -64,7 +85,14 @@ pub fn dequantize<S: GptqTensorSource + ?Sized>(
 
     let zero_layout = source
         .tensor_info(&qzeros_name)
-        .map(|info| ZeroLayout::from_shape(&info.shape, groups, output, config.pack_factor()))
+        .map(|info| {
+            if let Some(layout) = explicit_layout {
+                layout.validate_shape(&info.shape, groups, output, config.pack_factor())?;
+                Ok(layout)
+            } else {
+                ZeroPointLayout::from_shape(&info.shape, groups, output, config.pack_factor())
+            }
+        })
         .transpose()?;
     if zero_layout.is_none() && !config.sym {
         return Err(format!(
@@ -124,7 +152,13 @@ pub fn dequantize<S: GptqTensorSource + ?Sized>(
                 1_u32 << (config.bits - 1)
             };
             let scale = scales[group * output + output_index];
-            decoded.push(scale * (code as f32 - zero as f32));
+            let value = scale * (code as f32 - zero as f32);
+            if !value.is_finite() {
+                return Err(format!(
+                    "GPTQ {prefix} reconstructed weight [{input_index}, {output_index}] exceeds finite F32 range"
+                ));
+            }
+            decoded.push(value);
         }
     }
     Tensor::from_f32(vec![input, output], decoded).map_err(|error| error.to_string())
@@ -149,14 +183,18 @@ fn require_len(name: &str, actual: usize, expected: usize) -> Result<(), String>
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ZeroLayout {
+pub enum ZeroPointLayout {
+    /// Standard GPTQ: `[groups, ceil(output / pack_factor)]`.
     GroupPacked,
+    /// Transposed packed table: `[ceil(output / pack_factor), groups]`.
     PackedGroup,
+    /// One stored code per value: `[groups, output]`.
     GroupDirect,
+    /// Transposed direct table: `[output, groups]`.
     DirectGroup,
 }
 
-impl ZeroLayout {
+impl ZeroPointLayout {
     fn from_shape(
         shape: &[usize],
         groups: usize,
@@ -167,10 +205,10 @@ impl ZeroLayout {
             return Err(format!("GPTQ qzeros must be rank 2, got shape {shape:?}"));
         }
         let packed_output = output.div_ceil(pack_factor);
-        if shape == [packed_output, groups] {
-            Ok(Self::PackedGroup)
-        } else if shape == [groups, packed_output] {
+        if shape == [groups, packed_output] {
             Ok(Self::GroupPacked)
+        } else if shape == [packed_output, groups] {
+            Ok(Self::PackedGroup)
         } else if shape == [groups, output] {
             Ok(Self::GroupDirect)
         } else if shape == [output, groups] {
@@ -180,6 +218,28 @@ impl ZeroLayout {
                 "GPTQ qzeros shape {shape:?} does not match groups={groups}, output={output}, packed_output={packed_output}"
             ))
         }
+    }
+
+    fn validate_shape(
+        self,
+        shape: &[usize],
+        groups: usize,
+        output: usize,
+        pack_factor: usize,
+    ) -> Result<(), String> {
+        let packed = output.div_ceil(pack_factor);
+        let expected = match self {
+            Self::GroupPacked => [groups, packed],
+            Self::PackedGroup => [packed, groups],
+            Self::GroupDirect => [groups, output],
+            Self::DirectGroup => [output, groups],
+        };
+        if shape != expected {
+            return Err(format!(
+                "GPTQ qzeros shape {shape:?} does not match explicit {self:?} layout {expected:?}"
+            ));
+        }
+        Ok(())
     }
 
     fn element_count(self, groups: usize, output: usize, pack_factor: usize) -> usize {
@@ -212,102 +272,11 @@ impl ZeroLayout {
             Self::GroupDirect => (values[group * output_count + output], 0),
             Self::DirectGroup => (values[output * groups + group], 0),
         };
-        ((word >> shift) & config.code_mask()).saturating_add_signed(config.zero_offset)
+        // GPTQ-v1 stores (zero - 1) modulo the code width; v2 uses offset 0.
+        // Restore in the same finite-width domain, including stored max code.
+        ((word >> shift) & config.code_mask()).wrapping_add_signed(config.zero_offset)
+            & config.code_mask()
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::{dequantize, GptqConfig};
-    use quantinfer_format::SafeTensorFile;
-    use serde_json::json;
-
-    fn fixture(entries: &[(&str, &str, Vec<usize>, Vec<u8>)]) -> SafeTensorFile {
-        let mut offset = 0usize;
-        let mut header = serde_json::Map::new();
-        for (name, dtype, shape, payload) in entries {
-            let end = offset + payload.len();
-            header.insert(
-                (*name).to_owned(),
-                json!({"dtype": dtype, "shape": shape, "data_offsets": [offset, end]}),
-            );
-            offset = end;
-        }
-        let header = serde_json::to_vec(&json!(header)).unwrap();
-        let mut bytes = Vec::with_capacity(8 + header.len() + offset);
-        bytes.extend_from_slice(&(header.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&header);
-        for (_, _, _, payload) in entries {
-            bytes.extend_from_slice(payload);
-        }
-        SafeTensorFile::open(bytes).unwrap()
-    }
-
-    fn words(values: &[u32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
-    }
-
-    fn floats(values: &[f32]) -> Vec<u8> {
-        values
-            .iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
-    }
-
-    #[test]
-    fn decodes_standard_packed_gptq_matrix() {
-        let bits = 4;
-        let mut qweight = [0_u32; 2];
-        for (input, code) in [2_u32, 3, 4, 5, 6, 7, 8, 9].into_iter().enumerate() {
-            qweight[0] |= code << (input * bits);
-        }
-        for (input, code) in [1_u32, 2, 3, 4, 5, 6, 7, 8].into_iter().enumerate() {
-            qweight[1] |= code << (input * bits);
-        }
-        let file = fixture(&[
-            ("layer.qweight", "I32", vec![1, 2], words(&qweight)),
-            ("layer.qzeros", "I32", vec![1, 2], words(&[33, 33])),
-            (
-                "layer.scales",
-                "F32",
-                vec![2, 2],
-                floats(&[1.0, 2.0, 3.0, 4.0]),
-            ),
-        ]);
-        let tensor = dequantize(&file, "layer", &GptqConfig::new(bits, 4, false)).unwrap();
-        assert_eq!(tensor.shape().dims(), &[8, 2]);
-        assert_eq!(
-            tensor.as_f32().unwrap(),
-            &[
-                0.0, -4.0, 1.0, -2.0, 2.0, 0.0, 3.0, 2.0, 12.0, 8.0, 15.0, 12.0, 18.0, 16.0, 21.0,
-                20.0,
-            ]
-        );
-    }
-
-    #[test]
-    fn uses_g_idx_and_symmetric_midpoint_when_qzeros_are_absent() {
-        let mut qword = 0_u32;
-        for input in 0..8 {
-            qword |= (input as u32) << (input * 4);
-        }
-        let g_idx: Vec<u32> = vec![1; 8];
-        let file = fixture(&[
-            ("layer.qweight", "U32", vec![1, 1], words(&[qword])),
-            ("layer.scales", "F32", vec![2, 1], floats(&[1.0, 2.0])),
-            ("layer.g_idx", "I32", vec![8], words(&g_idx)),
-        ]);
-        let tensor = dequantize(&file, "layer", &GptqConfig::new(4, 4, true)).unwrap();
-        assert_eq!(
-            tensor.as_f32().unwrap(),
-            &[-16.0, -14.0, -12.0, -10.0, -8.0, -6.0, -4.0, -2.0]
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_bits_and_shapes() {
-        assert!(GptqConfig::new(3, 4, false).validate().is_err());
-    }
-}
+mod tests;

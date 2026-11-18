@@ -129,7 +129,13 @@ pub fn dequantize<S: AwqTensorSource + ?Sized>(
             } else {
                 1_u32 << (AWQ_BITS - 1)
             };
-            decoded.push(scales[group * output + output_index] * (code as f32 - zero as f32));
+            let value = scales[group * output + output_index] * (code as f32 - zero as f32);
+            if !value.is_finite() {
+                return Err(format!(
+                    "AWQ {prefix} reconstructed weight [{input_index}, {output_index}] exceeds finite F32 range"
+                ));
+            }
+            decoded.push(value);
         }
     }
     Tensor::from_f32(vec![input, output], decoded).map_err(|error| error.to_string())
@@ -300,5 +306,27 @@ mod tests {
         let mut config = AwqConfig::new(32, false);
         config.bits = 8;
         assert!(config.validate().is_err());
+    }
+    #[test]
+    fn finite_scale_must_not_produce_infinite_weights() {
+        let file = fixture(&[
+            (
+                "layer.qweight",
+                "I32",
+                vec![32, 4],
+                words(&[0x2222_2222; 128]),
+            ),
+            ("layer.qzeros", "I32", vec![1, 4], words(&[0; 4])),
+            ("layer.scales", "F32", vec![1, 32], floats(&[f32::MAX; 32])),
+        ]);
+        let result = dequantize(&file, "layer", &AwqConfig::new(32, false));
+        if let Ok(tensor) = &result {
+            eprintln!("AWQ decoded finite scale: {}", tensor.as_f32().unwrap()[0]);
+        }
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("layer") && error.contains("[0, 0]") && error.contains("finite F32"),
+            "{error}"
+        );
     }
 }

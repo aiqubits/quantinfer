@@ -183,3 +183,23 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   真实质量样例目前是 SmolLM2，不扩大为任意模型和政策；Qwen3 的 K 矩阵单独验收。
   本地 workspace 合计 236 passed / 0 failed / 5 ignored，Clippy、两个 xtask smoke
   通过；当前批校准预算 workflow 的远端结果待对应提交验证。
+
+- `04900bf` 的八项远端工作流均成功，包括 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44274357677)
+  与 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44274357759)。
+  SmolLM2 的校准预算优化、两个 QIF profile、固定模型数值/生成、绑定与服务检查均通过；
+  Qwen3 的三种 native K 及六次 QIF 对照、原有数值门禁、三变体同机性能和 llama.cpp
+  互操作也已通过。workflow 成功不覆盖随后审查新增的布局与外部适配器反例。
+- 新一轮对固定 `04900bf` 的独立审查复现 QIF 逐 tensor layout 分派、GPTQ 零点
+  方向/位宽回绕、外部解码 F32 溢出和 AutoRound 配置类型遗漏；原标准检查仍为
+  236 passed / 0 failed / 5 ignored，加入九个审查用例后为 237 passed / 8 failed / 5 ignored。
+  这些是原提交的事实，不将后续修复反写成原版本已经通过。
+- 外部适配器修复批将标准 GPTQ group-major 零点表置于默认优先级；增加显式四种
+  zero-point layout API，避免方形转置表的歧义。零点偏移在 code bit width 内回绕，
+  三个独立 importer 拒绝重建 F32 溢出，AutoRound 校验已提供字段的类型和整数范围。
+  原六个适配器反例已转为通过；另有 2/4/8-bit × 四种 offset × 四种 layout 的
+  48 组独立模块算术比较、显式布局拒绝和 AutoRound 转发/配置别名测试。
+  本批不替代 GPTQ/AWQ/AutoRound 的校准算法生产闭环；QIF 布局问题另行修复。
+
+  本批本地使用独立 target 目录完成 fmt/check/workspace test/Clippy 和两个 xtask
+  smoke：245 passed / 0 failed / 5 ignored。该结果不复用审查工作区的 test binary，
+  对应提交的远端 CI 另行核对。

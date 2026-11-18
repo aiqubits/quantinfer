@@ -41,6 +41,24 @@ the standard packed-output zero-point orientation, and transposed/direct
 zero-point variants. One-file and indexed sharded SafeTensors sources are
 accepted; the importer does not silently re-quantize decoded values.
 
+The default zero-point view is `[groups, packed_output]`, including square
+tables. Other shapes retain the unambiguous transposed/direct compatibility
+views. For an ambiguous nonstandard table, use
+`dequantize_with_zero_point_layout` with `ZeroPointLayout::{GroupPacked,
+PackedGroup, GroupDirect, DirectGroup}`. An explicit layout must match the
+source shape. No shape-only inference can distinguish a square table from
+its transpose.
+
+Stored zero codes are restored modulo the code bit width. `zero_offset=1`
+is the GPTQ-v1 `(zero - 1)` representation; `zero_offset=0` reads direct
+codes. The group-major orientation and v1 wrap follow the pinned
+[AutoGPTQ implementation](https://github.com/AutoGPTQ/AutoGPTQ/blob/9f7d37072917ab3a7545835f23e808294a542153/auto_gptq/nn_modules/qlinear/qlinear_cuda_old.py).
+The importers reject reconstructed weights outside finite F32 range,
+including overflow from a finite source scale. Their decode tests compare
+all supported bit widths, the four zero layouts and zero-code boundaries
+with independent scalar arithmetic; these checks do not implement GPTQ's
+calibration/quantization algorithm.
+
 ## AWQ
 
 `quantinfer-adapter-awq` decodes AutoAWQ's four-bit output-packed
@@ -65,3 +83,10 @@ aliases and reuses the GPTQ-compatible packed tensor decoder for
 `qweight/qzeros/scales` matrices. It accepts one-file and indexed sharded
 SafeTensors sources while validating the quantization method, bit width,
 group size, and zero-point convention.
+
+Present settings with invalid types or out-of-range integers are rejected;
+defaults apply only when the setting is absent. Integer/boolean aliases must
+agree, and every supplied method alias must name a supported method. The
+explicit `sym`/`symmetric` settings take precedence over the optional
+`zero_point` fallback. `dequantize_with_zero_point_layout` exposes the same
+explicit layout choice as the GPTQ importer.

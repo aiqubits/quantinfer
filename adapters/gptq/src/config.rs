@@ -13,7 +13,8 @@ pub struct GptqConfig {
     #[serde(default)]
     pub sym: bool,
     /// Stored GPTQ zero points are normally one less than the logical code.
-    /// This remains explicit for checkpoints using a different convention.
+    /// Addition is modulo the code bit width. Use 0 for a direct-code export;
+    /// the default 1 restores the GPTQ-v1 (zero - 1) convention.
     #[serde(default = "default_zero_offset")]
     pub zero_offset: i32,
 }

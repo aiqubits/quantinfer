@@ -148,7 +148,13 @@ pub fn dequantize<S: LlmCompressorTensorSource + ?Sized>(
             } else {
                 1_u32 << (config.bits - 1)
             };
-            decoded.push(scales[output_index * groups + group] * (code as f32 - zero as f32));
+            let value = scales[output_index * groups + group] * (code as f32 - zero as f32);
+            if !value.is_finite() {
+                return Err(format!(
+                    "compressed-tensors {prefix} reconstructed weight [{input_index}, {output_index}] exceeds finite F32 range"
+                ));
+            }
+            decoded.push(value);
         }
     }
     Tensor::from_f32(vec![input, output], decoded).map_err(|error| error.to_string())
@@ -331,5 +337,32 @@ mod tests {
     fn rejects_invalid_configuration() {
         assert!(LlmCompressorConfig::new(3, 4, false).validate().is_err());
         assert!(LlmCompressorConfig::new(4, 0, false).validate().is_err());
+    }
+    #[test]
+    fn finite_scale_must_not_produce_infinite_weights() {
+        let file = fixture(&[
+            (
+                "layer.weight_packed",
+                "I32",
+                vec![32, 4],
+                words(&[0x2222_2222; 128]),
+            ),
+            ("layer.weight_zero_point", "I32", vec![4, 1], words(&[0; 4])),
+            (
+                "layer.weight_scale",
+                "F32",
+                vec![32, 1],
+                floats(&[f32::MAX; 32]),
+            ),
+        ]);
+        let result = dequantize(&file, "layer", &LlmCompressorConfig::new(4, 32, false));
+        if let Ok(tensor) = &result {
+            eprintln!("LLMC decoded finite scale: {}", tensor.as_f32().unwrap()[0]);
+        }
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("layer") && error.contains("[0, 0]") && error.contains("finite F32"),
+            "{error}"
+        );
     }
 }

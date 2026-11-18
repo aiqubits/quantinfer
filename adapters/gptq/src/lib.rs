@@ -11,5 +11,5 @@ mod decode;
 mod source;
 
 pub use config::GptqConfig;
-pub use decode::dequantize;
+pub use decode::{dequantize, dequantize_with_zero_point_layout, ZeroPointLayout};
 pub use source::GptqTensorSource;
