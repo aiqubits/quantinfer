@@ -2,7 +2,7 @@
 
 use quantinfer_core::{Q4KBlock, QuantizedTensorQ4K, Tensor, Q4_K_BLOCK_SIZE};
 
-use super::validate_finite;
+use super::{stored_f16_scale, validate_finite};
 use crate::{QuantizationError, Result};
 
 pub fn quantize_q4_k(input: &Tensor) -> Result<QuantizedTensorQ4K> {
@@ -28,17 +28,35 @@ pub fn quantize_q4_k(input: &Tensor) -> Result<QuantizedTensorQ4K> {
             let scale = ((max - min) / 15.0).max(f32::EPSILON);
             scales[subblock] = scale;
             mins[subblock] = -min;
-            for (index, value) in values.iter().copied().enumerate() {
-                quantized[subblock * 32 + index] =
-                    ((value - min) / scale).round().clamp(0.0, 15.0) as u8;
-            }
         }
         let scale_max = scales.iter().copied().fold(0.0, f32::max).max(f32::EPSILON);
         let min_max = mins.iter().copied().fold(0.0, f32::max);
-        let d = scale_max / 63.0;
-        let dmin = if min_max == 0.0 { 1.0 } else { min_max / 63.0 };
-        let scale_values = scales.map(|value| (value / d).round().clamp(0.0, 63.0) as u8);
-        let min_values = mins.map(|value| (value / dmin).round().clamp(0.0, 63.0) as u8);
+        let d = stored_f16_scale(scale_max / 63.0)?;
+        let dmin = stored_f16_scale(if min_max == 0.0 { 1.0 } else { min_max / 63.0 })?;
+        let scale_values = if d == 0.0 {
+            [0; 8]
+        } else {
+            scales.map(|value| (value / d).round().clamp(1.0, 63.0) as u8)
+        };
+        let min_values = if dmin == 0.0 {
+            [0; 8]
+        } else {
+            mins.map(|value| (value / dmin).round().clamp(0.0, 63.0) as u8)
+        };
+        // Select codes only after both levels of scale/min quantization. This
+        // is the codebook the F16 wire encoding and runtime actually decode.
+        for (index, &value) in chunk.iter().enumerate() {
+            let subblock = index / 32;
+            let scale = f64::from(d) * f64::from(scale_values[subblock]);
+            let minimum = f64::from(dmin) * f64::from(min_values[subblock]);
+            quantized[index] = if scale == 0.0 {
+                0
+            } else {
+                ((f64::from(value) + minimum) / scale)
+                    .round()
+                    .clamp(0.0, 15.0) as u8
+            };
+        }
         let mut packed_scales = [0_u8; 12];
         packed_scales[..4].copy_from_slice(&scale_values[..4]);
         packed_scales[4..8].copy_from_slice(&min_values[..4]);

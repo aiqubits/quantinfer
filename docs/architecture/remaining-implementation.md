@@ -12,7 +12,7 @@
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
-| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 误差报告的 F64 累加、相对 L2 与非有限结果处理已修复；复杂策略和扩展质量矩阵仍未完成 |
+| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 误差报告的 F64 累加、相对 L2 与非有限结果处理已修复；K-quant 生产端与扩展矩阵本轮推进，见下方；复杂策略仍未完成 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
@@ -136,3 +136,26 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   三项回归在旧实现上均失败，修复后 quant crate 12 项通过；本地 workspace
   218 passed / 0 failed / 3 ignored，workspace Clippy 与两个 xtask bench smoke 通过。
   这项诊断修复不等于已经完成复杂 Mixed Precision 或两模型扩展质量矩阵。
+- 后续独立码表枚举复现 Q4_K/Q5_K/Q6_K 在量化局部 scale/min 和 F16 全局
+  参数后未重新选码的 P2 问题。原生生产端现按最终存储码表选码，并处理有限 F16
+  范围及正 subnormal 参数。六项专项测试包含全码点枚举、零值、极小值和范围拒绝；
+  不将逐元素重建误差改善等同于所有模型的质量改善。
+- 新固定模型矩阵准备 native row-major Q4_K/Q5_K/Q6_K，并对照 SINGLE/none、
+  PACKAGE/zstd 的所有 tensor shape/dtype/raw hash、query 反量化值、完整 logits、
+  generation/stream 和 KV。CI 按变体临时发布、保存产物 hash 后清理，避免同时
+  保留六份大模型 QIF；源 checkpoint、converter 与 GGUF hash 单独记录。
+  现有模型门槛不变，新矩阵的 KL/Top-K/权重预算及边界见
+  [量化文档](../quantization/README.md#native-k-quant-storage-and-quality-checks)。
+  本地 SmolLM2 新矩阵及临时发布路径通过，Qwen3 原有独立参考与 Q4_K 门禁、三种
+  K 格式及六个 QIF 组合均通过。Qwen3 新矩阵实际耗时 1072.34 秒；CI 相应保留
+  明确的 job 时间预算。六种变体的固定提示 KL 分别为 SmolLM2
+  `0.095299 / 0.086190 / 0.031238`、Qwen3
+  `0.031882 / 0.005511 / 0.000218` nats，均通过新增 0.5 nats 门槛。
+  Qwen3 F32/Q8_0 产物 hash 与原始基线一致；已有 Q4_K raw-logit 门槛仍通过。
+  本轮提交范围的 workspace 为 225 passed / 0 failed / 4 ignored，Clippy 和两个
+  xtask bench smoke 通过。远端扩展矩阵仍待确认，不以本地结果代替对应 CI。
+- QIF 规范中的 v1 历史加载描述、公开 reshard 名称、物理/逻辑 offset 对齐范围和
+  core dtype/encoding 合法配对已明确。固定 `e1a1c96` 的新复核报告保留原基线，
+  不把实现边界改写成已完成高级量化或完整 Studio。
+  `62644a1` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44264709769)
+  六个 job 均通过。

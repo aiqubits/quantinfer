@@ -2,7 +2,7 @@
 
 use quantinfer_core::{Q5KBlock, QuantizedTensorQ5K, Tensor, Q4_K_BLOCK_SIZE};
 
-use super::validate_finite;
+use super::{stored_f16_scale, validate_finite};
 use crate::{QuantizationError, Result};
 
 pub fn quantize_q5_k(input: &Tensor) -> Result<QuantizedTensorQ5K> {
@@ -28,17 +28,33 @@ pub fn quantize_q5_k(input: &Tensor) -> Result<QuantizedTensorQ5K> {
             let scale = ((max - min) / 31.0).max(f32::EPSILON);
             scales[subblock] = scale;
             mins[subblock] = -min;
-            for (index, value) in values.iter().copied().enumerate() {
-                quantized[subblock * 32 + index] =
-                    ((value - min) / scale).round().clamp(0.0, 31.0) as u8;
-            }
         }
         let scale_max = scales.iter().copied().fold(0.0, f32::max).max(f32::EPSILON);
         let min_max = mins.iter().copied().fold(0.0, f32::max);
-        let d = scale_max / 63.0;
-        let dmin = if min_max == 0.0 { 1.0 } else { min_max / 63.0 };
-        let sv = scales.map(|value| (value / d).round().clamp(0.0, 63.0) as u8);
-        let mv = mins.map(|value| (value / dmin).round().clamp(0.0, 63.0) as u8);
+        let d = stored_f16_scale(scale_max / 63.0)?;
+        let dmin = stored_f16_scale(if min_max == 0.0 { 1.0 } else { min_max / 63.0 })?;
+        let sv = if d == 0.0 {
+            [0; 8]
+        } else {
+            scales.map(|value| (value / d).round().clamp(1.0, 63.0) as u8)
+        };
+        let mv = if dmin == 0.0 {
+            [0; 8]
+        } else {
+            mins.map(|value| (value / dmin).round().clamp(0.0, 63.0) as u8)
+        };
+        for (index, &value) in chunk.iter().enumerate() {
+            let subblock = index / 32;
+            let scale = f64::from(d) * f64::from(sv[subblock]);
+            let minimum = f64::from(dmin) * f64::from(mv[subblock]);
+            quantized[index] = if scale == 0.0 {
+                0
+            } else {
+                ((f64::from(value) + minimum) / scale)
+                    .round()
+                    .clamp(0.0, 31.0) as u8
+            };
+        }
         let mut packed = [0_u8; 12];
         packed[..4].copy_from_slice(&sv[..4]);
         packed[4..8].copy_from_slice(&mv[..4]);

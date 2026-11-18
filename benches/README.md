@@ -69,12 +69,21 @@ python3 benches/paired-model.py --current-cli /path/current/quantinfer-cli \
 | --- | --- | --- | --- | --- |
 | Qwen3-0.6B | F32, Q8_0, Q4_0 | Transformers logits, prompt tokens, generation and EOS | Prefill, decode, peak RSS and KV cache | |
 | Qwen3-0.6B | Q4_K | Weight and logit error, generation and EOS | | |
+| Qwen3-0.6B | Native Q4_K, Q5_K, Q6_K | Fixed-prompt full logits/KL/Top-K, query-weight error, streaming/KV and QIF parity | | |
 | SmolLM2-135M | F32, Q8_0, Q4_0 | Sampled logits, prompt tokens and generation | Prefill, decode, peak RSS and KV cache | GGML exports |
+| SmolLM2-135M | Native Q4_K, Q5_K, Q6_K | Fixed-prompt full logits/KL/Top-K, query-weight error, streaming/KV and QIF parity | | |
 | SmolLM2-135M | External F16 | Sampled logits, prompt tokens and generation | | |
 | SmolLM2-135M | External Q8_0, Q4_0 | | | Metadata, tensor layout and generated tokens |
 
 The SmolLM2 quantized CLI tests also verify termination by setting the EOS ID
 to the first expected token for the fixed prompt.
+
+The native K matrix retains the original model-specific gates and adds the
+budgets and artifact publication checks documented in
+[quantization](../docs/quantization/README.md#native-k-quant-storage-and-quality-checks).
+Its one-prompt probability comparison is not a task-accuracy/perplexity
+benchmark. No K-format timing, RSS regression or llama.cpp parity gate is
+implied by these quality rows.
 
 ## QIF / SafeTensors / GGUF storage measurements
 

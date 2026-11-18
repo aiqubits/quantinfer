@@ -87,7 +87,7 @@ jobs:
 
   smollm2-f32:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
@@ -197,6 +197,24 @@ jobs:
               "ggml-$variant" "$model" > "smollm2-$variant-benchmark.txt"
           done
           python3 benches/check-regressions.py smollm2-q8_0-benchmark.txt smollm2-q4_0-benchmark.txt
+      - name: Publish and gate native SmolLM2 K-quant artifacts
+        shell: bash
+        env:
+          QUANTINFER_K_QUANT_MODEL: smollm2
+          QUANTINFER_K_QUANT_DIR: ${{ github.workspace }}
+          QUANTINFER_K_QUANT_QIF: '1'
+          QUANTINFER_K_QUANT_CONVERTER: ${{ github.workspace }}/target/release/quantinfer-convert
+          QUANTINFER_K_QUANT_REPORT: ${{ github.workspace }}/smollm2-k-quant-quality.json
+        run: |
+          python3 tests/conformance/k_quant_artifacts.py --model smollm2 \
+            --source-dir . --converter target/release/quantinfer-convert --gguf-only
+          for variant in q4_k q5_k q6_k; do
+            target/release/quantinfer-cli inspect-gguf --input "smollm2-$variant.gguf" \
+              > "smollm2-$variant.inventory"
+          done
+          cargo test --release --locked -p quantinfer-runtime --test k_quant_conformance \
+            -- --ignored --nocapture | tee smollm2-k-quant-quality.log
+          rm -- smollm2-q4_k.gguf smollm2-q5_k.gguf smollm2-q6_k.gguf
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ env.PERF_REFERENCE_COMMIT }}
@@ -368,6 +386,9 @@ jobs:
         with:
           name: smollm2-benchmark
           path: |
+            smollm2-k-quant-*.json
+            smollm2-k-quant-quality.log
+            smollm2-*.inventory
             smollm2-*-benchmark.txt
             smollm2-*-paired-*.txt
             smollm2-*-paired-samples/*.txt
@@ -417,7 +438,7 @@ jobs:
     if: ${{ github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     needs: conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -458,10 +479,10 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.11.0'
           python -m pip install 'transformers==4.57.6'
           python tests/conformance/qwen3_reference.py qwen3 > qwen3-reference.json
-      - name: Convert and inspect F32, Q8_0, Q4_0 and Q4_K GGUF
+      - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
-          for variant in f32 q8_0 q4_0 q4_k; do
+          for variant in f32 q8_0 q4_0; do
             options=()
             if [[ "$variant" != f32 ]]; then options+=(--quantize "$variant"); fi
             target/release/quantinfer-convert --config qwen3/config.json \
@@ -470,9 +491,18 @@ jobs:
             target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
               > "qwen3-$variant.inventory"
           done
-          sha256sum qwen3-f32.gguf qwen3-q8_0.gguf qwen3-q4_0.gguf qwen3-q4_k.gguf > qwen3-gguf.sha256
+          sha256sum qwen3-f32.gguf qwen3-q8_0.gguf qwen3-q4_0.gguf > qwen3-gguf.sha256
           jq -r '.gguf[] | "\(.sha256)  \(.path)"' tests/golden/qwen3-0.6b-baseline.json > qwen3-baseline.sha256
           sha256sum --check qwen3-baseline.sha256
+      - name: Publish native Qwen3 K-quant artifacts
+        run: |
+          python tests/conformance/k_quant_artifacts.py --model qwen3 \
+            --source-dir qwen3 --converter target/release/quantinfer-convert --gguf-only
+          for variant in q4_k q5_k q6_k; do
+            target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
+              > "qwen3-$variant.inventory"
+            sha256sum "qwen3-$variant.gguf" >> qwen3-gguf.sha256
+          done
       - name: Gate real Qwen3 logits, generation and quantization error
         shell: bash
         env:
@@ -484,6 +514,18 @@ jobs:
         run: |
           cargo test --release --locked -p quantinfer-runtime --test qwen3_conformance -- --ignored --nocapture \
             | tee qwen3-conformance.log
+      - name: Gate native Qwen3 K-quant quality and QIF parity
+        shell: bash
+        env:
+          QUANTINFER_K_QUANT_MODEL: qwen3
+          QUANTINFER_K_QUANT_DIR: ${{ github.workspace }}
+          QUANTINFER_K_QUANT_QIF: '1'
+          QUANTINFER_K_QUANT_CONVERTER: ${{ github.workspace }}/target/release/quantinfer-convert
+          QUANTINFER_K_QUANT_REPORT: ${{ github.workspace }}/qwen3-k-quant-quality.json
+        run: |
+          cargo test --release --locked -p quantinfer-runtime --test k_quant_conformance \
+            -- --ignored --nocapture | tee qwen3-k-quant-quality.log
+          rm -- qwen3-q5_k.gguf qwen3-q6_k.gguf
       - name: Record Qwen3 F32, Q8_0 and Q4_0 benchmarks
         run: |
           manifest=model-zoo/manifests/qwen3-0.6b.json
@@ -561,6 +603,8 @@ jobs:
         with:
           name: qwen3-conformance-report
           path: |
+            qwen3-k-quant-*.json
+            qwen3-k-quant-quality.log
             qwen3-source.sha256
             qwen3-gguf.sha256
             qwen3-*.inventory

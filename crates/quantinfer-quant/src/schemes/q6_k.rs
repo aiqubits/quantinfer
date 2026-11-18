@@ -2,7 +2,7 @@
 
 use quantinfer_core::{Q6KBlock, QuantizedTensorQ6K, Tensor, Q4_K_BLOCK_SIZE};
 
-use super::validate_finite;
+use super::{stored_f16_scale, validate_finite};
 use crate::{QuantizationError, Result};
 
 pub fn quantize_q6_k(input: &Tensor) -> Result<QuantizedTensorQ6K> {
@@ -21,18 +21,27 @@ pub fn quantize_q6_k(input: &Tensor) -> Result<QuantizedTensorQ6K> {
             let max_abs = values.iter().copied().map(f32::abs).fold(0.0, f32::max);
             let scale = (max_abs / 31.0).max(f32::EPSILON);
             scales_f[subblock] = scale;
-            for (index, value) in values.iter().copied().enumerate() {
-                quantized[subblock * 16 + index] =
-                    ((value / scale).round().clamp(-32.0, 31.0) as i32 + 32) as u8;
-            }
         }
         let max_scale = scales_f
             .iter()
             .copied()
             .fold(0.0, f32::max)
             .max(f32::EPSILON);
-        let d = max_scale / 127.0;
-        let scales = scales_f.map(|value| (value / d).round().clamp(-128.0, 127.0) as i8);
+        let d = stored_f16_scale(max_scale / 127.0)?;
+        let scales = if d == 0.0 {
+            [0; 16]
+        } else {
+            scales_f.map(|value| (value / d).round().clamp(1.0, 127.0) as i8)
+        };
+        for (index, &value) in chunk.iter().enumerate() {
+            let scale = f64::from(d) * f64::from(scales[index / 16]);
+            let signed = if scale == 0.0 {
+                0
+            } else {
+                (f64::from(value) / scale).round().clamp(-32.0, 31.0) as i32
+            };
+            quantized[index] = (signed + 32) as u8;
+        }
         let mut low_bits = [0_u8; 128];
         let mut high_bits = [0_u8; 64];
         for ip in 0..2 {

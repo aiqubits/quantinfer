@@ -68,3 +68,59 @@ quantinfer-convert --config config.json --weights model.safetensors \
 The policy and explicit `--mixed-precision` plans are mutually exclusive.
 The converter validates block alignment and records the resulting tensor
 schemes in the model manifest.
+
+## Native K-quant storage and quality checks
+
+Q4_K, Q5_K and Q6_K select integer codes against the final stored codebook:
+F16 global scales and the quantized subblock scale/min coefficients. Scales
+outside finite F16 range are rejected. A positive global quotient that rounds
+to zero uses the smallest positive F16 scale; smaller unresolvable weights may
+still become zero. Independent scalar enumeration tests check nearest-code
+selection, zero/subnormal inputs and nonrepresentable scales. They do not
+establish that every model's task accuracy improves.
+
+The fixed-model `k_quant_conformance` test extends SmolLM2-135M and Qwen3-0.6B
+with native row-major Q4_K/Q5_K/Q6_K artifacts. The existing model-specific
+Transformers/F32 tests and their thresholds remain in place. For the new fixed
+prompt matrix, full-vocabulary next-token KL from F32 is limited to 0.5 nats
+and Top-10 overlap is at least 6. SmolLM2's query projection relative L2 is at
+most 0.25; Qwen3 additionally retains the existing Q4_K full-logit max/MSE
+limits of 13/9 and query-weight max/mean limits of 0.032/0.0025 for all three
+new variants. Reports retain raw logit errors and sampled Transformers errors.
+SmolLM2's existing GGML-layout Q4_0 raw-logit limit of 3.8 is not reused as a
+threshold for this different native K profile.
+
+The matrix checks finite full logits, repeatable generation, streaming tokens,
+KV lengths and lossless publication to SINGLE/none and PACKAGE/zstd. Every
+tensor's shape, dtype and raw SHA-256 must match its GGUF source, as must
+decoded query values, logits and generated tokens. This is a bounded fixed
+prompt regression matrix, not a perplexity benchmark or general task-quality
+guarantee. Higher bit counts need not give monotonically better generation.
+
+After downloading and verifying the pinned model and independently validating
+its `{model}-f32.gguf` baseline, prepare and run the matrix:
+
+```sh
+python3 tests/conformance/k_quant_artifacts.py --model smollm2 \
+  --source-dir /path/to/checkpoint --output-dir /path/to/artifacts \
+  --converter target/release/quantinfer-convert --gguf-only
+QUANTINFER_K_QUANT_MODEL=smollm2 \
+QUANTINFER_K_QUANT_DIR=/path/to/artifacts \
+QUANTINFER_K_QUANT_CONVERTER="$PWD/target/release/quantinfer-convert" \
+QUANTINFER_K_QUANT_REPORT=/path/to/quality.json \
+  cargo test --release --locked -p quantinfer-runtime \
+    --test k_quant_conformance -- --ignored --nocapture
+```
+
+Use `--model qwen3` and `QUANTINFER_K_QUANT_MODEL=qwen3` for Qwen3. The script
+verifies source files against the repository manifests and records source,
+converter and artifact hashes. The test publishes QIF into a directory it
+creates, checks and hashes both profiles, then releases that variant's copies
+before moving on. It cleans its own directory on failure as well. To inspect
+persistent QIF artifacts, omit `--gguf-only`, set `QUANTINFER_K_QUANT_QIF=1`,
+and omit `QUANTINFER_K_QUANT_CONVERTER` when running the test.
+
+`QuantizationProvider::error_report` measures the supplied in-memory data.
+When evaluating exports, use the data re-read from the published artifact;
+an F32 in-memory scale can change when stored as F16. A correct in-memory
+report alone does not establish the exported artifact's reconstruction error.
