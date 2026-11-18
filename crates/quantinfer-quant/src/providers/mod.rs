@@ -63,12 +63,15 @@ impl QuantizationStats {
         validate_finite(values)?;
         let min = values.iter().copied().fold(f32::INFINITY, f32::min);
         let max = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let sum_abs = values.iter().map(|value| value.abs()).sum::<f32>();
+        let sum_abs = values
+            .iter()
+            .map(|value| f64::from(*value).abs())
+            .sum::<f64>();
         Ok(Self {
             elements: values.len(),
             min,
             max,
-            mean_abs: sum_abs / values.len() as f32,
+            mean_abs: (sum_abs / values.len() as f64) as f32,
             max_abs: min.abs().max(max.abs()),
         })
     }
@@ -78,6 +81,9 @@ impl QuantizationStats {
 pub struct QuantizationErrorReport {
     pub max_absolute_error: f32,
     pub mean_absolute_error: f32,
+    /// `||reference - restored||₂ / ||reference||₂`, with F64 accumulation.
+    /// Two zero tensors have zero error; a zero reference with nonzero error
+    /// or a metric outside finite F32 range makes `error_report` fail.
     pub relative_l2_error: f32,
 }
 
@@ -110,23 +116,42 @@ pub trait QuantizationProvider {
         }
         validate_finite(reference_values)?;
         validate_finite(restored_values)?;
-        let mut max_absolute_error: f32 = 0.0;
-        let mut sum_absolute_error: f32 = 0.0;
-        let mut sum_squared_reference: f32 = 0.0;
-        let mut sum_squared_error: f32 = 0.0;
+        let mut max_absolute_error: f64 = 0.0;
+        let mut sum_absolute_error: f64 = 0.0;
+        let mut sum_squared_reference: f64 = 0.0;
+        let mut sum_squared_error: f64 = 0.0;
         for (reference, restored) in reference_values.iter().zip(restored_values) {
-            let error = *reference - *restored;
+            let reference = f64::from(*reference);
+            let error = reference - f64::from(*restored);
             max_absolute_error = max_absolute_error.max(error.abs());
             sum_absolute_error += error.abs();
             sum_squared_reference += reference * reference;
             sum_squared_error += error * error;
         }
-        let denominator = sum_squared_reference.sqrt().max(f32::EPSILON);
-        Ok(QuantizationErrorReport {
-            max_absolute_error,
-            mean_absolute_error: sum_absolute_error / reference_values.len().max(1) as f32,
-            relative_l2_error: sum_squared_error.sqrt() / denominator,
-        })
+        let relative_l2_error = if sum_squared_reference == 0.0 {
+            if sum_squared_error != 0.0 {
+                return Err(QuantizationError::InvalidInput(
+                    "relative L2 error is undefined for a zero reference norm".to_owned(),
+                ));
+            }
+            0.0
+        } else {
+            sum_squared_error.sqrt() / sum_squared_reference.sqrt()
+        };
+        let report = QuantizationErrorReport {
+            max_absolute_error: max_absolute_error as f32,
+            mean_absolute_error: (sum_absolute_error / reference_values.len().max(1) as f64) as f32,
+            relative_l2_error: relative_l2_error as f32,
+        };
+        if !report.max_absolute_error.is_finite()
+            || !report.mean_absolute_error.is_finite()
+            || !report.relative_l2_error.is_finite()
+        {
+            return Err(QuantizationError::InvalidInput(
+                "quantization error metrics exceed finite F32 range".to_owned(),
+            ));
+        }
+        Ok(report)
     }
     fn export_layout(&self) -> &'static str;
 }
@@ -137,6 +162,9 @@ mod q4_k;
 mod q5_k;
 mod q6_k;
 mod q8;
+
+#[cfg(test)]
+mod tests;
 
 pub use float::FloatProvider;
 pub use q4::NativeQ4_0Provider;

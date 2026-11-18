@@ -8,11 +8,11 @@
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
-| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | Python `4c880a4` 的 106 项远端 CI 已通过；新增独立 C 与三语言 147 项本地比较通过，等待本批远端 CI；报告工具预算和测试边界见 conformance 文档 |
+| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `f651ed2` 的双环境专项及主 CI 已通过，各 147 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
-| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
+| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 误差报告的 F64 累加、相对 L2 与非有限结果处理已修复；复杂策略和扩展质量矩阵仍未完成 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
@@ -123,3 +123,16 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   将非 ASCII 字节当作控制字符。独立 UTF-8 校验后，仅对依赖 parser 的缓冲区采用
   等价 ASCII Unicode escape；strict mode 与原始 UTF-8 canonical 字节比较保留。
   本地 0.17、0.18 均通过 147 项；CI 拆出 Ubuntu 24.04/latest 双环境，等待修复批远端结果。
+- `f651ed2` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44248704432)
+  已全部通过。两项独立语言 job 各完成 147 个检查：
+  [Ubuntu 24.04](https://github.com/aiqubits/quantinfer/actions/runs/44248704432/job/134613834702)
+  实际依赖为 JSON-C 0.17 / LZ4 1.9.4 / zstd 1.5.5 / OpenSSL 3.0.13；
+  [Ubuntu latest](https://github.com/aiqubits/quantinfer/actions/runs/44248704432/job/134613834392)
+  为 0.18 / 1.10.0 / 1.5.7 / 3.5.5。没有用固定旧依赖绕过失败。
+- 随后的量化门禁复核复现有限权重经 F32 累加得到 `Inf/NaN`、小数值经平方
+  underflow 或 EPSILON 分母抬高后被低估的问题。统计与误差计算改用 F64 累加，
+  relative L2 使用真实范数比；两个零 tensor 返回 0，零参考配非零误差或超出
+  有限 F32 表示范围的报告明确报错，公共报告字段类型保持 F32。
+  三项回归在旧实现上均失败，修复后 quant crate 12 项通过；本地 workspace
+  218 passed / 0 failed / 3 ignored，workspace Clippy 与两个 xtask bench smoke 通过。
+  这项诊断修复不等于已经完成复杂 Mixed Precision 或两模型扩展质量矩阵。
