@@ -8,12 +8,12 @@
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
-| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | 未完成 |
+| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | Python core-profile reader 与 native Rust 的 106 项本地比较已通过，CI 已接入；完整 C 扩展尚未完成 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
-| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f` 专项 CI 已通过；T-MAC 原生 Rust LUT4/AVX2/NEON 实现及本地数值回归完成，等待远端；各实现 profile 与上游编译栈/硬件测量的边界见 README |
+| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
@@ -86,3 +86,15 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   不调用上游 TVM 编译/调优栈。65,536 种 plane mask、F64 参考矩阵、prepared
   snapshot 和错误输入在本地 x86 与 AArch64 QEMU 均通过；CI 将验证原生双架构。
   保留上游/下游 kernel hook，量化位宽和数值范围不扩大到该 profile 之外。
+- `175873e` 的 [T-MAC 双架构专项](https://github.com/aiqubits/quantinfer/actions/runs/44239948395)
+  已通过：原生 x86 job `134585096877` 记录 `verified T-MAC LUT4 Avx2`，
+  ARM job `134585096214` 记录 `verified T-MAC LUT4 Neon`，各 5 项 kernel/packing
+  与 7 项 CLI 检查通过；[CI](https://github.com/aiqubits/quantinfer/actions/runs/44239948294)
+  也已通过。不将上述正确性检查改称完整模型性能测量。
+- 独立 Python core-profile reader 不调用 QuantInfer binding，使用标准库解析
+  JSON/QMB/QIDX、原生 Python LZ4、系统 libzstd streaming 和 OpenSSL Ed25519。
+  本地 106 个正反比较通过，包含八种 encoding × 两种 layout、scalar、alias、
+  codec/profile 组合、跨 chunk/shard 重建、root 修复后的语义错误及公钥信任策略。
+  工具按 artifact/decoded physical tensor 各 64 MiB 设范围；原 C reader 尚未扩展。
+  本地默认 workspace 212 passed / 0 failed / 3 ignored，format all-targets Clippy 通过；
+  新例程与 CI 使用相同的 fixture generator 和比较脚本。

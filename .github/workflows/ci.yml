@@ -21,10 +21,10 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: python3 -m unittest discover -s benches -p 'test_*.py'
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
-      - name: Install the independent C golden reader hash dependency
+      - name: Install independent reader hash, signature and codec dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libssl-dev
+          sudo apt-get install --yes --no-install-recommends libssl-dev openssl libzstd1
       - name: Compare QIF Rust, Python and C golden wire reports
         run: |
           cargo run --locked -p quantinfer-format --example qif_v2_fixture -- "$RUNNER_TEMP/qif-v2-fixture.qif"
@@ -34,6 +34,12 @@ jobs:
           python3 tests/conformance/qif_v2_cross_language.py --input "$RUNNER_TEMP/qif-v2-fixture.qif" \
             --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_v2_report" \
             --c-reader "$RUNNER_TEMP/qif-v2-c-reader"
+      - name: Compare independent Python core profiles with native Rust
+        run: |
+          cargo build --locked -p quantinfer-format --example qif_profile_fixtures --example qif_profile_report
+          python3 tests/conformance/qif_profile_cross_language.py \
+            --generator "$GITHUB_WORKSPACE/target/debug/examples/qif_profile_fixtures" \
+            --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_profile_report"
       - name: Verify QIF tensor, chunk and alias resource bounds
         run: |
           cargo build --locked -p quantinfer-format --example qif_verify --example qif_resource_fixture
