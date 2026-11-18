@@ -19,7 +19,7 @@ file-backed 校验器和确定性 reshard planner 已有实现。GGUF/SafeTensor
 MappedFile, Codec}` 等稳定名称。`MappedFile::open` 为 unsafe 构造函数：
 调用方须保证底层文件在映射及其所有
 借用 view 存活期间不被修改/截断。不能提供这一保证时使用安全的 `FileReader`。
-[Rust/Python/C golden 验证](qif-conformance.md)有明确的固定 profile 边界；
+[Rust/Python/C 一致性验证](qif-conformance.md)有明确的 golden 与 core-profile 矩阵边界；
 [跨格式测量](../../benches/README.md)按进程隔离，
 记录加载策略、选中 tensor、dtype、范围 hash 和未控制的缓存状态，不能直接推出
 格式的固有性能优劣。QIF 带有 seeded malformed corpus 和带 ASan/覆盖率的

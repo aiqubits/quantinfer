@@ -952,6 +952,7 @@ pub(crate) fn validate_manifest_limits(manifest: &ModelManifest) -> Result<()> {
         strings.push(value);
     }
     strings.extend(manifest.compatibility.required_features.iter());
+    strings.extend(manifest.checksums.keys());
     if strings
         .iter()
         .any(|value| value.len() > MAX_MANIFEST_STRING_BYTES)

@@ -9,12 +9,12 @@ matrix below does not prove every possible artifact or deployment correct.
 | Rust mmap | Same validated memory reader over a read-only mapping | Unsafe constructor requires backing-file immutability; borrowed uncompressed views; opening alone does not verify payload |
 | Rust/C/Python golden reports | Header bytes, parsed string/shape/tensor/chunk fields, section SHA-256, chunk/tensor digests, payload bytes | One unsigned/uncompressed F32 tensor containing `[1.0, 2.0]`, original and reordered control sections |
 | Cross-language negative fixtures | Payload corruption, overflowing index length, truncation, oversized rank with consistent root | All three processes must fail; this is not a general invalid-artifact equivalence proof |
-| Independent Python core profiles / native Rust | Full reports of model, typed QMB (floating IEEE bits), index records/chunks and reconstructed bytes; all eight encodings × two layouts, aliases, rank-zero scalar, three codecs × unsigned SINGLE/signed SINGLE/PACKAGE | 106 cases including relocated controls, empty artifacts, multi-chunk/multi-shard reconstruction, repaired semantic failures and pinned-key trust policy; C has not yet joined this expanded matrix |
+| Independent C/Python core profiles / native Rust | Full reports of model, typed QMB (floating IEEE bits), index records/chunks and reconstructed bytes; all eight encodings × two layouts, aliases, rank-zero scalars, three codecs × unsigned SINGLE/signed SINGLE/PACKAGE | 135 curated cases plus 12 reader corpus seeds: relocated controls, empty artifacts, multi-chunk/multi-shard reconstruction, repaired semantic failures, Unicode/NUL keys, report budgets and pinned-key trust policy; C runs with ASan/UBSan |
 | Linux resource limits | Six 64 MiB tensor/alias fixtures verified through both native and runtime file-backed readers in separate processes with a 48 MiB address-space limit; unknown overlapping names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunks; not a universal peak-memory bound |
 | Runtime loading | Control-only open, cold-corruption isolation, per-tensor raw hashes, shared alias cache, typed reads without retained raw bytes, storage budget preflight | Fixed local inference/encoding tests and explicit real-model CI profile/codec matrix; not layer-level out-of-core execution |
 | Instrumented fuzz | Reader, global PACKAGE index, PACKAGE JSON/QMB/path/shard mutations; default runtime comparison; see [fuzz/README.md](../../fuzz/README.md) | Three bounded ASan targets; quick smoke plus scheduled time-budget runs, saved corpus/log/crash artifacts; not exhaustive safety proof |
 
-The C program is independent of QuantInfer and Rust. It uses OpenSSL libcrypto
+The original C program is independent of QuantInfer and Rust. It uses OpenSSL libcrypto
 for SHA-256 and is compiled with address/undefined-behavior sanitizers in CI.
 The original Python program uses only the standard library. Both original tools are golden-profile
 wire tools, not general JSON/QMB semantic validators, compressed readers,
@@ -46,33 +46,62 @@ Raw LZ4 decoding is independent Python code; zstd uses the system `libzstd`
 streaming API with the same 128 MiB window ceiling. Ed25519 verification uses
 the system OpenSSL executable, independently of Rust's ed25519-dalek.
 
-This is a bounded conformance tool: artifact and reconstructed physical tensor
-bytes are each limited to 64 MiB. It eagerly reconstructs data and reports hex;
+The separate C implementation in `qif_c_reference/` parses and validates the
+same core profiles without QuantInfer, Rust or Python linkage. It uses JSON-C
+with canonical/schema checks, system liblz4/libzstd and OpenSSL's SHA-256 and
+Ed25519 APIs. It preserves embedded NULs in strings and object keys, including
+the distinction between an ordinary key and a longer key containing NUL.
+The [C tool notes](../../tests/conformance/qif_c_reference/README.md) describe
+its internal key encoding; that is not an addition to the QIF wire format.
+
+These are bounded conformance tools: artifact bytes and the sum of reported
+tensor raw bytes (including every alias) are each limited to 64 MiB. They
+eagerly reconstruct data and report hex;
 that limit is not a process RSS bound or a production large-model loader.
 Unsigned/signed SINGLE and unsigned PACKAGE are accepted. An embedded key only
 reports `publisher_trust=not_evaluated`; explicit `--trusted-key HEX` pins an
 externally supplied public key and requires its valid signature. It rejects
 unsigned artifacts and PACKAGE under that policy. Key distribution/revocation,
 PACKAGE signatures, remote transport and arbitrary filesystem races are not
-tested or implemented by this tool.
+tested or implemented by these tools. The alias budget fixture is valid QIF,
+deliberately rejected by this smaller reporting profile; it is not a new wire
+limit or a requirement imposed on the production loader.
 
-On a system with OpenSSL 3 and libzstd installed:
+On a 64-bit POSIX system with development packages for OpenSSL 3, JSON-C,
+liblz4 and libzstd installed:
 
 ```sh
 cargo build --locked -p quantinfer-format --example qif_profile_fixtures --example qif_profile_report
+cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -fno-omit-frame-pointer tests/conformance/qif_c_reference/*.c \
+  $(pkg-config --cflags --libs json-c liblz4 libzstd openssl) -o /tmp/qif-c-reference
 python3 tests/conformance/qif_profile_cross_language.py \
   --generator "$PWD/target/debug/examples/qif_profile_fixtures" \
-  --rust-reader "$PWD/target/debug/examples/qif_profile_report"
+  --rust-reader "$PWD/target/debug/examples/qif_profile_report" \
+  --c-reader /tmp/qif-c-reference --corpus "$PWD/fuzz/corpus/qif_v2_reader"
 ```
 
-The 106 cases include eight fully rehashed non-finite encoding fixtures, broken
+The 135 curated cases include eight fully rehashed non-finite encoding fixtures, broken
 signature bytes/key/envelope and a new authenticated root with an old signature.
 The PACKAGE cases cover traversal, absolute paths, symlink escape, duplicate
 JSON/shards, coordinates, shard lists/ranges/sizes/digests and overlapping data.
 Every valid report must agree; invalid cases require a normal failure exit,
 never a crash or sanitizer error. The original three-language golden comparison
-remains in CI. Expanded C support is still outstanding; these tests do not
+remains in CI. Existing corpus seeds additionally compare normal rejection or
+full reports with the native oracle. These tests do not
 justify claiming universal malformed-input equivalence or all acceptance done.
+
+The SINGLE signature profile requires canonical public-key/R encodings,
+non-small-order points and a canonical scalar. Rust uses
+[`VerifyingKey::verify_strict`](https://docs.rs/ed25519-dalek/2.2.0/ed25519_dalek/struct.VerifyingKey.html#method.verify_strict)
+with an additional public-key re-encoding check; C/Python apply the same
+canonical/point/scalar preflight before OpenSSL verification. The matrix
+rejects the identity-key/identity-R/zero-S forgery, including with that key
+explicitly pinned, all eight small-order points and their encoding variants,
+noncanonical points/scalars and altered roots. These checks do not let an
+attacker impersonate a properly pinned normal signing key; they prevent weak
+keys from being reported as verified. Normal generated-key signatures still
+agree across all three codecs.
 
 The Linux resource check is independent of the cross-language golden profile:
 

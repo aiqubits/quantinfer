@@ -38,6 +38,27 @@ fn single(payload: &[u8]) -> Vec<u8> {
 }
 
 #[test]
+fn checksum_paths_cannot_bypass_manifest_string_limit() {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    let mut manifest = sample_manifest();
+    manifest
+        .checksums
+        .insert("x".repeat(LIMIT), crate::sha256_hex(&[]));
+    super::super::reader::validate_manifest_limits(&manifest).unwrap();
+    let (mut path, checksum) = manifest.checksums.pop_first().unwrap();
+    path.push('x');
+    manifest.checksums.insert(path, checksum);
+    assert!(super::super::reader::validate_manifest_limits(&manifest)
+        .unwrap_err()
+        .to_string()
+        .contains("string exceeds"));
+    let mut output = Vec::new();
+    let error = write_qif_v2(manifest, &BTreeMap::new(), |_| Ok(&[0; 8]), &mut output).unwrap_err();
+    assert!(error.to_string().contains("string exceeds"));
+    assert!(output.is_empty());
+}
+
+#[test]
 fn rejects_unreferenced_and_overlapping_chunks_with_consistent_root() {
     let mut bytes = single(&[0; 8]);
     let index = u64_at(&bytes, 56);

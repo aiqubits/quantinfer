@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
-| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | Python core-profile reader 与 native Rust 的 106 项本地比较已通过，CI 已接入；完整 C 扩展尚未完成 |
+| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | Python `4c880a4` 的 106 项远端 CI 已通过；新增独立 C 与三语言 147 项本地比较通过，等待本批远端 CI；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
@@ -91,10 +91,29 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   ARM job `134585096214` 记录 `verified T-MAC LUT4 Neon`，各 5 项 kernel/packing
   与 7 项 CLI 检查通过；[CI](https://github.com/aiqubits/quantinfer/actions/runs/44239948294)
   也已通过。不将上述正确性检查改称完整模型性能测量。
-- 独立 Python core-profile reader 不调用 QuantInfer binding，使用标准库解析
+- `4c880a4` 的独立 Python core-profile reader 不调用 QuantInfer binding，使用标准库解析
   JSON/QMB/QIDX、原生 Python LZ4、系统 libzstd streaming 和 OpenSSL Ed25519。
   本地 106 个正反比较通过，包含八种 encoding × 两种 layout、scalar、alias、
   codec/profile 组合、跨 chunk/shard 重建、root 修复后的语义错误及公钥信任策略。
-  工具按 artifact/decoded physical tensor 各 64 MiB 设范围；原 C reader 尚未扩展。
+  该批工具按 artifact/decoded physical tensor 各 64 MiB 设范围；当时原 C reader 尚未扩展，
+  随后的 C 扩展及 alias 报告预算收紧见下方记录。
   本地默认 workspace 212 passed / 0 failed / 3 ignored，format all-targets Clippy 通过；
   新例程与 CI 使用相同的 fixture generator 和比较脚本。
+- `4c880a4` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44242382774)
+  已通过，job `134593113311` 的日志明确记录 Python/native 的 106 项检查通过。
+- 独立 C core-profile reader 使用 JSON-C、liblz4/libzstd 与 OpenSSL，不链接
+  QuantInfer/Rust/Python。新矩阵有 135 个专门用例及 12 个 corpus seed；
+  本地三语言比较通过，C 使用 ASan/UBSan。NUL 字符串和 map key 使用长度保留，
+  C 的内部键映射可逆且覆盖前缀碰撞/重复键；不引入 QIF wire 字段。
+  三个报告工具把 alias 计入 64 MiB 总逻辑 tensor 报告预算，并明确与格式大小限制区分。
+  此轮对照还修复生产 reader/writer 共用的 manifest 字符串检查遗漏 checksum 路径的问题。
+- 此轮还复现宽松 Ed25519 验证接受 identity 弱公钥／identity R／zero S 的退化
+  签名；已将 SINGLE profile 明确为 canonical、拒绝 small-order A/R、canonical S
+  与严格验证等式。Rust 改用 `verify_strict` 并重新编码核对公钥，独立 C/Python
+  在 OpenSSL 前预检相同规则，原始有效 writer 签名不受影响。测试包含显式 pin 弱 key
+  和改 root 的拒绝，另保留 valid-signed 与 weak-key-forgery fuzz seed。
+  该问题不能用于冒充正常的已受信公钥；默认 `publisher_trust=not_evaluated` 的边界不变。
+  本地默认 workspace 为 215 passed / 0 failed / 3 ignored，workspace all-targets
+  Clippy 通过；GCC 与 Clang 两次 ASan/UBSan 三语言矩阵各 147 项通过。
+  加入两项签名 seed 后，reader ASan smoke 完成 1024 runs、非零 coverage（cov 3228），
+  没有把 smoke 的短时运行写成持续 fuzz 或穷举证明。

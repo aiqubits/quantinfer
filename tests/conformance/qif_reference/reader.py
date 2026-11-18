@@ -34,6 +34,14 @@ def verify_signature(root_hash, envelope, trusted_keys):
             'invalid signature envelope')
     key, signature = cursor.read(32), cursor.read(64)
     cursor.end()
+    weak_y = {0, 1, (1 << 255) - 20,
+              int.from_bytes(bytes.fromhex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05'), 'little'),
+              int.from_bytes(bytes.fromhex('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a'), 'little')}
+    for point in (key, signature[:32]):
+        y = int.from_bytes(point, 'little') & ((1 << 255) - 1)
+        require(y < (1 << 255) - 19 and y not in weak_y, 'noncanonical or small-order Ed25519 point')
+    order = (1 << 252) + 27742317777372353535851937790883648493
+    require(int.from_bytes(signature[32:], 'little') < order, 'noncanonical Ed25519 scalar')
     # OpenSSL's Ed25519 implementation is independent of ed25519-dalek.
     with tempfile.TemporaryDirectory(prefix='qif-signature-') as directory:
         directory = Path(directory)
@@ -152,6 +160,8 @@ def report(path, trusted_keys=()):
         require(name in by_name and name not in names, 'unknown/duplicate index tensor')
         names.add(name)
         validate_tensor(tensor, by_name[name])
+        reconstructed_budget += tensor['raw_length']
+        require(reconstructed_budget <= LIMIT, 'reference report tensor budget exceeded')
         start, count, alias = tensor['chunk_start'], tensor['chunk_count'], tensor['alias_of']
         if alias is not None:
             require(alias < tensor['tensor_id'] and count == 0, 'invalid alias target/chunks')
@@ -163,8 +173,6 @@ def report(path, trusted_keys=()):
             payloads.append(payloads[alias])
             continue
         require(count > 0, 'physical tensor has no chunks')
-        reconstructed_budget += tensor['raw_length']
-        require(reconstructed_budget <= LIMIT, 'reference decoded tensor budget exceeded')
         raw_total, stored_total, ends, decoded = 0, 0, {}, bytearray()
         for position in range(start, start + count):
             require(position not in referenced, 'chunk reused by multiple physical tensors')

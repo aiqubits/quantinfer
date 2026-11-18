@@ -95,6 +95,9 @@ def single_cases(original):
         ('metadata-order', b'a.u32', b'z.u32'),
         ('metadata-duplicate', b'b.i32', b'a.u32'),
         ('metadata-utf8', b'h.string', b'h.strin\xff'),
+        ('metadata-surrogate', '汉'.encode('utf-8'), b'\xed\xa0\x80'),
+        ('metadata-overlong-utf8', '汉'.encode('utf-8'), b'\xe0\x80\x80'),
+        ('metadata-out-of-range-utf8', '🚀'.encode('utf-8'), b'\xf4\x90\x80\x80'),
     ]:
         offset = metadata_start + raw_metadata.index(before)
         data = bytearray(original)
@@ -103,6 +106,23 @@ def single_cases(original):
         cases[name] = data
     edit('metadata-root-tag', metadata_start, 'I', 9)
     edit('metadata-count', metadata_start + 4, 'Q', (1 << 64) - 1)
+    edit('metadata-string-limit', metadata_start + 12, 'Q', (1 << 64) - 1)
+    offset = metadata_start + raw_metadata.index(struct.pack('<If', 6, 0.1))
+    edit('metadata-unknown-type', offset, 'I', 99)
+    model = json.loads(section(original, 24))
+    model[''] = 0
+    cases['manifest-unknown-empty-key'] = reordered(original, {24: canonical(model)})
+    model = json.loads(section(original, 24))
+    model['tensors'][0]['descriptor']['backend_requirements'] = [True]
+    cases['manifest-wrong-string-type'] = reordered(original, {24: canonical(model)})
+    cases['manifest-whitespace'] = reordered(original, {24: b' ' + section(original, 24)})
+    duplicate = section(original, 24).replace(b'"checksums":{', b'"checksums":{' + canonical('a\0path') + b':' + canonical('00' * 32) + b',', 1)
+    cases['manifest-duplicate-nul-key'] = reordered(original, {24: duplicate})
+    oversized = json.loads(section(original,24))
+    oversized['checksums'] = {'x' * (16 * 1024 * 1024 + 1): '00' * 32}
+    cases['manifest-checksum-path-string-limit'] = reordered(original, {24: canonical(oversized)})
+    deep = struct.pack('<IQ', 13, 1) + struct.pack('<Q', 1) + b'a'
+    cases['metadata-depth'] = reordered(original, {40: deep * 34 + struct.pack('<II', 4, 0)})
 
     # Every physical encoding gets a non-finite scalar/scale, with ALL applicable
     # hashes repaired. This must fail value validation, not an earlier hash check.
@@ -141,7 +161,7 @@ def single_cases(original):
     return cases
 
 
-def reordered(original):
+def reordered(original, replacements=None):
     """Relocate whole controls/signature, preserving their authenticated bytes."""
     output = bytearray(original[:144])
 
@@ -152,7 +172,7 @@ def reordered(original):
         return offset
 
     for field in (56, 24, 40):
-        data = section(original, field)
+        data = (replacements or {}).get(field, section(original, field))
         offset = append(data)
         struct.pack_into('<QQ', output, field, offset, len(data))
     if u64(original, 128):
@@ -162,6 +182,7 @@ def reordered(original):
     payload = section(original, 72)
     offset = append(payload)
     struct.pack_into('<QQ', output, 72, offset, len(payload))
+    repair_single(output)
     return output
 
 
@@ -183,6 +204,7 @@ def main():
     parser.add_argument('--generator', required=True)
     parser.add_argument('--rust-reader', required=True)
     parser.add_argument('--c-reader')
+    parser.add_argument('--corpus', type=Path)
     args = parser.parse_args()
     checks = 0
 
@@ -198,14 +220,16 @@ def main():
         reports = []
         for command in commands(path, options):
             result = subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+            if result.returncode < 0 or 'Sanitizer' in result.stderr or 'runtime error:' in result.stderr:
+                raise AssertionError(f'{path.name}: reader crashed or reported undefined behavior: {result.stderr[-2000:]}')
             if accepted:
                 if result.returncode:
                     raise AssertionError(f'{path.name}: {command[0]} failed: {result.stderr[-2000:]}')
                 reports.append(json.loads(result.stdout))
             elif result.returncode == 0:
-                raise AssertionError(f'{path.name}: {command[0]} accepted damaged/untrusted artifact')
+                raise AssertionError(f'{path.name}: {command[0]} accepted an input excluded by the test case')
             # A crash, sanitizer failure or timeout is not a clean rejection.
-            elif result.returncode != 1 or 'Sanitizer' in result.stderr or 'Traceback (most recent call last)' in result.stderr:
+            elif result.returncode != 1 or 'Traceback (most recent call last)' in result.stderr:
                 raise AssertionError(f'{path.name}: reader crashed: {result.stderr[-2000:]}')
         if accepted and any(report != reports[0] for report in reports[1:]):
             keys = [key for key in reports[0] if any(report[key] != reports[0][key] for report in reports[1:])]
@@ -229,14 +253,64 @@ def main():
                     check(relocated, True)
         for name in ('empty.qif', 'empty-package', 'multi-chunk-zstd.qif', 'multi-chunk-lz4.qif'):
             check(fixtures / name, True)
+        # Valid wire input, deliberately beyond the reporting tools' budget:
+        # aliases must count toward expanded report bytes, not only disk bytes.
+        check(fixtures / 'alias-report-budget.qif', False)
         original = (fixtures / 'single-none.qif').read_bytes()
+        upper = json.loads(section(original,24))
+        for tensor in upper['tensors']:
+            tensor['checksum_sha256'] = tensor['checksum_sha256'].upper()
+        path = root / 'uppercase-tensor-checksums.qif'
+        path.write_bytes(reordered(original, {24: canonical(upper)}))
+        check(path, True)
         for name, data in single_cases(original).items():
             path = root / (name + '.qif')
             path.write_bytes(data)
             check(path, False)
+        if args.corpus:
+            for path in sorted(args.corpus.iterdir()):
+                if not path.is_file():
+                    continue
+                baseline = subprocess.run([args.rust_reader, str(path)], capture_output=True,
+                                          text=True, timeout=15, check=False)
+                if baseline.returncode not in (0, 1):
+                    raise AssertionError(f'{path.name}: native corpus reader crashed')
+                check(path, baseline.returncode == 0)
         # Signature failures include a rehashed control change, not just damage
         # detected by the container root. A valid self-signed key is not trust.
         original_signed = (fixtures / 'signed-zstd.qif').read_bytes()
+        signature_offset = u64(original_signed,120)
+        identity = b'\x01' + bytes(31)
+        weak_points = [bytes(32), identity, bytes.fromhex('ec'+'ff'*30+'7f'),
+                       bytes.fromhex('26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05'),
+                       bytes.fromhex('c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a')]
+        for point_number, weak in enumerate(weak_points):
+            for sign in (0,128):
+                data = bytearray(original_signed)
+                key_bytes = weak[:31] + bytes([(weak[31]&127)|sign])
+                data[signature_offset+12:signature_offset+108] = key_bytes + identity + bytes(32)
+                path = root / f'weak-key-{point_number}-{sign}.qif'
+                path.write_bytes(data)
+                check(path, False)
+                if point_number == 1 and sign == 0:
+                    check(path, False, ('--trusted-key',key_bytes.hex()))
+                    meta_offset = u64(data,40) + section(data,40).index(struct.pack('<If',6,0.1)) + 4
+                    struct.pack_into('<f',data,meta_offset,0.25)
+                    repair_single(data)
+                    path = root / 'weak-key-new-root.qif'
+                    path.write_bytes(data)
+                    check(path, False)
+        for name, offset, replacement in [
+            ('small-order-R',44,identity),
+            ('noncanonical-public-key-y',12,((1<<255)-17).to_bytes(32,'little')),
+            ('noncanonical-R-y',44,((1<<255)-17).to_bytes(32,'little')),
+            ('noncanonical-S',76,(int.from_bytes(original_signed[signature_offset+76:signature_offset+108],'little') + (1<<252) + 27742317777372353535851937790883648493).to_bytes(32,'little')),
+        ]:
+            data = bytearray(original_signed)
+            data[signature_offset+offset:signature_offset+offset+32] = replacement
+            path = root / (name+'.qif')
+            path.write_bytes(data)
+            check(path,False)
         for name, position in [('signature', 44), ('public-key', 12), ('envelope-version', 4)]:
             data = bytearray(original_signed)
             data[u64(data, 120) + position] ^= 1

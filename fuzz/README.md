@@ -21,6 +21,11 @@ copy with the control root hash recomputed, so control-section mutations can
 reach the parsers. Signed inputs still undergo signature validation. Payload
 operations are limited to a total declared tensor length of 4 MiB; larger
 inputs exercise opening only. Valid none/zstd/LZ4 seeds reach the codecs.
+The signed SINGLE seed and its weak-key-forgery counterexample exercise the
+strict signature boundary. Regenerate the signed fixture with
+`cargo run -p quantinfer-format --example qif_v2_fixture -- OUTPUT.qif none signed`;
+the signing key is public test data. The counterexample replaces A/R with the
+identity and S with zero while retaining valid controls/root; it must be rejected.
 
 `qif_v2_package` mutates the global binary index in a small package with fixed
 weights, model manifest and metadata. It recomputes package control hashes,

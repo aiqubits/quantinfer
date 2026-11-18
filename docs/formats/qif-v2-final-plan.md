@@ -410,6 +410,12 @@ v2.0 不定义命令行
 
 QIF-SINGLE v2.0 定义固定 108 字节 Ed25519 envelope：`QSIG` magic、版本、算法 ID、公钥和
 签名。签名覆盖 root hash；reader 验证 envelope，但信任根和密钥分发由发布系统负责。
+此 profile MUST 使用 canonical 的公钥 A 与签名 R 编码，拒绝 small-order 的 A/R，
+且 scalar S MUST 满足 `0 <= S < l`（Ed25519 subgroup order）。验签使用原始 32 字节
+root hash 作为 message，检查标准未乘 cofactor 的 Ed25519 验证等式；Rust 使用
+`verify_strict` 并核对 A 的重新编码，C/Python 在 OpenSSL 验签前检查相同的编码、
+small-order 与 scalar 条件。identity 弱公钥搭配 identity R、zero S 能对任意 message
+形成宽松验签可接受的退化组合，本 profile 必须拒绝；这与发布者公钥是否受信任分别处理。
 QIF-PACKAGE 当前使用 package root hash、metadata/index hash 和 shard hash；package
 级签名 envelope 不属于当前 v2.0 wire core。
 COSE、证书链和密钥轮换不属于 v2.0 wire core。
@@ -522,7 +528,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 比较原始及控制区重排两个布局，并要求三者拒绝四类损坏输入。另有独立 Python core-profile reader，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略，106 个组合及正反用例已接入 CI。原 C 工具仍限于 golden wire profile，完整三语言扩展验收尚未完成；具体范围与依赖见 [QIF conformance](qif-conformance.md)；
+8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；135 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
 9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 
@@ -535,7 +541,8 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
 5. QIF2 的 Rust fixture、原有 dependency-free Python golden reader、独立 C wire golden reader、
-   使用系统 libzstd/OpenSSL 的独立 Python core-profile reader 和
+   使用系统 libzstd/OpenSSL 的独立 Python core-profile reader、使用 JSON-C/LZ4/zstd/OpenSSL 的
+   独立 C core-profile reader 和
    `qif_v2_reader`、`qif_v2_package`、`qif_v2_package_controls` fuzz target 已接入。CI 使用固定 nightly 和
    cargo-fuzz，检查非零覆盖率；内存/文件/mmap、codec/full verify 和 PACKAGE index
    都有受限运行路径，另覆盖三种 codec 的小 PACKAGE JSON、QMB、路径、shard 和

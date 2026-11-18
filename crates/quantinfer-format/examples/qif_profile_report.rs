@@ -44,6 +44,17 @@ fn tensor_report(info: &TensorInfo, record: &[u8], payload: Vec<u8>) -> Value {
     })
 }
 
+const REPORT_LIMIT: u64 = 64 * 1024 * 1024;
+fn check_tensor_budget(infos: &[TensorInfo]) -> Result<(), Box<dyn std::error::Error>> {
+    let total = infos
+        .iter()
+        .try_fold(0u64, |sum, info| sum.checked_add(info.raw_length));
+    if total.is_none_or(|total| total > REPORT_LIMIT) {
+        return Err("reference report tensor budget exceeded".into());
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<_> = env::args().skip(1).collect();
     let path = Path::new(
@@ -69,8 +80,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("PACKAGE signatures are not supported".into());
         }
         let mut reader = PackageReader::open(path)?;
-        reader.verify()?;
         let document: Value = serde_json::from_slice(&fs::read(path.join("qif.json"))?)?;
+        let mut artifact_bytes = fs::metadata(path.join("qif.json"))?.len();
+        for field in ["metadata_path", "index_path"] {
+            artifact_bytes = artifact_bytes
+                .checked_add(
+                    fs::metadata(path.join(document[field].as_str().ok_or("control path")?))?.len(),
+                )
+                .ok_or("artifact size overflow")?;
+        }
+        for shard in document["shards"].as_array().ok_or("shard list")? {
+            artifact_bytes = artifact_bytes
+                .checked_add(shard["size"].as_u64().ok_or("shard size")?)
+                .ok_or("artifact size overflow")?;
+        }
+        if artifact_bytes > REPORT_LIMIT {
+            return Err("reference artifact budget exceeded".into());
+        }
+        check_tensor_budget(reader.tensors())?;
+        reader.verify()?;
         let index = fs::read(path.join(document["index_path"].as_str().ok_or("index path")?))?;
         let infos = reader.tensors().to_vec();
         let data = infos
@@ -86,7 +114,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Value::Null,
         )
     } else {
+        if fs::metadata(path)?.len() > REPORT_LIMIT {
+            return Err("reference artifact budget exceeded".into());
+        }
         let mut reader = FileReader::open(path)?;
+        check_tensor_budget(reader.tensors())?;
         reader.verify()?;
         let bytes = fs::read(path)?;
         let start = u64_at(&bytes, 56) as usize;

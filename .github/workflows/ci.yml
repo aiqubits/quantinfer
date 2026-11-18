@@ -24,7 +24,7 @@ jobs:
       - name: Install independent reader hash, signature and codec dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libssl-dev openssl libzstd1
+          sudo apt-get install --yes --no-install-recommends libssl-dev openssl libzstd-dev liblz4-dev libjson-c-dev
       - name: Compare QIF Rust, Python and C golden wire reports
         run: |
           cargo run --locked -p quantinfer-format --example qif_v2_fixture -- "$RUNNER_TEMP/qif-v2-fixture.qif"
@@ -34,12 +34,20 @@ jobs:
           python3 tests/conformance/qif_v2_cross_language.py --input "$RUNNER_TEMP/qif-v2-fixture.qif" \
             --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_v2_report" \
             --c-reader "$RUNNER_TEMP/qif-v2-c-reader"
-      - name: Compare independent Python core profiles with native Rust
+      - name: Compare independent Python and C core profiles with native Rust
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1
         run: |
           cargo build --locked -p quantinfer-format --example qif_profile_fixtures --example qif_profile_report
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            tests/conformance/qif_c_reference/*.c \
+            $(pkg-config --cflags --libs json-c liblz4 libzstd openssl) -o "$RUNNER_TEMP/qif-c-reference"
           python3 tests/conformance/qif_profile_cross_language.py \
             --generator "$GITHUB_WORKSPACE/target/debug/examples/qif_profile_fixtures" \
-            --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_profile_report"
+            --rust-reader "$GITHUB_WORKSPACE/target/debug/examples/qif_profile_report" \
+            --c-reader "$RUNNER_TEMP/qif-c-reference" \
+            --corpus "$GITHUB_WORKSPACE/fuzz/corpus/qif_v2_reader"
       - name: Verify QIF tensor, chunk and alias resource bounds
         run: |
           cargo build --locked -p quantinfer-format --example qif_verify --example qif_resource_fixture

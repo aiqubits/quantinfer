@@ -1,4 +1,4 @@
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
 use crate::Result;
 
@@ -30,7 +30,50 @@ pub(crate) fn verify(root_hash: &[u8; 32], envelope: &[u8]) -> Result<()> {
     }
     let key = VerifyingKey::from_bytes(&envelope[12..44].try_into().unwrap())
         .map_err(|_| invalid("invalid QIF signature public key"))?;
+    if key.to_edwards().compress().as_bytes() != &envelope[12..44] {
+        return Err(invalid("noncanonical QIF signature public key"));
+    }
     let signature = Signature::from_bytes(&envelope[44..108].try_into().unwrap());
-    key.verify(root_hash, &signature)
+    key.verify_strict(root_hash, &signature)
         .map_err(|_| invalid("QIF signature verification failed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_weak_key_forgery_for_arbitrary_roots() {
+        let mut envelope = encode(&[0; 32], &SigningKey::from_bytes(&[42; 32]));
+        envelope[12..108].fill(0);
+        envelope[12] = 1;
+        envelope[44] = 1;
+        for root in [[0; 32], [1; 32], [255; 32]] {
+            assert!(verify(&root, &envelope).is_err());
+        }
+    }
+
+    #[test]
+    fn independent_point_filters_cover_every_small_order_y() {
+        let mut canonical_points = std::collections::BTreeSet::new();
+        for encoding in [
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "0100000000000000000000000000000000000000000000000000000000000000",
+            "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+            "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+            "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+        ] {
+            let mut bytes = [0_u8; 32];
+            for (out, pair) in bytes.iter_mut().zip(encoding.as_bytes().as_chunks::<2>().0) {
+                *out = u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap();
+            }
+            for sign in [0, 128] {
+                bytes[31] = (bytes[31] & 127) | sign;
+                let key = VerifyingKey::from_bytes(&bytes).unwrap();
+                assert!(key.is_weak(), "{encoding}");
+                canonical_points.insert(key.to_edwards().compress().to_bytes());
+            }
+        }
+        assert_eq!(canonical_points.len(), 8);
+    }
 }

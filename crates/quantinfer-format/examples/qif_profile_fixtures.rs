@@ -24,6 +24,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fs::create_dir(root)?;
     let mut model = ModelManifest::new("qif-core-profile-汉字", "fixture");
     model.source_format = "synthetic".into();
+    model.checksums = BTreeMap::from([
+        (
+            "a\0path".into(),
+            quantinfer_format::sha256_hex(b"synthetic source bytes"),
+        ),
+        (
+            "~qif-key:".into(),
+            quantinfer_format::sha256_hex(b"other synthetic source bytes"),
+        ),
+    ]);
     model.quantization = QuantizationScheme::Mixed;
     // Unknown requirements are preserved by format readers; execution is a
     // separate policy layer and must reject unavailable mandatory requirements.
@@ -110,11 +120,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     model.tensors.push(TensorManifest {
+        name: "scalar\0tensor".into(),
+        descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::scalar())?,
+        checksum_sha256: None,
+    });
+    payloads.insert(
+        "scalar\0tensor".into(),
+        f32::MIN_POSITIVE.to_le_bytes().to_vec(),
+    );
+    model.tensors.push(TensorManifest {
         name: "scalar".into(),
         descriptor: TensorStorageDescriptor::floating(DType::F32, Shape::scalar())?,
         checksum_sha256: None,
     });
-    payloads.insert("scalar".into(), f32::MIN_POSITIVE.to_le_bytes().to_vec());
+    payloads.insert("scalar".into(), 0.000_001f32.to_le_bytes().to_vec());
     let metadata = BTreeMap::from([
         ("a.u32".into(), MetadataValue::U32(u32::MAX)),
         ("b.i32".into(), MetadataValue::I32(i32::MIN)),
@@ -125,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("g.bool".into(), MetadataValue::Bool(true)),
         (
             "h.string".into(),
-            MetadataValue::String("汉字\n\"\\".into()),
+            MetadataValue::String("汉字\n\"\\\0".into()),
         ),
         (
             "i.array".into(),
@@ -135,6 +154,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]),
         ),
         ("j.empty".into(), MetadataValue::Array(vec![])),
+        (
+            "s.unicode".into(),
+            MetadataValue::String("\u{10ffff}\u{2028}\u{2029}🚀".into()),
+        ),
+        ("n".into(), MetadataValue::String("ordinary".into())),
+        (
+            "n\0key".into(),
+            MetadataValue::Map(BTreeMap::from([(
+                "\0nested".into(),
+                MetadataValue::Bool(false),
+            )])),
+        ),
+        ("~qif-key:".into(), MetadataValue::String("prefix".into())),
+        (
+            "~qif-key:6162".into(),
+            MetadataValue::String("hex-like suffix".into()),
+        ),
         (
             "k.map".into(),
             MetadataValue::Map(BTreeMap::from([(
@@ -225,5 +261,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             codec,
         )?;
     }
+    for index in 0..16 {
+        let mut alias = large.tensors[0].clone();
+        alias.name = format!("alias-{index}");
+        large.tensors.push(alias);
+    }
+    write_qif_with_codec(
+        large,
+        &BTreeMap::new(),
+        |_| Ok(&data),
+        &mut File::create(root.join("alias-report-budget.qif"))?,
+        Codec::Zstd,
+    )?;
     Ok(())
 }
