@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 quantinfer-format = { path = "../crates/quantinfer-format" }
 quantinfer-core = { path = "../crates/quantinfer-core" }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 
 [[bin]]
@@ -29,3 +30,10 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "qif_v2_package_controls"
+path = "fuzz_targets/qif_v2_package_controls.rs"
+test = false
+doc = false
+bench = false

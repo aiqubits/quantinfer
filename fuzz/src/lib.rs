@@ -1,6 +1,11 @@
 //! Resource bounds and scratch space shared by the QIF fuzz targets.
 
-use quantinfer_format::qif::{FileReader, MappedFile, Reader};
+pub mod package_controls;
+
+use quantinfer_format::{
+    qif::{FileReader, MappedFile, Reader},
+    PackedTensorReader,
+};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
@@ -48,6 +53,12 @@ pub fn exercise_single(data: &[u8]) {
         }
         let mut file = file.unwrap();
         assert_eq!(reader.verify().is_ok(), file.verify().is_ok());
+        // The runtime projection may reject structural metadata types which
+        // the format-only reader can inspect without interpreting model hints.
+        let packed = PackedTensorReader::open_path(&path).ok();
+        if let Some(packed) = &packed {
+            assert_eq!(reader.verify().is_ok(), packed.verify_qif().is_ok());
+        }
         for tensor in reader.tensors().iter().take(8) {
             let end = tensor.raw_length.min(4096) as usize;
             let memory_range = reader.read_range(&tensor.name, 0..end);
@@ -57,6 +68,15 @@ pub fn exercise_single(data: &[u8]) {
                 assert_eq!(lhs, rhs);
             }
             let _ = reader.tensor_data(&tensor.name);
+            if let Some(packed) = &packed {
+                let expected = reader.tensor_data(&tensor.name);
+                let actual = packed.tensor_data(&tensor.name);
+                // The low-level tensor accessor validates encoding/finite
+                // values; the runtime accessor additionally checks raw SHA-256.
+                if let Ok(actual) = actual {
+                    assert_eq!(expected.unwrap(), actual.as_ref());
+                }
+            }
         }
     }
 }

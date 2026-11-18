@@ -11,7 +11,7 @@ matrix below does not prove every possible artifact or deployment correct.
 | Cross-language negative fixtures | Payload corruption, overflowing index length, truncation, oversized rank with consistent root | All three processes must fail; this is not a general invalid-artifact equivalence proof |
 | Linux resource limits | Six 64 MiB tensor/alias fixtures verified through both native and runtime file-backed readers in separate processes with a 48 MiB address-space limit; unknown overlapping names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunks; not a universal peak-memory bound |
 | Runtime loading | Control-only open, cold-corruption isolation, per-tensor raw hashes, shared alias cache, typed reads without retained raw bytes, storage budget preflight | Fixed local inference/encoding tests and explicit real-model CI profile/codec matrix; not layer-level out-of-core execution |
-| Instrumented fuzz | See [fuzz/README.md](../../fuzz/README.md) | Input/output/time/RSS bounds apply; CI smoke is not long-running fuzzing |
+| Instrumented fuzz | Reader, global PACKAGE index, PACKAGE JSON/QMB/path/shard mutations; default runtime comparison; see [fuzz/README.md](../../fuzz/README.md) | Three bounded ASan targets; quick smoke plus scheduled time-budget runs, saved corpus/log/crash artifacts; not exhaustive safety proof |
 
 The C program is independent of QuantInfer and Rust. It uses OpenSSL libcrypto
 for SHA-256 and is compiled with address/undefined-behavior sanitizers in CI.

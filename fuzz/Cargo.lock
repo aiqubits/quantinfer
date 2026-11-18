@@ -362,6 +362,7 @@ dependencies = [
  "libfuzzer-sys",
  "quantinfer-core",
  "quantinfer-format",
+ "serde",
  "serde_json",
  "sha2 0.11.1",
 ]

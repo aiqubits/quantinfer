@@ -1,0 +1,76 @@
+name: QIF Sustained Fuzz
+
+on:
+  schedule:
+    - cron: '15 1 * * *'
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Seconds per target (60–3600)'
+        type: number
+        default: 900
+  push:
+    branches: [main]
+    paths:
+      - 'fuzz/**'
+      - 'crates/quantinfer-format/**'
+      - '.github/workflows/qif-fuzz.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qif-sustained-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [qif_v2_reader, qif_v2_package, qif_v2_package_controls]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: nightly-2026-07-21
+          components: rust-src
+      - run: cargo +nightly-2026-07-21 install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo +nightly-2026-07-21 fetch --manifest-path fuzz/Cargo.toml --locked
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/qif-corpus
+          key: qif-corpus-v1-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: qif-corpus-v1-${{ matrix.target }}-
+      - name: Run instrumented fuzzing with a time budget
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          REQUESTED_SECONDS: ${{ inputs.seconds }}
+          EVENT_NAME: ${{ github.event_name }}
+        shell: bash
+        run: |
+          seconds=900
+          if [[ "$EVENT_NAME" == push ]]; then seconds=60; fi
+          if [[ -n "$REQUESTED_SECONDS" ]]; then seconds="$REQUESTED_SECONDS"; fi
+          if [[ ! "$seconds" =~ ^[0-9]+$ ]] || ((seconds < 60 || seconds > 3600)); then
+            echo 'seconds must be an integer between 60 and 3600' >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/qif-corpus"
+          cp "fuzz/corpus/$FUZZ_TARGET/"* "$RUNNER_TEMP/qif-corpus/"
+          cargo +nightly-2026-07-21 fuzz run "$FUZZ_TARGET" "$RUNNER_TEMP/qif-corpus" -- \
+            -max_total_time="$seconds" -max_len=65536 -rss_limit_mb=1024 -timeout=5 \
+            2>&1 | tee "$FUZZ_TARGET.log"
+          grep -Eq 'cov: [1-9][0-9]*' "$FUZZ_TARGET.log"
+          git diff --exit-code -- fuzz/Cargo.lock
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: qif-fuzz-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            qif_v2_*.log
+            fuzz/artifacts/
+            ${{ runner.temp }}/qif-corpus/
+          retention-days: 30

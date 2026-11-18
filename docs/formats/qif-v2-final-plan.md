@@ -531,10 +531,12 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 3. 增加 QIF2 binary index、内存 reader、single-file writer（已完成）。
 4. file-backed reader、mmap/range view、QIF2 package/shard writer 已完成。
 5. QIF2 的 Rust fixture、dependency-free Python reader、独立 C wire golden reader 和
-   `qif_v2_reader`、`qif_v2_package` fuzz target 已接入。CI 使用固定 nightly 和
+   `qif_v2_reader`、`qif_v2_package`、`qif_v2_package_controls` fuzz target 已接入。CI 使用固定 nightly 和
    cargo-fuzz，检查非零覆盖率；内存/文件/mmap、codec/full verify 和 PACKAGE index
-   都有受限运行路径。输入、输出和时长限制及未覆盖的 package JSON/path/shard
-   边界见 [fuzz/README.md](../../fuzz/README.md)，不能将 smoke 解释为长时或完整 fuzz 验收。
+   都有受限运行路径，另覆盖三种 codec 的小 PACKAGE JSON、QMB、路径、shard 和
+   默认运行时对照。每日定时任务保留 corpus、日志及失败 artifact；push 有单独
+   的时间预算检查。输入、输出、时长限制和仍未覆盖的拓扑/并发文件系统边界见
+   [fuzz/README.md](../../fuzz/README.md)，不能将有限运行解释为完整安全证明。
 6. 新 CLI 默认输出 QIF；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif` 发布当前 QIF。二者使用 `--qif-profile single|package`、

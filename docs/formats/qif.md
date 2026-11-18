@@ -23,7 +23,8 @@ MappedFile, Codec}` 等稳定名称。`MappedFile::open` 为 unsafe 构造函数
 [跨格式测量](../../benches/README.md)按进程隔离，
 记录加载策略、选中 tensor、dtype、范围 hash 和未控制的缓存状态，不能直接推出
 格式的固有性能优劣。QIF 带有 seeded malformed corpus 和带 ASan/覆盖率的
-[CI fuzz smoke](../../fuzz/README.md)，持续长时 fuzzing 仍属于后续验证工作。Legacy v1 wire code
+[CI fuzz smoke 与每日定时 fuzz](../../fuzz/README.md)，按明确的时间/内存范围运行，
+保留 corpus、日志与失败 artifact；这些检查不等于穷举验证。Legacy v1 wire code
 仅保留在 format crate 内供历史 fixtures 使用，默认 runtime 和转换路径均拒绝或不生成 v1。
 
 ```sh

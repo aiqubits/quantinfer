@@ -9,7 +9,7 @@
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | 发布选项及六种组合回归已实现；原生 inspect/verify 已有本地回归，等待远端验收 |
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | 未完成 |
-| 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | 未完成 |
+| 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | 三个 ASan target、JSON/QMB/path/shard corpus、每日定时及缓存/日志/失败 artifact 已接入；本地时间预算运行通过，等待远端首轮验收 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | 未完成 |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
@@ -34,3 +34,8 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   区分控制区检查、全量 payload 校验与发布者信任。SafeTensors 发布另有六种组合
   对照，并修复省略可选 `architectures` 时空 GGUF array 导致发布失败的问题。
   此批本地 workspace 为 204 passed / 0 failed / 3 ignored；远端证据待提交验收。
+- 三个 ASan fuzz target 的本地 60 秒时间预算运行均正常结束（libFuzzer 实际
+  记录 61 秒）：reader 201,869、PACKAGE index 148,249、PACKAGE controls 233,865
+  次；coverage 均非零。PACKAGE controls 的 90 个基线 seed 覆盖三种 codec、alias、
+  重复/过深 JSON、metadata、shard 与路径；每日任务设置 900 秒/target。
+  有限 fuzz 没有证明全部拓扑、并发文件系统或所有恶意输入安全。
