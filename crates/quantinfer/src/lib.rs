@@ -20,6 +20,8 @@ pub use quantinfer_backend_cuda as cuda;
 pub use quantinfer_backend_kleidiai as kleidiai;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use quantinfer_backend_metal as metal;
+#[cfg(feature = "tmac")]
+pub use quantinfer_backend_tmac as tmac;
 #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
 pub use quantinfer_backend_wgpu as wgpu;
 pub use quantinfer_core as core;

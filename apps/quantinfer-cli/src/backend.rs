@@ -1,5 +1,6 @@
 #[cfg(any(
     test,
+    feature = "tmac",
     all(feature = "wgpu", not(target_arch = "wasm32")),
     all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
     all(feature = "metal", target_os = "macos"),
@@ -23,6 +24,8 @@ use quantinfer_runtime::{
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Cpu,
+    #[cfg(feature = "tmac")]
+    Tmac,
     #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]
     Wgpu,
     #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
@@ -119,8 +122,18 @@ impl Backend {
                     )
                 }
             }
+            "t-mac" => {
+                #[cfg(feature = "tmac")]
+                {
+                    Ok(Self::Tmac)
+                }
+                #[cfg(not(feature = "tmac"))]
+                {
+                    Err("T-MAC LUT4 requires a CLI built with --features tmac".into())
+                }
+            }
             name => Err(format!(
-                "unknown --backend {name}; use cpu, wgpu, cuda, metal, ascend, or kleidiai"
+                "unknown --backend {name}; use cpu, wgpu, cuda, metal, ascend, kleidiai, or t-mac"
             )),
         }
     }
@@ -132,6 +145,13 @@ impl Backend {
         profile: Option<&InferenceProfile>,
     ) -> Result<Box<dyn Generator>, String> {
         match self {
+            #[cfg(feature = "tmac")]
+            Self::Tmac => load_accelerator(
+                reader,
+                manifest,
+                quantinfer::tmac::TmacBackend::open,
+                quantinfer::core::Device::Cpu,
+            ),
             Self::Cpu => CpuModel::from_gguf(reader, manifest, profile)
                 .map(|model| Box::new(model) as Box<dyn Generator>)
                 .map_err(|error| error.to_string()),
@@ -180,6 +200,7 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
 }
 
 #[cfg(any(
+    feature = "tmac",
     all(feature = "wgpu", not(target_arch = "wasm32")),
     all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
     all(feature = "metal", target_os = "macos"),

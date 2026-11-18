@@ -13,7 +13,7 @@
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | 未完成 |
-| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63` 已有具体 F32 CANN executor、CLI 与远端 ABI/Clippy 验收；KleidiAI 已有原生 SDK/Q4_0 output-row 路径，本地仿真通过、等待原生 ARM CI；T-MAC 仍未完成；设备专项测量单列 |
+| 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f` 专项 CI 已通过；T-MAC 原生 Rust LUT4/AVX2/NEON 实现及本地数值回归完成，等待远端；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
@@ -79,3 +79,10 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   实际 kernel。默认 workspace 208 passed / 0 failed / 3 ignored，跨 AArch64
   Clippy 和 CLI 进程内单测通过。本地跨 CLI 子进程测试返回 127，未记为通过；
   原生 ARM CI 将执行相同的 CLI 集成检查。完整模型质量/能耗性能另列。
+- `26bfa4f` 的 [KleidiAI 原生 ARM job](https://github.com/aiqubits/quantinfer/actions/runs/44236519435/job/134573867442)
+  已执行真实 SDK，5 项 kernel/packing 检查和 7 项 CLI 检查均通过，包含本地仿真
+  子进程未通过的两项集成测试；Clippy 通过。没有将 QEMU 失败改记为本地通过。
+- T-MAC 的具体实现是原生 Rust LUT4 profile，包含 AVX2 gather 与 NEON TBL，
+  不调用上游 TVM 编译/调优栈。65,536 种 plane mask、F64 参考矩阵、prepared
+  snapshot 和错误输入在本地 x86 与 AArch64 QEMU 均通过；CI 将验证原生双架构。
+  保留上游/下游 kernel hook，量化位宽和数值范围不扩大到该 profile 之外。

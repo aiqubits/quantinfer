@@ -1,0 +1,48 @@
+name: T-MAC LUT4 Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'backends/t-mac/**'
+      - 'crates/quantinfer-core/**'
+      - 'crates/quantinfer-kernel/**'
+      - 'crates/quantinfer/Cargo.toml'
+      - 'apps/quantinfer-cli/**'
+      - 'Cargo.lock'
+      - '.github/workflows/tmac.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - name: Check lookup SIMD paths, all plane indices and f64 matrix references
+        shell: bash
+        run: |
+          cargo test --release --locked -p quantinfer-backend-tmac -- --nocapture | tee tmac.log
+          if [[ "$RUNNER_ARCH" == ARM64 ]]; then
+            grep -F 'verified T-MAC LUT4 Neon' tmac.log
+          else
+            grep -F 'verified T-MAC LUT4 Avx2' tmac.log
+          fi
+      - run: cargo clippy --locked -p quantinfer-backend-tmac --all-targets -- -D warnings
+      - run: cargo test --locked -p quantinfer-cli --features tmac
+      - run: cargo clippy --locked -p quantinfer-cli --features tmac --all-targets -- -D warnings
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: tmac-${{ runner.arch }}
+          path: tmac.log

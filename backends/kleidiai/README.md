@@ -55,9 +55,10 @@ Validation boundaries:
   instruction-level emulation, not hardware performance evidence.
 - The dedicated [workflow](../../.github/workflows/kleidiai.yml) runs the real SDK
   tests on a native ARM runner, requires the explicit verification marker, and
-  runs CLI tests and native Clippy. Local cross-CLI unit tests pass; cross-CLI
-  subprocess integration exited 127 under the local emulator and is left for
-  the native ARM runner rather than recorded as passed.
+  runs CLI tests and native Clippy. The initial [native ARM run](https://github.com/aiqubits/quantinfer/actions/runs/44236519435/job/134573867442)
+  passed the SDK tests and CLI integration checks, including the subprocess
+  checks which exited 127 under the local emulator. The emulator failure was
+  not recorded as a local pass.
 - Full model quality and device-specific throughput/energy profiling are
   separate from this kernel contract matrix.
 

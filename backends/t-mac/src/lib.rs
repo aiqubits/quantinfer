@@ -1,9 +1,12 @@
 //! Optional T-MAC capability provider.
 //!
-//! T-MAC is kept behind a small planner crate so a vendor or downstream
-//! implementation can supply its lookup-table kernel without adding a native
-//! dependency to the core runtime. The provider only advertises a capability
-//! when the caller explicitly registers it.
+//! The native Rust LUT4 kernel implements bit-plane lookup without a compiler
+//! stack dependency. The existing hook also accepts downstream T-MAC kernels.
+
+#![deny(unsafe_op_in_unsafe_fn)]
+
+mod lut;
+pub use lut::{Lut4Weights, LutIsa, NativeLut4Kernel};
 
 use std::collections::BTreeSet;
 
@@ -72,6 +75,16 @@ impl RuntimeProvider for TmacProvider {
 /// The small execution hook a linked T-MAC build must implement.
 pub trait TmacKernel: std::fmt::Debug + Send + Sync {
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>;
+    fn matmul_q4_0_output_rows(
+        &self,
+        _lhs: &Tensor,
+        _rhs: &QuantizedTensor4,
+    ) -> Option<Result<Tensor>> {
+        None
+    }
+    fn capabilities(&self) -> Vec<KernelCapability> {
+        TmacProvider::new().capabilities
+    }
 }
 
 /// T-MAC backend with a caller-supplied LUT kernel and safe CPU fallbacks for
@@ -85,11 +98,11 @@ pub struct TmacBackend<K> {
 
 impl<K: TmacKernel> TmacBackend<K> {
     pub fn new(kernel: K) -> Self {
-        let provider = TmacProvider::new();
+        let capabilities = kernel.capabilities();
         Self {
             kernel,
             fallback: CpuScalar::new(),
-            capabilities: provider.capabilities().to_vec(),
+            capabilities,
         }
     }
 }
@@ -125,12 +138,17 @@ impl<K: TmacKernel> KernelBackend for TmacBackend<K> {
         self.kernel.matmul_q4_0(lhs, rhs)
     }
 
+    fn matmul_q4_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
+        self.kernel
+            .matmul_q4_0_output_rows(lhs, rhs)
+            .unwrap_or_else(|| self.fallback.matmul_q4_0_output_rows(lhs, rhs))
+    }
+
     fallback_kernel! {
         reuse_workspace() -> bool,
         matmul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor>,
         matmul_q8_0(lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor>,
         matmul_q8_0_output_rows(lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor>,
-        matmul_q4_0_output_rows(lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>,
         matmul_q4_k(lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor>,
         matmul_q5_k(lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor>,
         matmul_q6_k(lhs: &Tensor, rhs: &QuantizedTensorQ6K) -> Result<Tensor>,

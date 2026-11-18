@@ -1997,6 +1997,7 @@ dependencies = [
  "quantinfer-backend-cuda",
  "quantinfer-backend-kleidiai",
  "quantinfer-backend-metal",
+ "quantinfer-backend-tmac",
  "quantinfer-backend-wgpu",
  "quantinfer-core",
  "quantinfer-format",

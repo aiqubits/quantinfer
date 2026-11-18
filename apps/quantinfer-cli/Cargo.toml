@@ -11,6 +11,7 @@ cuda = ["quantinfer/cuda"]
 metal = ["quantinfer/metal"]
 ascend = ["quantinfer/ascend"]
 kleidiai = ["quantinfer/kleidiai"]
+tmac = ["quantinfer/tmac"]
 
 [dependencies]
 quantinfer = { workspace = true }

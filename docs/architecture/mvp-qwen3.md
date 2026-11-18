@@ -48,7 +48,9 @@ run those algorithms from floating weights. Ascend now has a concrete CANN F32
 MatMul executor and an optional CLI path, with independent C ABI contract tests;
 real-device acceptance remains separate. KleidiAI has a pinned native AArch64
 Q4_0 output-row microkernel with explicit activation-Q8 error checks and CPU
-fallbacks; T-MAC still requires a caller-supplied implementation. Studio currently provides
+fallbacks. The T-MAC boundary provides a native Rust LUT4 profile with AVX2/NEON
+selectors plus its downstream-kernel hook; it does not bundle the upstream
+TVM/autotuning stack. Studio currently provides
 registry browsing, generation and counters, not the full quantization,
 calibration and profile/package editing workflow. These are implementation
 gaps separate from outstanding vendor-hardware measurements.
