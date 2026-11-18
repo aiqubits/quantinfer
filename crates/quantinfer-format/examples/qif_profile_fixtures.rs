@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("usage: qif_profile_fixtures NEW_DIRECTORY")?;
     let root = Path::new(&directory);
     fs::create_dir(root)?;
-    let mut model = ModelManifest::new("qif-core-profile-汉字", "fixture");
+    let mut model = ModelManifest::new("qif-core-profile-汉字🚀", "fixture");
     model.source_format = "synthetic".into();
     model.checksums = BTreeMap::from([
         (
@@ -32,6 +32,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         (
             "~qif-key:".into(),
             quantinfer_format::sha256_hex(b"other synthetic source bytes"),
+        ),
+        (
+            "层/weight.bin".into(),
+            quantinfer_format::sha256_hex(b"Unicode source name"),
         ),
     ]);
     model.quantization = QuantizationScheme::Mixed;
@@ -154,6 +158,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ]),
         ),
         ("j.empty".into(), MetadataValue::Array(vec![])),
+        (
+            "unicode.🚀".into(),
+            MetadataValue::Map(BTreeMap::from([(
+                "汉字".into(),
+                MetadataValue::String("preserved".into()),
+            )])),
+        ),
         (
             "s.unicode".into(),
             MetadataValue::String("\u{10ffff}\u{2028}\u{2029}🚀".into()),

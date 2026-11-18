@@ -59,6 +59,7 @@ void keys(Json, const char *);
 Bytes serialized(Json);
 Json parse_json(Bytes);
 Bytes json_keys(Bytes, int);
+Bytes json_ascii(Bytes);
 void utf8(Bytes);
 Bytes slice(Bytes, uint64_t, uint64_t);
 Bytes take(Cursor *, size_t);

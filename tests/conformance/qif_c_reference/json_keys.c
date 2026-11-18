@@ -1,8 +1,10 @@
 /* JSON-C keys are NUL-terminated. Encode exceptional keys internally and
  * restore their exact UTF-8 bytes on canonical serialization. Prefix-bearing
  * keys are encoded too, making this mapping injective, without sentinels or
- * probabilistic collision assumptions. String VALUES are never transformed. */
+ * probabilistic collision assumptions. Key mapping preserves string values;
+ * the ASCII parser buffer below preserves decoded values as well. */
 #include "qif.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +39,44 @@ static void append(Buffer *out, Bytes data) {
   }
   memcpy(out->data + out->size, data.data, data.size);
   out->size = end;
+}
+Bytes json_ascii(Bytes input) {
+  // json-c 0.18 strict mode treats signed non-ASCII char values as controls.
+  // Keep strict parsing, prevalidate UTF-8 independently, and provide an
+  // equivalent ASCII parser buffer. Canonical checks still use original bytes.
+  utf8(input);
+  Buffer *out = buffer();
+  size_t copied = 0;
+  for (size_t i = 0; i < input.size;) {
+    unsigned c = input.data[i];
+    if (c < 128) {
+      i++;
+      continue;
+    }
+    size_t width = c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4;
+    unsigned codepoint = c & ((1u << (7 - width)) - 1);
+    for (size_t j = 1; j < width; j++)
+      codepoint = (codepoint << 6) | (input.data[i + j] & 63);
+    append(out, slice(input, copied, i - copied));
+    char escaped[13];
+    int length;
+    if (codepoint <= 0xffff)
+      length = snprintf(escaped, sizeof(escaped), "\\u%04x", codepoint);
+    else {
+      codepoint -= 0x10000;
+      length =
+          snprintf(escaped, sizeof(escaped), "\\u%04x\\u%04x",
+                   0xd800 + (codepoint >> 10), 0xdc00 + (codepoint & 1023));
+    }
+    CHECK(length == 6 || length == 12);
+    append(out, (Bytes){(unsigned char *)escaped, (size_t)length});
+    i += width;
+    copied = i;
+  }
+  if (!copied)
+    return input;
+  append(out, slice(input, copied, input.size - copied));
+  return (Bytes){out->data, out->size};
 }
 static int exceptional(Bytes key) {
   return memchr(key.data, 0, key.size) != NULL ||
@@ -114,8 +154,9 @@ Bytes json_keys(Bytes input, int encode) {
       struct json_tokener *tokener = owned(json_tokener_new(), release_tokener);
       json_tokener_set_flags(tokener,
                              JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
+      Bytes literal_input = json_ascii(slice(input, start, end - start));
       Json key = json_tokener_parse_ex(
-          tokener, (const char *)input.data + start, (int)(end - start));
+          tokener, (const char *)literal_input.data, (int)literal_input.size);
       if (key)
         own_json(key);
       CHECK(key && json_tokener_get_error(tokener) == json_tokener_success &&

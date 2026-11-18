@@ -53,6 +53,11 @@ Ed25519 APIs. It preserves embedded NULs in strings and object keys, including
 the distinction between an ordinary key and a longer key containing NUL.
 The [C tool notes](../../tests/conformance/qif_c_reference/README.md) describe
 its internal key encoding; that is not an addition to the QIF wire format.
+The C/Python/native CI matrix runs on Ubuntu 24.04 and the current Ubuntu image
+and prints dependency versions. An independently validated ASCII parser buffer
+avoids JSON-C 0.18's signed-char strict-mode UTF-8 bug; strict mode and canonical
+comparison of the original artifact bytes remain enabled. BMP/non-BMP model
+IDs, checksum keys, QMB keys and values are part of the fixtures.
 
 These are bounded conformance tools: artifact bytes and the sum of reported
 tensor raw bytes (including every alias) are each limited to 64 MiB. They

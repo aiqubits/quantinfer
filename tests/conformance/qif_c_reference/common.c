@@ -148,14 +148,30 @@ Json parse_json(Bytes data) {
       owned(json_tokener_new_ex(33), release_tokener);
   json_tokener_set_flags(tokener,
                          JSON_TOKENER_STRICT | JSON_TOKENER_VALIDATE_UTF8);
-  Bytes encoded = json_keys(data, 1);
+  Bytes encoded = json_ascii(json_keys(data, 1));
   Json value = json_tokener_parse_ex(tokener, (const char *)encoded.data,
                                      (int)encoded.size);
   if (value)
     own_json(value);
-  CHECK(json_tokener_get_error(tokener) == json_tokener_success &&
-        json_tokener_get_parse_end(tokener) == encoded.size);
-  CHECK(same_bytes(data, serialized(value)));
+  enum json_tokener_error error = json_tokener_get_error(tokener);
+  size_t parsed = json_tokener_get_parse_end(tokener);
+  if (error != json_tokener_success || parsed != encoded.size) {
+    fprintf(stderr, "JSON-C %s: %s, consumed %zu of %zu bytes\n",
+            json_c_version(), json_tokener_error_desc(error), parsed,
+            encoded.size);
+    CHECK(0);
+  }
+  Bytes canonical = serialized(value);
+  if (!same_bytes(data, canonical)) {
+    size_t first = 0;
+    while (first < data.size && first < canonical.size &&
+           data.data[first] == canonical.data[first])
+      first++;
+    fprintf(stderr,
+            "canonical JSON mismatch at %zu (input %zu, encoded %zu bytes)\n",
+            first, data.size, canonical.size);
+    CHECK(0);
+  }
   return value;
 }
 Bytes slice(Bytes data, uint64_t offset, uint64_t length) {

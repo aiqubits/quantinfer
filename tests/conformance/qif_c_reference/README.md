@@ -27,6 +27,14 @@ exists inside this test tool: the artifact and output report retain the original
 keys. Tests contain NUL keys, nested maps, ordinary prefix-sharing keys,
 prefix/hex-like keys and duplicate keys. String values retain explicit lengths.
 
+UTF-8 is validated independently before parsing. JSON-C 0.18's strict parser
+can mistake signed non-ASCII bytes for control characters. The parser receives
+an equivalent ASCII Unicode-escape buffer; strict mode stays enabled and
+canonical comparison still uses the original UTF-8 bytes. The artifact and
+report encoding do not change. The CI matrix runs on Ubuntu 24.04 and the
+current Ubuntu image and records actual dependency versions; local checks also
+exercise JSON-C 0.17 and the upstream 0.18 release.
+
 The resource list releases all owned buffers, JSON references, files, crypto and
 decoder contexts on both successful output and ordinary parse/validation
 failure. CI compiles with ASan/UBSan and treats sanitizer reports, crashes or

@@ -117,3 +117,9 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   Clippy 通过；GCC 与 Clang 两次 ASan/UBSan 三语言矩阵各 147 项通过。
   加入两项签名 seed 后，reader ASan smoke 完成 1024 runs、非零 coverage（cov 3228），
   没有把 smoke 的短时运行写成持续 fuzz 或穷举证明。
+- `1f802f8` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44246832175)
+  暴露 Ubuntu 26.04 / JSON-C 0.18 的有效中文输入被 strict parser 拒绝，本轮未记为通过。
+  已用上游 `json-c-0.18-20240915`（`41a55cf`）在本地复现；0.18 在 signed-char 构建下
+  将非 ASCII 字节当作控制字符。独立 UTF-8 校验后，仅对依赖 parser 的缓冲区采用
+  等价 ASCII Unicode escape；strict mode 与原始 UTF-8 canonical 字节比较保留。
+  本地 0.17、0.18 均通过 147 项；CI 拆出 Ubuntu 24.04/latest 双环境，等待修复批远端结果。
