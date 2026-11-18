@@ -45,15 +45,15 @@ SafeTensors 适合安全的框架间 tensor 交换，GGUF 适合 GGML 生态的�
 - [PyTorch Distributed Checkpoint](https://github.com/pytorch/pytorch/blob/main/torch/distributed/checkpoint/state_dict_saver.py)
 - [ONNX external tensor data](https://onnx.ai/onnx/repo-docs/ExternalData.html)
 
-## 2. 对当前 QIF v1 的事实审查
+## 2. 对废弃 QIF v1 的历史事实审查
 
-当前实现见 [qif/mod.rs](../../crates/quantinfer-format/src/qif/mod.rs)、[qif/reader.rs](../../crates/quantinfer-format/src/qif/reader.rs)、[qif/writer.rs](../../crates/quantinfer-format/src/qif/writer.rs) 和 [CPU model loading](../../crates/quantinfer/src/cpu/model.rs)。它具备 header checksum、tensor checksum、64 字节对齐、重复键拒绝、有限值校验和若干 GGML quant block 支持。
+废弃前的 v1 实现快照保留在 [qif/mod.rs](../../crates/quantinfer-format/src/qif/mod.rs)、[qif/reader.rs](../../crates/quantinfer-format/src/qif/reader.rs)、[qif/writer.rs](../../crates/quantinfer-format/src/qif/writer.rs)。它具备 header checksum、tensor checksum、64 字节对齐、重复键拒绝、有限值校验和若干 GGML quant block 支持。以下描述是迁移前的历史状态；[当前 CPU model loading](../../crates/quantinfer/src/cpu/model.rs) 的原生 QIF 文件后端见 §9。
 
 但 v1 的 wire assumptions 不适合继续扩展：
 
 1. header 后是 manifest JSON、typed metadata 和按 manifest 顺序排列的 payload；没有独立 binary index。
 2. descriptor 能推导 payload 大小，但不能表达 chunk、压缩、alias、外部 shard 或全局 shard coordinate。
-3. `ModelSource::open_reader` 当前先读取整个文件，格式布局本身没有提供按需文件 reader API。
+3. 迁移前的 `ModelSource::open_reader` 先读取整个文件，v1 格式实现没有提供按需文件 reader API。
 4. 量化编码映射集中在当前有限的 GGML 类型集合中，无法作为通用 encoding registry。
 5. v1 的测试固定检查版本字段为 `1`；修改 v1 布局会产生隐式不兼容。
 
@@ -262,7 +262,28 @@ alias_target (optional)
 flags
 ```
 
-`logical_dtype`、`physical_encoding`、`quantization_scheme` 和 `layout_id` MUST 分开存储。`Q4_K` 不能同时充当 dtype、量化规则和物理布局名称。
+`logical_dtype`、`physical_encoding`、`quantization_scheme` 和 `layout_id` MUST 分开存储、分别验证；不能只凭 `Q4_K` 等名称推断物理布局。
+
+当前 v2.0 core 的合法组合固定如下。`logical_dtype` 映射 QuantInfer descriptor 的
+`dtype`，表示当前逻辑存储类型族；量化类型族不指定反量化后的执行标量类型。
+`physical_encoding` 则指定实际 bytes 的解码规则。二者有独立字段，但当前 core
+使用以下固定配对，不声称支持任意独立的逻辑元素类型与物理编码组合：
+
+| 类型族 | logical_dtype ID | physical_encoding ID | quantization_scheme ID |
+| --- | ---: | ---: | ---: |
+| F32 | 1 | 1 | 0 |
+| F16 | 2 | 2 | 0 |
+| BF16 | 3 | 3 | 0 |
+| Q4_0 | 4 | 4 | 2 |
+| Q4_K | 5 | 5 | 3 |
+| Q5_K | 6 | 6 | 4 |
+| Q6_K | 7 | 7 | 5 |
+| Q8_0 | 8 | 8 | 1 |
+
+`layout_id=1` 表示 `row_major`，`layout_id=2` 表示 `ggml_output_rows`。
+例如 row-major Q4_K 的四个字段为 `5 / 5 / 3 / 1`。ID 数值相同不合并各字段的
+含义；新的组合仍须冻结对应 registry/profile，并使旧 reader 明确拒绝未知编码，
+不得静默重新解释现有 ID。
 
 tensor name MUST 是唯一的 UTF-8 字符串。`tensor_id` 在同一 artifact 中唯一且稳定。
 
@@ -313,7 +334,10 @@ chunk_hash
 QIF2-PACKAGE 的 chunk record 还 MUST 包含 `shard_id`；QIF2-SINGLE 使用
 固定的 `shard_id = 0`。
 
-v2.0 的 section 和 chunk offset MUST 是 4096 字节的倍数。默认 alignment 为
+v2.0 的文件 section 起点与 chunk 的物理 `stored_offset` MUST 是 4096 字节的倍数。
+`raw_offset` 是 tensor 内连续的逻辑字节偏移，不受此物理对齐限制；例如合法的
+100-byte raw 分块可以使用 `0, 100, 200, ...`，不能向逻辑 tensor 插入对齐 padding。
+默认 alignment 为
 4096 字节；实现 MAY 使用更大的 64 KiB 或 2 MiB 对齐。选择的 alignment 必须
 是 2 的幂，且不小于 4096 字节。
 
@@ -526,7 +550,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 3. 无压缩路径能返回 mmap/range view（当前 `qif::MappedFile` 与 file-backed range read 已满足）；
 4. 压缩路径只解压当前请求的 tensor/chunk（当前 codec reader 已满足）；
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
-6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前已有确定性的 `plan_qif_v2_reshard` API、跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
+6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前公开 API 为 `quantinfer_format::qif::plan_qif_reshard`，已有跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
 8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；135 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
 9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
