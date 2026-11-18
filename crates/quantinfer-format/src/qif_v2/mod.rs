@@ -5,6 +5,7 @@
 //! chunk table so a file-backed reader can locate tensors without scanning
 //! payload bytes.
 
+mod backing;
 mod chunk;
 mod codec;
 mod encoding;
@@ -24,9 +25,10 @@ pub use reader::{FileReader, Reader, TensorInfo};
 pub use reshard::{plan_qif_v2_reshard, ReshardPlan};
 pub use writer::{write_qif_v2, write_qif_v2_signed, write_qif_v2_with_codec, Codec};
 
+pub(crate) use backing::{open_packed_file, open_packed_path, FileBacking};
 pub(crate) use reader::has_magic;
 pub(crate) use reader::open_packed;
-pub use writer::import_gguf;
+pub use writer::{import_gguf, import_gguf_package, import_gguf_with_codec};
 
 use std::collections::BTreeMap;
 

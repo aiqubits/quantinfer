@@ -47,7 +47,14 @@ pub(crate) fn run() -> Result<(), String> {
     {
         validate_options(
             &arguments[1..],
-            &[("--input", true), ("--output", true), ("--model-id", true)],
+            &[
+                ("--input", true),
+                ("--output", true),
+                ("--model-id", true),
+                ("--qif-profile", true),
+                ("--qif-codec", true),
+                ("--max-shard-bytes", true),
+            ],
         )?;
         return super::qif::convert_qif(&arguments[1..]);
     }
@@ -58,6 +65,9 @@ pub(crate) fn run() -> Result<(), String> {
             ("--weights", true),
             ("--output", true),
             ("--output-format", true),
+            ("--qif-profile", true),
+            ("--qif-codec", true),
+            ("--max-shard-bytes", true),
             ("--weights-checksums", true),
             ("--architecture", true),
             ("--tokenizer", true),
@@ -83,6 +93,17 @@ pub(crate) fn run() -> Result<(), String> {
         optional_value(&arguments, "--output-format").unwrap_or_else(|| "qif".to_owned());
     if output_format != "gguf" && output_format != "qif" {
         return Err("--output-format must be gguf or qif".to_owned());
+    }
+    let qif_options = super::qif_options::QifOptions::parse(&arguments)?;
+    if output_format == "gguf"
+        && arguments.iter().any(|value| {
+            matches!(
+                value.as_str(),
+                "--qif-profile" | "--qif-codec" | "--max-shard-bytes"
+            )
+        })
+    {
+        return Err("QIF publication options require --output-format qif".into());
     }
     let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     if output_format == "qif" && manifest_path.is_some() {
@@ -460,12 +481,7 @@ pub(crate) fn run() -> Result<(), String> {
             .file_stem()
             .and_then(|value| value.to_str())
             .unwrap_or("model");
-        let mut qif = tempfile::NamedTempFile::new_in(output_dir)
-            .map_err(|error| format!("cannot prepare {}: {error}", output_path.display()))?;
-        quantinfer_format::qif::import_gguf(&reader, model_id, qif.as_file_mut())
-            .map_err(|error| format!("cannot write QIF: {error}"))?;
-        qif.persist_noclobber(&output_path)
-            .map_err(|error| format!("cannot publish {}: {error}", output_path.display()))?;
+        qif_options.publish(&reader, model_id, &output_path)?;
         println!(
             "converted {} tensors to {}",
             weights.tensor_count(),

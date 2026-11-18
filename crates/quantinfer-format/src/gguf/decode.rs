@@ -14,7 +14,8 @@ use super::Result;
 impl PackedTensorReader {
     pub fn tensor_f32(&self, name: &str) -> Result<Tensor> {
         let info = self.tensor_info(name)?;
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         let values: Vec<f32> = match info.dtype {
             GgmlType::F32 => {
                 let (chunks, remainder) = bytes.as_chunks::<4>();
@@ -94,7 +95,8 @@ impl PackedTensorReader {
                 info.dtype
             )));
         }
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         let block_size = std::mem::size_of::<f16>() + Q8_0_BLOCK_SIZE;
         if !bytes.len().is_multiple_of(block_size) {
             return Err(FormatError::Invalid(format!(
@@ -135,7 +137,8 @@ impl PackedTensorReader {
                 info.dtype
             )));
         }
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         let legacy = self.uses_legacy_quant_block_layout()?;
         let block_size = std::mem::size_of::<f16>() + Q4_0_BLOCK_SIZE / 2;
         if !bytes.len().is_multiple_of(block_size) {
@@ -183,7 +186,8 @@ impl PackedTensorReader {
                 info.dtype
             )));
         }
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         if !bytes.len().is_multiple_of(144) {
             return Err(FormatError::Invalid(format!(
                 "GGUF Q4_K tensor {name} has an invalid byte length"
@@ -230,7 +234,8 @@ impl PackedTensorReader {
                 info.dtype
             )));
         }
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         if !bytes.len().is_multiple_of(176) {
             return Err(FormatError::Invalid(format!(
                 "GGUF Q5_K tensor {name} has an invalid byte length"
@@ -270,7 +275,8 @@ impl PackedTensorReader {
                 info.dtype
             )));
         }
-        let bytes = self.tensor_bytes(name)?;
+        let data = self.tensor_data(name)?;
+        let bytes = data.as_ref();
         let legacy = self.uses_legacy_quant_block_layout()?;
         if !bytes.len().is_multiple_of(210) {
             return Err(FormatError::Invalid(format!(

@@ -248,6 +248,20 @@ jobs:
           gguf=$("${generate[@]}" --input smollm2-q4_0.gguf | grep '^generated_tokens=')
           qif=$("${generate[@]}" --input smollm2-q4_0.qif | grep '^generated_tokens=')
           test "$gguf" = "$qif"
+          for profile in single package; do
+            for codec in none zstd lz4; do
+              artifact="smollm2-native-$profile-$codec.qif"
+              options=(--qif-profile "$profile" --qif-codec "$codec")
+              if [[ "$profile" == package ]]; then options+=(--max-shard-bytes 16777216); fi
+              target/release/quantinfer-convert from-gguf --input smollm2-q4_0.gguf \
+                --output "$artifact" "${options[@]}"
+              QUANTINFER_SMOLLM2_GGUF="$PWD/smollm2-q4_0.gguf" QUANTINFER_SMOLLM2_QIF="$PWD/$artifact" \
+                QUANTINFER_SMOLLM2_VARIANT=q4_0 cargo test --release --locked -p quantinfer-runtime \
+                --test smollm2_conformance -- --ignored --nocapture
+              native=$("${generate[@]}" --input "$artifact" | grep '^generated_tokens=')
+              test "$gguf" = "$native"
+            done
+          done
           cargo run --release --locked -p quantinfer-xtask -- qif-bench \
             --qif smollm2-q4_0.qif --safetensors model.safetensors --gguf smollm2-q4_0.gguf \
             --qif-tensor token_embd.weight --gguf-tensor token_embd.weight \
@@ -289,6 +303,11 @@ jobs:
           python3 tests/conformance/make_lora_fixture.py config.json "$RUNNER_TEMP/http-lora"
           python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
             smollm2-f32.gguf tests/golden/smollm2-135m-f32.json "$RUNNER_TEMP/http-lora"
+          target/release/quantinfer-convert from-gguf --input smollm2-f32.gguf \
+            --output smollm2-runtime-package --qif-profile package --qif-codec zstd \
+            --max-shard-bytes 16777216
+          python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
+            smollm2-runtime-package tests/golden/smollm2-135m-f32.json "$RUNNER_TEMP/http-lora"
       - name: Compile and run the C ABI with SmolLM2
         run: |
           cargo build --release --locked -p quantinfer-c
@@ -296,11 +315,14 @@ jobs:
             -L target/release -lquantinfer_c -Wl,-rpath,"$PWD/target/release" \
             -o "$RUNNER_TEMP/quantinfer-c-smoke"
           "$RUNNER_TEMP/quantinfer-c-smoke" smollm2-f32.gguf
+          "$RUNNER_TEMP/quantinfer-c-smoke" smollm2-runtime-package
       - name: Install and exercise the Python binding with SmolLM2
         run: |
           python3 -m pip install --no-deps --target "$RUNNER_TEMP/quantinfer-python" ./bindings/python
           PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
             python3 bindings/python/tests/smoke.py smollm2-f32.gguf tests/golden/smollm2-135m-f32.json
+          PYTHONPATH="$RUNNER_TEMP/quantinfer-python" QUANTINFER_LIBRARY="$PWD/target/release/libquantinfer_c.so" \
+            python3 bindings/python/tests/smoke.py smollm2-runtime-package tests/golden/smollm2-135m-f32.json
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: '22'
@@ -334,6 +356,9 @@ jobs:
           QUANTINFER_WASI_NN_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
         run: |
           cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
+            --features conformance --lib --test host -- --include-ignored
+          QUANTINFER_WASI_NN_GGUF="$PWD/smollm2-runtime-package" \
+            cargo test --release --locked --jobs 2 -p quantinfer-target-wasi-nn \
             --features conformance --lib --test host -- --include-ignored
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()

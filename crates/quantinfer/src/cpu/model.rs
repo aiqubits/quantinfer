@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use quantinfer_core::Tensor;
-use quantinfer_format::{read_file_nofollow, GgufReader, GgufValue, ModelManifest, ModelPackage};
+use quantinfer_format::{GgufReader, GgufValue, ModelManifest, ModelPackage};
 use quantinfer_kernel::KernelBackend;
 use quantinfer_model::ModelSpec;
 use quantinfer_runtime::{
@@ -200,6 +200,7 @@ pub fn model_architecture<'a>(
 
 pub enum ModelSource {
     Package(Box<ModelPackage>),
+    QifPackage(PathBuf),
     Gguf(PathBuf),
 }
 
@@ -207,6 +208,14 @@ impl ModelSource {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if path.is_dir() {
+            if path.join("qif.json").exists() {
+                if path.join("manifest.json").exists() {
+                    return Err(RuntimeError::InvalidInput(
+                        "ambiguous model directory contains both qif.json and manifest.json".into(),
+                    ));
+                }
+                return Ok(Self::QifPackage(path.to_path_buf()));
+            }
             ModelPackage::open(path)
                 .map(|package| Self::Package(Box::new(package)))
                 .map_err(|error| {
@@ -223,7 +232,7 @@ impl ModelSource {
     pub fn package(&self) -> Option<&ModelPackage> {
         match self {
             Self::Package(package) => Some(package),
-            Self::Gguf(_) => None,
+            Self::Gguf(_) | Self::QifPackage(_) => None,
         }
     }
 
@@ -271,12 +280,8 @@ impl ModelSource {
                     RuntimeError::InvalidInput(format!("cannot parse packaged model: {error}"))
                 })
             }
-            Self::Gguf(path) => {
-                check_file_budget(path, budget)?;
-                let bytes = read_file_nofollow(path).map_err(|error| {
-                    RuntimeError::InvalidInput(format!("cannot read {}: {error}", path.display()))
-                })?;
-                GgufReader::open_artifact_with_memory_budget(bytes, budget).map_err(|error| {
+            Self::Gguf(path) | Self::QifPackage(path) => {
+                GgufReader::open_path_with_memory_budget(path, budget).map_err(|error| {
                     RuntimeError::InvalidInput(format!("cannot parse model: {error}"))
                 })
             }

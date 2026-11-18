@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{ModelManifest, TensorManifest};
 
+mod backing;
 mod resources;
 mod validation;
 

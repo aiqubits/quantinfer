@@ -34,8 +34,9 @@ QIF path. Retired QIF v1 code is limited to internal historical fixtures and is
 not accepted by the default runtime. The current QIF wire implementation is
 isolated in the private `quantinfer-format::qif_v2` boundary. The format API
 supports SINGLE/PACKAGE, independent compression and file-backed reads; the
-default model loader currently materializes SINGLE artifacts and does not
-directly open native QIF-PACKAGE directories. Independent C/Python readers
+default model loader opens native SINGLE/PACKAGE controls and reads tensors
+on demand, without retaining raw weight bytes during typed decoding. Model
+construction still materializes the required Core weights. Independent C/Python readers
 cover a fixed unsigned, uncompressed F32 golden profile. See the
 [conformance matrix](../formats/qif-conformance.md) for the tested boundaries.
 

@@ -68,7 +68,7 @@ def check(binary, model, golden, adapter=None):
         assert "Live generation samples" in studio
         registry = json.loads(request(base, "/studio/api/registry"))["models"]
         assert [entry["id"] for entry in registry] == ["primary", "secondary"]
-        assert all(entry["package"] is False for entry in registry)
+        assert all(entry["package"] is Path(model).is_dir() for entry in registry)
         assert all(
             "path" not in entry and entry["artifact_name"] == Path(model).name
             for entry in registry

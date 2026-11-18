@@ -1,6 +1,7 @@
 //! GGUF header and tensor payload index reader.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::{borrow::Cow, path::Path, sync::Arc};
 
 use crate::{manifest::ModelManifest, qif_legacy, qif_v2};
 
@@ -11,7 +12,7 @@ use super::{
     MAX_GGUF_TENSOR_RANK, QUANT_BLOCK_LAYOUT,
 };
 
-/// Owned tensor payloads with a shared view of supported model encodings.
+/// Indexed supported encodings with owned or on-demand file-backed payloads.
 #[derive(Debug, Clone)]
 pub struct PackedTensorReader {
     pub(crate) bytes: Vec<u8>,
@@ -20,11 +21,35 @@ pub struct PackedTensorReader {
     pub(crate) data_start: usize,
     pub(crate) embedded_manifest: Option<ModelManifest>,
     pub(crate) qif_metadata: Option<BTreeMap<String, qif_v2::MetadataValue>>,
+    pub(crate) file_backing: Option<Arc<qif_v2::FileBacking>>,
 }
 
 pub type GgufReader = PackedTensorReader;
 
 impl PackedTensorReader {
+    /// Open native QIF SINGLE/PACKAGE with control-only I/O and on-demand tensor
+    /// reads. GGUF retains its existing owned reader strategy.
+    pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_path_with_memory_budget(path, None)
+    }
+
+    /// Open a caller-owned descriptor with the same QIF on-demand strategy.
+    pub fn open_file_with_memory_budget(
+        file: std::fs::File,
+        budget: Option<usize>,
+    ) -> Result<Self> {
+        qif_v2::open_packed_file(file, budget)
+    }
+
+    /// Preflight QIF physical weights and controls before reading tensor data.
+    /// The budget is a storage lower bound, not an allocator/workspace limit.
+    pub fn open_path_with_memory_budget(
+        path: impl AsRef<Path>,
+        budget: Option<usize>,
+    ) -> Result<Self> {
+        qif_v2::open_packed_path(path.as_ref(), budget)
+    }
+
     /// Open GGUF or QIF based on its file magic.
     pub fn open_artifact(bytes: Vec<u8>) -> Result<Self> {
         Self::open_artifact_with_memory_budget(bytes, None)
@@ -306,6 +331,7 @@ impl PackedTensorReader {
             data_start,
             embedded_manifest: None,
             qif_metadata: None,
+            file_backing: None,
         })
     }
 
@@ -331,7 +357,54 @@ impl PackedTensorReader {
     }
 
     pub fn file_size_bytes(&self) -> usize {
-        self.bytes.len()
+        self.file_backing
+            .as_ref()
+            .map_or(self.bytes.len(), |source| source.artifact_length)
+    }
+
+    pub fn is_file_backed(&self) -> bool {
+        self.file_backing.is_some()
+    }
+
+    /// Bytes retained by explicit borrowed tensor requests; aliases count once.
+    /// Typed tensor decoders use transient reads and do not populate this cache.
+    pub fn cached_tensor_bytes(&self) -> usize {
+        self.file_backing
+            .as_ref()
+            .map_or(0, |source| source.cached_bytes())
+    }
+
+    /// Serialized control size estimate plus owned/cached data and the largest
+    /// transient tensor/chunk buffers. Decoder/allocator overhead is separate.
+    pub fn loading_memory_bytes(&self) -> Result<usize> {
+        match &self.file_backing {
+            None => Ok(self.bytes.len()),
+            Some(source) => source
+                .control_length
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(source.cached_bytes()))
+                .and_then(|value| value.checked_add(source.loading_workspace))
+                .ok_or_else(|| FormatError::Invalid("loading memory estimate overflows".into())),
+        }
+    }
+
+    /// Full streaming QIF file/package verification without filling the cache.
+    pub fn verify_qif(&self) -> Result<()> {
+        self.file_backing
+            .as_ref()
+            .ok_or_else(|| {
+                FormatError::Invalid("full QIF verification requires a file-backed reader".into())
+            })?
+            .verify()
+    }
+
+    /// Borrow owned payloads or read only the selected file-backed tensor.
+    /// File-backed full-tensor reads check its raw hash and finite values.
+    pub fn tensor_data(&self, name: &str) -> Result<Cow<'_, [u8]>> {
+        if let Some(source) = &self.file_backing {
+            return source.data(name);
+        }
+        self.tensor_bytes(name).map(Cow::Borrowed)
     }
 
     pub fn tensors(&self) -> &[GgufTensorInfo] {
@@ -339,6 +412,9 @@ impl PackedTensorReader {
     }
 
     pub fn tensor_bytes(&self, name: &str) -> Result<&[u8]> {
+        if let Some(source) = &self.file_backing {
+            return source.borrowed(name);
+        }
         let info = self.tensor_info(name)?;
         let offset = usize::try_from(info.offset)
             .map_err(|_| FormatError::Invalid("GGUF tensor offset overflows usize".to_owned()))?;

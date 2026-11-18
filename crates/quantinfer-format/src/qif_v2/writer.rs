@@ -62,6 +62,56 @@ pub fn import_gguf(
     model_id: impl Into<String>,
     output: &mut impl Write,
 ) -> Result<()> {
+    import_gguf_with_codec(reader, model_id, output, Codec::None)
+}
+
+/// Transcode GGUF to SINGLE with independently compressed chunks.
+pub fn import_gguf_with_codec(
+    reader: &GgufReader,
+    model_id: impl Into<String>,
+    output: &mut impl Write,
+    codec: Codec,
+) -> Result<()> {
+    let (manifest, metadata, payloads) = import_parts(reader, model_id)?;
+    write_qif_v2_with_codec(
+        manifest,
+        &metadata,
+        |name| Ok(payloads[name].as_ref()),
+        output,
+        codec,
+    )
+}
+
+/// Transcode GGUF to a native QIF-PACKAGE directory without requantization.
+pub fn import_gguf_package(
+    reader: &GgufReader,
+    model_id: impl Into<String>,
+    output: impl AsRef<std::path::Path>,
+    max_shard_bytes: Option<usize>,
+    codec: Codec,
+) -> Result<()> {
+    let (manifest, metadata, payloads) = import_parts(reader, model_id)?;
+    super::write_qif_v2_package_with_codec(
+        manifest,
+        &metadata,
+        |name| Ok(payloads[name].as_ref()),
+        output,
+        max_shard_bytes,
+        codec,
+    )
+}
+
+type Imported<'a> = (
+    ModelManifest,
+    BTreeMap<String, MetadataValue>,
+    BTreeMap<String, Cow<'a, [u8]>>,
+);
+fn import_parts(reader: &GgufReader, model_id: impl Into<String>) -> Result<Imported<'_>> {
+    if reader.embedded_manifest().is_some() {
+        return Err(invalid(
+            "source must be GGUF; repack native QIF through its native reader/writer",
+        ));
+    }
     let mut metadata = reader.metadata().clone();
     let architecture = match metadata.get("general.architecture") {
         Some(GgufValue::String(architecture)) => architecture.as_str(),
@@ -118,12 +168,7 @@ pub fn import_gguf(
             _ => QuantizationScheme::Mixed,
         },
     };
-    write_qif_v2(
-        manifest,
-        &metadata_from_gguf(&metadata),
-        |name| Ok(payloads[name].as_ref()),
-        output,
-    )
+    Ok((manifest, metadata_from_gguf(&metadata), payloads))
 }
 
 /// Write a QIF-SINGLE artifact using the required uncompressed codec.

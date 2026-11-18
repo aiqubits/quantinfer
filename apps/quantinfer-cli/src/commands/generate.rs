@@ -366,7 +366,8 @@ fn check_memory_plan(
         0
     };
     let loading_bytes = reader
-        .file_size_bytes()
+        .loading_memory_bytes()
+        .map_err(|error| error.to_string())?
         .checked_add(weights)
         .and_then(|bytes| bytes.checked_add(workspace))
         .ok_or_else(|| "model loading memory size overflows usize".to_owned())?;

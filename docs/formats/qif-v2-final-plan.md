@@ -489,9 +489,15 @@ API 要求：
 - 文件、内存 buffer 和 package shard 使用同一逻辑 tensor/chunk 校验规则；
 - Rust/C/C++ binding 不依赖 PyTorch、Python、ONNX Runtime 或 llama.cpp。
 
-以上是格式库 API。当前默认 `ModelSource` 对单文件仍完整读入后适配，目录入口
-读取 `manifest.json` 模型包，不直接接入 `qif.json` QIF-PACKAGE。不得将格式库的
-file-backed/PACKAGE 能力描述为默认推理入口已经具有相同能力。
+默认 `ModelSource` 现在对原生 QIF 单文件与 `qif.json` PACKAGE 使用文件后端：
+open 只读取控制区，typed tensor decoder 按需读取所选 tensor、检查 raw hash
+与有限值，转换完成即释放原始字节缓冲区。显式 `tensor_bytes()` 借用接口按需
+缓存，alias 与 reader clone 共享同一物理缓存；`verify_qif()` 全量流式校验不填充缓存。
+无 unsafe mmap 前提的路径使用普通文件 I/O。
+
+GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完整文件快照的
+路径。Dense runtime 构造时仍会将模型需要的权重解码为 Core tensor；文件后端
+减少原始权重副本，不等于已实现按执行层换入换出的 out-of-core 推理。
 
 ## 10. 性能目标与验收边界
 
@@ -523,7 +529,9 @@ file-backed/PACKAGE 能力描述为默认推理入口已经具有相同能力。
    边界见 [fuzz/README.md](../../fuzz/README.md)，不能将 smoke 解释为长时或完整 fuzz 验收。
 6. 新 CLI 默认输出 QIF；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
-   `--output-format qif` 直接发布当前 QIF 单文件（内部仍复用已验证的 GGUF 语义映射）。
+   `--output-format qif` 发布当前 QIF。二者使用 `--qif-profile single|package`、
+   `--qif-codec none|zstd|lz4`，PACKAGE 还接受 `--max-shard-bytes N`。内部仍复用
+   已验证的 GGUF 语义映射；发布器的转换/写入阶段不是全模型内存上界保证。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论

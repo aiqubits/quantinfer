@@ -9,7 +9,8 @@ matrix below does not prove every possible artifact or deployment correct.
 | Rust mmap | Same validated memory reader over a read-only mapping | Unsafe constructor requires backing-file immutability; borrowed uncompressed views; opening alone does not verify payload |
 | Rust/C/Python golden reports | Header bytes, parsed string/shape/tensor/chunk fields, section SHA-256, chunk/tensor digests, payload bytes | One unsigned/uncompressed F32 tensor containing `[1.0, 2.0]`, original and reordered control sections |
 | Cross-language negative fixtures | Payload corruption, overflowing index length, truncation, oversized rank with consistent root | All three processes must fail; this is not a general invalid-artifact equivalence proof |
-| Linux resource limits | Six 64 MiB tensor/alias fixtures verified in separate processes with a 48 MiB address-space limit; overlapping unknown index names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunk sizes; not a universal peak-memory bound |
+| Linux resource limits | Six 64 MiB tensor/alias fixtures verified through both native and runtime file-backed readers in separate processes with a 48 MiB address-space limit; unknown overlapping names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunks; not a universal peak-memory bound |
+| Runtime loading | Control-only open, cold-corruption isolation, per-tensor raw hashes, shared alias cache, typed reads without retained raw bytes, storage budget preflight | Fixed local inference/encoding tests and explicit real-model CI profile/codec matrix; not layer-level out-of-core execution |
 | Instrumented fuzz | See [fuzz/README.md](../../fuzz/README.md) | Input/output/time/RSS bounds apply; CI smoke is not long-running fuzzing |
 
 The C program is independent of QuantInfer and Rust. It uses OpenSSL libcrypto

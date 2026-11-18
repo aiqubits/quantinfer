@@ -41,7 +41,9 @@ fn matches_smollm2_transformers_reference() {
         };
     let reader = GgufReader::open(fs::read(path).unwrap()).unwrap();
     let reader = if let Some(path) = env::var_os("QUANTINFER_SMOLLM2_QIF") {
-        let qif = PackedTensorReader::open_artifact(fs::read(path).unwrap()).unwrap();
+        let qif = PackedTensorReader::open_path(path).unwrap();
+        assert!(qif.is_file_backed());
+        assert_eq!(qif.cached_tensor_bytes(), 0);
         assert!(qif.embedded_manifest().is_some());
         assert_eq!(qif.tensors().len(), reader.tensors().len());
         for original in reader.tensors() {
@@ -49,7 +51,7 @@ fn matches_smollm2_transformers_reference() {
             assert_eq!(imported.shape, original.shape);
             assert_eq!(imported.dtype, original.dtype);
             assert_eq!(
-                qif.tensor_bytes(&original.name).unwrap(),
+                qif.tensor_data(&original.name).unwrap().as_ref(),
                 reader.tensor_bytes(&original.name).unwrap()
             );
         }
@@ -91,6 +93,7 @@ fn matches_smollm2_transformers_reference() {
     assert_eq!(prompt, golden.prompt_tokens);
 
     let model = LlamaModel::from_gguf(CpuScalar::new(), &reader).unwrap();
+    assert_eq!(reader.cached_tensor_bytes(), 0);
     drop(reader);
     let mut cache = KvCache::new(
         model.config.num_hidden_layers,

@@ -379,14 +379,20 @@ pub struct FileReader {
     manifest: ModelManifest,
     metadata: BTreeMap<String, MetadataValue>,
     tensors: Vec<TensorInfo>,
-    chunks: Vec<ChunkInfo>,
+    pub(super) chunks: Vec<ChunkInfo>,
     payload_offset: u64,
+    pub(super) artifact_length: u64,
+    pub(super) control_length: usize,
 }
 
 impl FileReader {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let mut file = File::open(path.as_ref())
+        let file = File::open(path.as_ref())
             .map_err(|error| crate::FormatError::Io(format!("cannot open QIF: {error}")))?;
+        Self::from_file(file)
+    }
+
+    pub(super) fn from_file(mut file: File) -> Result<Self> {
         let file_length = file
             .metadata()
             .map_err(|error| crate::FormatError::Io(format!("cannot stat QIF: {error}")))?
@@ -406,6 +412,11 @@ impl FileReader {
                 header.signature_length,
             )?)
         };
+        let control_length = manifest.len()
+            + metadata.len()
+            + index.len()
+            + HEADER_SIZE
+            + signature.as_ref().map_or(0, Vec::len);
         let (manifest, metadata_values, tensors, chunks) = parse_control(
             &manifest,
             &metadata,
@@ -421,6 +432,8 @@ impl FileReader {
             tensors,
             chunks,
             payload_offset: header.payload_offset,
+            artifact_length: file_length,
+            control_length,
         })
     }
 
@@ -521,7 +534,7 @@ impl FileReader {
     }
 }
 
-fn dtype_from_id(id: u32) -> Result<DType> {
+pub(super) fn dtype_from_id(id: u32) -> Result<DType> {
     match id {
         1 => Ok(DType::F32),
         2 => Ok(DType::F16),
@@ -798,6 +811,7 @@ pub(crate) fn open_packed(bytes: Vec<u8>, budget: Option<usize>) -> Result<Packe
         data_start,
         embedded_manifest: Some(embedded_manifest),
         qif_metadata: Some(native_metadata),
+        file_backing: None,
     })
 }
 
@@ -1342,7 +1356,7 @@ pub(super) fn read_shape_ref(
     Ok(shape)
 }
 
-fn dtype_to_ggml(value: u32) -> Result<GgmlType> {
+pub(super) fn dtype_to_ggml(value: u32) -> Result<GgmlType> {
     match value {
         1 => Ok(GgmlType::F32),
         2 => Ok(GgmlType::F16),

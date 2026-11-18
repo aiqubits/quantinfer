@@ -325,6 +325,29 @@ fn all_core_encodings_round_trip_with_codecs_aliases_and_cross_shard_ranges() {
             .unwrap();
             let mut package = super::super::PackageReader::open(&root).unwrap();
             package.verify().unwrap();
+            let runtime = crate::PackedTensorReader::open_path(&root).unwrap();
+            assert_eq!(runtime.tensor_data("weight").unwrap().as_ref(), payload);
+            match dtype {
+                DType::F32 | DType::F16 | DType::BF16 => {
+                    runtime.tensor_f32("weight").unwrap();
+                }
+                DType::Q8_0 => {
+                    runtime.tensor_q8_0("weight").unwrap();
+                }
+                DType::Q4_0 => {
+                    runtime.tensor_q4_0("weight").unwrap();
+                }
+                DType::Q4_K => {
+                    runtime.tensor_q4_k("weight").unwrap();
+                }
+                DType::Q5_K => {
+                    runtime.tensor_q5_k("weight").unwrap();
+                }
+                DType::Q6_K => {
+                    runtime.tensor_q6_k("weight").unwrap();
+                }
+            }
+            assert_eq!(runtime.cached_tensor_bytes(), 0);
             assert_eq!(package.tensor_info("alias").unwrap().alias_of, Some(0));
             let end = payload.len().min(100);
             for name in ["weight", "alias"] {

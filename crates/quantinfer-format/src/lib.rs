@@ -26,6 +26,7 @@ pub mod qif {
     pub use super::qif_v2::Reader;
     pub use super::qif_v2::ReshardPlan;
     pub use super::qif_v2::TensorInfo;
+    pub use super::qif_v2::{import_gguf_package, import_gguf_with_codec};
 }
 pub mod safetensors;
 

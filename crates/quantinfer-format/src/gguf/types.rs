@@ -84,6 +84,8 @@ pub struct GgufTensorInfo {
     pub name: String,
     pub shape: Vec<usize>,
     pub dtype: GgmlType,
+    /// Owned storage offset, or a virtual packed raw offset for file-backed QIF.
+    /// Use tensor APIs to access file-backed data, not this offset as a file seek.
     pub offset: u64,
     pub size: usize,
 }

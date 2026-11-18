@@ -18,7 +18,7 @@ fn main() {
 
 pub(crate) fn print_help() {
     println!(
-        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output model.qif [--output-format qif|gguf] [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json|--mixed-precision-policy POLICY.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output model.qif [--model-id NAME]"
+        "Usage: quantinfer-convert --config config.json --weights model.safetensors|model.safetensors.index.json --output PATH [--output-format qif|gguf] [--qif-profile single|package] [--qif-codec none|zstd|lz4] [--max-shard-bytes N] [--weights-checksums checksums.sha256] [--architecture qwen3|llama] [--tokenizer tokenizer.json] [--manifest manifest.json] [--quantize f32|q8_0|q4_0|q4_k|q5_k|q6_k] [--mixed-precision PLAN.json|--mixed-precision-policy POLICY.json] [--imatrix CHANNEL_WEIGHTS.json|IMATRIX.gguf] [--ggml] [--gguf-layout quantinfer|ggml] [--tokenizer-pre NAME]\n       quantinfer-convert from-gguf --input model.gguf --output PATH [--model-id NAME] [--qif-profile single|package] [--qif-codec none|zstd|lz4] [--max-shard-bytes N]"
     );
 }
 

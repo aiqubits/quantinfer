@@ -368,9 +368,11 @@ pub struct PackageReader {
     manifest: ModelManifest,
     metadata: BTreeMap<String, MetadataValue>,
     tensors: Vec<TensorInfo>,
-    chunks: Vec<PackageChunk>,
+    pub(super) chunks: Vec<PackageChunk>,
     shards: BTreeMap<String, File>,
     entries: BTreeMap<String, ShardManifest>,
+    pub(super) artifact_length: u64,
+    pub(super) control_length: usize,
 }
 
 impl PackageReader {
@@ -520,6 +522,13 @@ impl PackageReader {
                 )));
             }
         }
+        let control_length = package_bytes.len() + metadata_bytes.len() + index.len();
+        let artifact_length = entries
+            .values()
+            .try_fold(control_length as u64, |sum, entry| {
+                sum.checked_add(entry.size)
+                    .ok_or_else(|| invalid("package size overflows u64"))
+            })?;
         Ok(Self {
             root,
             manifest: package.model,
@@ -528,6 +537,8 @@ impl PackageReader {
             chunks,
             shards,
             entries,
+            artifact_length,
+            control_length,
         })
     }
 

@@ -17,7 +17,8 @@
 8. GGUF and SafeTensors are compatibility formats. QIF v1 is retired and kept
    only as a legacy migration reference. The current QIF wire implementation is
    isolated in the private `qif_v2` boundary. PACKAGE and compression are format
-   API capabilities; the default model loader currently opens SINGLE artifacts.
+   API capabilities; the default model loader opens native SINGLE/PACKAGE paths
+   with control-only initial I/O and per-tensor reads during typed loading.
    Independent cross-language validation covers the fixed golden profile in the
    [conformance matrix](../formats/qif-conformance.md).
 9. Quantization schemes are selected through logical core descriptors and
