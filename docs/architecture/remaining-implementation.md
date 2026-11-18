@@ -54,3 +54,8 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
 - 必需能力 registry 的本地 workspace 为 206 passed / 0 failed / 3 ignored，
   Clippy 通过；另验证 WGPU/CUDA/CPU SIMD 编译及 Ascend native 契约测试，
   这些编译/契约证据不是厂商设备实测。
+- Ascend native 专项复核发现两个公开方法可将无效裸指针传入 CANN 的 P1 安全
+  边界问题。prepare/execute 现有明确 unsafe 契约，执行消费单次 plan；两个
+  compile-fail doctest 和 native Clippy 门禁防止回退。另修复 aclInit 成功后
+  device query 失败路径未 finalize 的清理遗漏。实际 Ascend executor 仍待实现，
+  不以本安全修复替代厂商 kernel 闭环。

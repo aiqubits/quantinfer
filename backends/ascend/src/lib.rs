@@ -7,5 +7,6 @@ mod native;
 
 #[cfg(feature = "native")]
 pub use native::{
-    AscendBackend, AscendMatmulExecutor, AscendProvider, AscendRuntime, AscendRuntimeError,
+    AscendBackend, AscendMatmulExecutor, AscendMatmulPlan, AscendProvider, AscendRuntime,
+    AscendRuntimeError,
 };

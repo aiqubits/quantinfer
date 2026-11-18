@@ -180,7 +180,13 @@ impl AscendRuntime {
         if code != 0 {
             return Err(AscendRuntimeError::Initialization(code));
         }
-        let count = query_device_count(&library)?;
+        let count = match query_device_count(&library) {
+            Ok(count) => count,
+            Err(error) => {
+                finalize(&library);
+                return Err(error);
+            }
+        };
         if count == 0 {
             finalize(&library);
             return Err(AscendRuntimeError::NoDevices);
@@ -250,15 +256,31 @@ impl AscendRuntime {
     /// Prepare an ACLNN MatMul by running its first (workspace-size) phase.
     ///
     /// The tensor pointers are opaque handles created by CANN's ACL tensor API. The
-    /// returned plan owns the executor handle and must be executed before the
-    /// runtime is dropped.
-    pub fn prepare_float_matmul<'runtime>(
+    /// returned plan retains a runtime borrow and is consumed by execution.
+    ///
+    /// # Safety
+    /// Non-null pointers must be live CANN tensor handles on the same device,
+    /// with mutually compatible shapes/dtypes and writable output storage.
+    /// Their device allocations and tensor handles must remain valid through
+    /// execution and stream synchronization. The caller must prevent conflicting
+    /// accesses while CANN uses them. Null tensor handles are rejected.
+    ///
+    /// ```compile_fail
+    /// use quantinfer_backend_ascend::AscendRuntime;
+    /// fn requires_unsafe(runtime: &AscendRuntime) {
+    ///     runtime.prepare_float_matmul(std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), 0);
+    /// }
+    /// ```
+    pub unsafe fn prepare_float_matmul<'runtime>(
         &'runtime self,
         lhs: *const c_void,
         rhs: *const c_void,
         output: *mut c_void,
         cube_math_type: i8,
     ) -> Result<AscendMatmulPlan<'runtime>, AscendRuntimeError> {
+        if lhs.is_null() || rhs.is_null() || output.is_null() {
+            return Err(AscendRuntimeError::InvalidMatmulPlan);
+        }
         let get_workspace = self
             .matmul_get_workspace
             .ok_or(AscendRuntimeError::InvalidMatmulPlan)?;
@@ -328,8 +350,23 @@ impl AscendMatmulPlan<'_> {
     /// `workspace` must point to at least `workspace_bytes()` bytes allocated by
     /// the caller. A null pointer is accepted when CANN reports a zero-sized
     /// workspace. `stream` is the ACL stream handle for the target device.
-    pub fn execute(
-        &self,
+    /// This plan can be submitted only once.
+    ///
+    /// # Safety
+    /// The workspace must be live device memory of the required size, and the
+    /// stream must be valid for the plan's device. Tensor handles, tensor device
+    /// allocations, workspace, runtime and its libraries must remain valid
+    /// without conflicting accesses until the caller successfully synchronizes
+    /// the stream after submission.
+    ///
+    /// ```compile_fail
+    /// use quantinfer_backend_ascend::AscendMatmulPlan;
+    /// fn requires_unsafe(plan: AscendMatmulPlan<'_>) {
+    ///     plan.execute(std::ptr::null_mut(), std::ptr::null_mut());
+    /// }
+    /// ```
+    pub unsafe fn execute(
+        self,
         workspace: *mut c_void,
         stream: *mut c_void,
     ) -> Result<(), AscendRuntimeError> {
@@ -340,8 +377,8 @@ impl AscendMatmulPlan<'_> {
             .runtime
             .matmul_execute
             .ok_or(AscendRuntimeError::InvalidMatmulPlan)?;
-        // SAFETY: the executor was created by CANN for this runtime and the
-        // workspace/stream handles are validated by the CANN operator.
+        // SAFETY: the executor is from this runtime; the caller guarantees live
+        // tensor/workspace/stream handles and their asynchronous lifetimes.
         let code = unsafe { execute(workspace, self.workspace_bytes, self.executor, stream) };
         if code != 0 {
             return Err(AscendRuntimeError::MatmulExecution(code));
