@@ -11,6 +11,13 @@ pub use quantinfer_adapter_candle as candle;
 pub use quantinfer_backend_ascend as ascend;
 #[cfg(all(feature = "cuda", any(target_os = "linux", target_os = "windows")))]
 pub use quantinfer_backend_cuda as cuda;
+#[cfg(all(
+    feature = "kleidiai",
+    target_arch = "aarch64",
+    target_os = "linux",
+    target_endian = "little"
+))]
+pub use quantinfer_backend_kleidiai as kleidiai;
 #[cfg(all(feature = "metal", target_os = "macos"))]
 pub use quantinfer_backend_metal as metal;
 #[cfg(all(feature = "wgpu", not(target_arch = "wasm32")))]

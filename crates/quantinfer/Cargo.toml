@@ -12,6 +12,7 @@ wgpu = ["dep:quantinfer-backend-wgpu", "quantinfer-backend-wgpu/native"]
 cuda = ["dep:quantinfer-backend-cuda", "quantinfer-backend-cuda/native"]
 metal = ["dep:quantinfer-backend-metal", "quantinfer-backend-metal/native"]
 ascend = ["dep:quantinfer-backend-ascend", "quantinfer-backend-ascend/native"]
+kleidiai = ["dep:quantinfer-backend-kleidiai", "quantinfer-backend-kleidiai/native"]
 candle = ["dep:quantinfer-adapter-candle", "quantinfer-adapter-candle/candle"]
 wasm = []
 wasi-nn = []
@@ -29,4 +30,5 @@ quantinfer-backend-wgpu = { workspace = true, optional = true }
 quantinfer-backend-cuda = { workspace = true, optional = true }
 quantinfer-backend-metal = { workspace = true, optional = true }
 quantinfer-backend-ascend = { workspace = true, optional = true }
+quantinfer-backend-kleidiai = { workspace = true, optional = true }
 quantinfer-adapter-candle = { workspace = true, optional = true }

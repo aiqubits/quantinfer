@@ -4,8 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+native = ["dep:cc", "dep:half"]
+
 [dependencies]
 quantinfer-core = { workspace = true }
 quantinfer-backend-cpu = { workspace = true }
 quantinfer-kernel = { workspace = true }
 quantinfer-runtime = { workspace = true }
+half = { workspace = true, optional = true }
+
+[build-dependencies]
+cc = { version = "1", optional = true }
+
+[dev-dependencies]
+half.workspace = true

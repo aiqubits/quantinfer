@@ -33,8 +33,9 @@ Some implementations have CPU fallbacks. Kernel capability, dtype/layout,
 alignment, context/head limits and operator checks remain separate. Registering
 these names does not supply a kernel implementation or complete hardware
 acceptance. Ascend's concrete F32 executor and ABI tests are documented in the
-[backend README](../../backends/ascend/README.md); T-MAC/KleidiAI implementations
-remain separate work.
+[backend README](../../backends/ascend/README.md); the native KleidiAI path and
+activation precision boundary have their own [README](../../backends/kleidiai/README.md).
+T-MAC's concrete implementation remains separate work.
 
 `KernelBackend::backend_id()` defaults to `None` for custom implementations.
 Without an explicit registered identity they can execute models with no

@@ -1,8 +1,34 @@
 //! Optional Arm KleidiAI capability provider.
 //!
-//! The crate describes the runtime contract used by an external KleidiAI
-//! kernel. It deliberately does not link a vendor library, allowing portable
-//! builds to keep using the scalar or SIMD reference backend.
+//! Portable contracts remain independent of the optional native SDK. Native
+//! Linux AArch64 builds use a pinned KleidiAI NEON dot-product microkernel.
+
+#![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(all(
+    feature = "native",
+    target_arch = "aarch64",
+    target_os = "linux",
+    target_endian = "little"
+))]
+mod native;
+#[cfg(any(
+    test,
+    all(
+        feature = "native",
+        target_arch = "aarch64",
+        target_os = "linux",
+        target_endian = "little"
+    )
+))]
+mod packing;
+#[cfg(all(
+    feature = "native",
+    target_arch = "aarch64",
+    target_os = "linux",
+    target_endian = "little"
+))]
+pub use native::NativeKleidiAiKernel;
 
 use std::collections::BTreeSet;
 
@@ -73,6 +99,18 @@ impl RuntimeProvider for KleidiAiProvider {
 /// thread scheduling remain the responsibility of the embedding application.
 pub trait KleidiAiKernel: std::fmt::Debug + Send + Sync {
     fn matmul_q4_0(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>;
+
+    fn matmul_q4_0_output_rows(
+        &self,
+        _lhs: &Tensor,
+        _rhs: &QuantizedTensor4,
+    ) -> Option<Result<Tensor>> {
+        None
+    }
+
+    fn capabilities(&self) -> Vec<KernelCapability> {
+        KleidiAiProvider::new().capabilities
+    }
 }
 
 #[derive(Debug)]
@@ -84,11 +122,11 @@ pub struct KleidiAiBackend<K> {
 
 impl<K: KleidiAiKernel> KleidiAiBackend<K> {
     pub fn new(kernel: K) -> Self {
-        let provider = KleidiAiProvider::new();
+        let capabilities = kernel.capabilities();
         Self {
             kernel,
             fallback: CpuScalar::new(),
-            capabilities: provider.capabilities().to_vec(),
+            capabilities,
         }
     }
 }
@@ -124,12 +162,17 @@ impl<K: KleidiAiKernel> KernelBackend for KleidiAiBackend<K> {
         self.kernel.matmul_q4_0(lhs, rhs)
     }
 
+    fn matmul_q4_0_output_rows(&self, lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor> {
+        self.kernel
+            .matmul_q4_0_output_rows(lhs, rhs)
+            .unwrap_or_else(|| self.fallback.matmul_q4_0_output_rows(lhs, rhs))
+    }
+
     fallback_kernel! {
         reuse_workspace() -> bool,
         matmul(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor>,
         matmul_q8_0(lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor>,
         matmul_q8_0_output_rows(lhs: &Tensor, rhs: &QuantizedTensor) -> Result<Tensor>,
-        matmul_q4_0_output_rows(lhs: &Tensor, rhs: &QuantizedTensor4) -> Result<Tensor>,
         matmul_q4_k(lhs: &Tensor, rhs: &QuantizedTensorQ4K) -> Result<Tensor>,
         matmul_q5_k(lhs: &Tensor, rhs: &QuantizedTensorQ5K) -> Result<Tensor>,
         matmul_q6_k(lhs: &Tensor, rhs: &QuantizedTensorQ6K) -> Result<Tensor>,

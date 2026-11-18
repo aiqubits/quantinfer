@@ -157,7 +157,12 @@ fn native_commands_do_not_report_unchecksummed_gguf_as_verified() {
     assert!(!invoke("inspect", &path).status.success());
     assert!(!invoke("verify", &path).status.success());
     let compatible = invoke("inspect-gguf", &path);
-    assert!(compatible.status.success());
+    assert!(
+        compatible.status.success(),
+        "status {:?}: {}",
+        compatible.status,
+        String::from_utf8_lossy(&compatible.stderr)
+    );
     let report: Value = serde_json::from_slice(&compatible.stdout).unwrap();
     assert_eq!(report["tensors"][0]["dtype"], "F32");
     assert!(report.get("payload_verified").is_none());

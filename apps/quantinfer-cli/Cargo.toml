@@ -10,6 +10,7 @@ wgpu = ["quantinfer/wgpu"]
 cuda = ["quantinfer/cuda"]
 metal = ["quantinfer/metal"]
 ascend = ["quantinfer/ascend"]
+kleidiai = ["quantinfer/kleidiai"]
 
 [dependencies]
 quantinfer = { workspace = true }

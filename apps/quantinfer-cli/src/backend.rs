@@ -3,7 +3,13 @@
     all(feature = "wgpu", not(target_arch = "wasm32")),
     all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
     all(feature = "metal", target_os = "macos"),
-    all(feature = "ascend", target_os = "linux")
+    all(feature = "ascend", target_os = "linux"),
+    all(
+        feature = "kleidiai",
+        target_arch = "aarch64",
+        target_os = "linux",
+        target_endian = "little"
+    )
 ))]
 mod gpu_plan;
 
@@ -25,6 +31,13 @@ pub enum Backend {
     Metal,
     #[cfg(all(feature = "ascend", target_os = "linux"))]
     Ascend,
+    #[cfg(all(
+        feature = "kleidiai",
+        target_arch = "aarch64",
+        target_os = "linux",
+        target_endian = "little"
+    ))]
+    KleidiAi,
 }
 
 impl Backend {
@@ -83,8 +96,31 @@ impl Backend {
                     )
                 }
             }
+            "kleidiai" => {
+                #[cfg(all(
+                    feature = "kleidiai",
+                    target_arch = "aarch64",
+                    target_os = "linux",
+                    target_endian = "little"
+                ))]
+                {
+                    Ok(Self::KleidiAi)
+                }
+                #[cfg(not(all(
+                    feature = "kleidiai",
+                    target_arch = "aarch64",
+                    target_os = "linux",
+                    target_endian = "little"
+                )))]
+                {
+                    Err(
+                        "KleidiAI requires a Linux AArch64 CLI built with --features kleidiai"
+                            .into(),
+                    )
+                }
+            }
             name => Err(format!(
-                "unknown --backend {name}; use cpu, wgpu, cuda, metal, or ascend"
+                "unknown --backend {name}; use cpu, wgpu, cuda, metal, ascend, or kleidiai"
             )),
         }
     }
@@ -114,6 +150,18 @@ impl Backend {
                 || quantinfer::ascend::AscendBackend::open(0),
                 quantinfer::core::Device::Npu,
             ),
+            #[cfg(all(
+                feature = "kleidiai",
+                target_arch = "aarch64",
+                target_os = "linux",
+                target_endian = "little"
+            ))]
+            Self::KleidiAi => load_accelerator(
+                reader,
+                manifest,
+                quantinfer::kleidiai::KleidiAiBackend::open,
+                quantinfer::core::Device::Cpu,
+            ),
         }
     }
 }
@@ -135,7 +183,13 @@ fn load_gpu<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     all(feature = "wgpu", not(target_arch = "wasm32")),
     all(feature = "cuda", any(target_os = "linux", target_os = "windows")),
     all(feature = "metal", target_os = "macos"),
-    all(feature = "ascend", target_os = "linux")
+    all(feature = "ascend", target_os = "linux"),
+    all(
+        feature = "kleidiai",
+        target_arch = "aarch64",
+        target_os = "linux",
+        target_endian = "little"
+    )
 ))]
 fn load_accelerator<B: KernelBackend + quantinfer_runtime::RuntimeProvider + 'static>(
     reader: &GgufReader,

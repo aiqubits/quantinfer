@@ -1,0 +1,58 @@
+name: KleidiAI Conformance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'backends/kleidiai/**'
+      - 'crates/quantinfer-core/**'
+      - 'crates/quantinfer-kernel/**'
+      - 'crates/quantinfer/Cargo.toml'
+      - 'apps/quantinfer-cli/**'
+      - 'Cargo.lock'
+      - '.github/workflows/kleidiai.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  portable:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.99.1
+      - run: cargo test --locked -p quantinfer-backend-kleidiai
+  native-arm:
+    runs-on: ubuntu-24.04-arm
+    env:
+      QUANTINFER_KLEIDIAI_SOURCE_DIR: ${{ github.workspace }}/vendor-kleidiai
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.99.1
+          components: clippy
+      - name: Fetch the reviewed upstream SDK revision
+        shell: bash
+        run: |
+          revision=$(cat backends/kleidiai/vendor-revision)
+          git init "$QUANTINFER_KLEIDIAI_SOURCE_DIR"
+          git -C "$QUANTINFER_KLEIDIAI_SOURCE_DIR" remote add origin https://github.com/ARM-software/kleidiai.git
+          git -C "$QUANTINFER_KLEIDIAI_SOURCE_DIR" fetch --depth 1 origin "$revision"
+          git -C "$QUANTINFER_KLEIDIAI_SOURCE_DIR" checkout --detach FETCH_HEAD
+      - name: Execute the real NEON dotprod kernel against the scalar reference
+        shell: bash
+        run: |
+          cargo test --release --locked -p quantinfer-backend-kleidiai --features native -- --nocapture | tee kleidiai.log
+          grep -F 'verified KleidiAI dotprod' kleidiai.log
+      - run: cargo clippy --locked -p quantinfer-backend-kleidiai --features native --all-targets -- -D warnings
+      - run: cargo test --locked -p quantinfer-cli --features kleidiai
+      - run: cargo clippy --locked -p quantinfer-cli --features kleidiai --all-targets -- -D warnings
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: kleidiai-native-arm
+          path: kleidiai.log

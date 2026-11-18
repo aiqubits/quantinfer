@@ -1995,6 +1995,7 @@ dependencies = [
  "quantinfer-backend-ascend",
  "quantinfer-backend-cpu",
  "quantinfer-backend-cuda",
+ "quantinfer-backend-kleidiai",
  "quantinfer-backend-metal",
  "quantinfer-backend-wgpu",
  "quantinfer-core",
@@ -2121,6 +2122,8 @@ dependencies = [
 name = "quantinfer-backend-kleidiai"
 version = "0.1.0"
 dependencies = [
+ "cc",
+ "half",
  "quantinfer-backend-cpu",
  "quantinfer-core",
  "quantinfer-kernel",
