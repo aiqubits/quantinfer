@@ -528,6 +528,17 @@ impl PackageReader {
         let (tensors, chunks) = parse_package_index(&index, &package.model)?;
         let mut entries = BTreeMap::new();
         for entry in package.shards {
+            if entry.sha256.len() != HASH_SIZE * 2
+                || !entry
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            {
+                return Err(invalid(format!(
+                    "package shard {} has an invalid SHA-256 digest",
+                    entry.path
+                )));
+            }
             let file = open_shard(&root, &entry.path)?;
             let size = file.metadata().map_err(io_error)?.len();
             if size != entry.size {

@@ -99,6 +99,33 @@ fn package_tensor_checksum_hex_case_matches_the_model_manifest_contract() {
 }
 
 #[test]
+fn package_open_validates_shard_digest_syntax_before_payload_verification() {
+    let root = package("shard-digest-syntax");
+    for digest in ["0".repeat(63), "g".repeat(64), "A".repeat(64)] {
+        edit(&root, |manifest, _| manifest.shards[0].sha256 = digest);
+        for error in [
+            PackageReader::open(&root).err(),
+            crate::PackedTensorReader::open_path(&root).err(),
+        ] {
+            assert!(error
+                .expect("open accepted an invalid shard digest")
+                .to_string()
+                .contains("invalid SHA-256 digest"));
+        }
+    }
+    edit(&root, |manifest, _| {
+        manifest.shards[0].sha256 = "0".repeat(64)
+    });
+    let mut reader = PackageReader::open(&root).unwrap();
+    assert!(reader
+        .verify()
+        .unwrap_err()
+        .to_string()
+        .contains("checksum mismatch"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn package_rejects_unreferenced_chunks() {
     let root = package("orphan-regression");
     edit(&root, |_, index| {

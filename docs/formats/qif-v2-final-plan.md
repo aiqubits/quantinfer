@@ -594,7 +594,8 @@ tensor 可以跨分片重组。
 package root hash 对以下内容依次计算 SHA-256：`root_hash` 值设为空字符串后的
 canonical `qif.json` 字节、`metadata.qmb` 的字节、`index.qifi` 的字节、按 `shards`
 数组顺序串接的每个 `sha256` 字段的 UTF-8 字节。shard 摘要的输入为整个 shard 文件，
-包含块间 padding。根摘要以小写十六进制存入 `root_hash`。
+包含块间 padding。`sha256` 和 `root_hash` 均编码为 64 个小写十六进制字符。
+reader 打开时验证摘要格式，完整 `verify()` 核对 shard 文件内容与其摘要。
 
 路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 在临时目录写入后由 reader
 执行全量 `verify()`，通过后才原子 rename 至发布路径。默认 reader 在打开时逐一验证
