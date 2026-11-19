@@ -81,6 +81,7 @@ impl MetadataValue {
 }
 
 pub(crate) fn encode(values: &BTreeMap<String, MetadataValue>) -> Result<Vec<u8>> {
+    validate_structural_fields(values)?;
     let mut output = Vec::new();
     write_map(&mut output, values, 0)?;
     if output.len() > MAX_HEADER_SECTION {
@@ -98,7 +99,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<BTreeMap<String, MetadataValue>> {
     if cursor.offset != bytes.len() {
         return Err(invalid("unexpected bytes after metadata"));
     }
+    validate_structural_fields(&values)?;
     Ok(values)
+}
+
+fn validate_structural_fields(values: &BTreeMap<String, MetadataValue>) -> Result<()> {
+    if values
+        .get("quantinfer.qif.ggml_dimension_order")
+        .is_some_and(|value| !matches!(value, MetadataValue::Bool(_)))
+    {
+        return Err(invalid("GGML dimension order metadata must be boolean"));
+    }
+    Ok(())
 }
 
 fn write_map(

@@ -118,6 +118,17 @@ impl PackedTensorReader {
                     tensor.name, declared_shape, info.shape
                 )));
             }
+            let recorded = self.tensor_storage_layout(&tensor.name)?;
+            let declared = match tensor.descriptor.physical_layout.as_str() {
+                "output_rows" => super::GGML_OUTPUT_ROWS_LAYOUT,
+                value => value,
+            };
+            if declared != recorded {
+                return Err(FormatError::Invalid(format!(
+                    "model manifest tensor {} declares layout {declared:?}, but the artifact stores {recorded:?}",
+                    tensor.name
+                )));
+            }
         }
         Ok(())
     }

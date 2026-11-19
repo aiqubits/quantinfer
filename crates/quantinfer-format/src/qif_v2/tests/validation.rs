@@ -282,11 +282,60 @@ fn packed_reader_preserves_native_maps_and_checks_structural_metadata_types() {
     assert_eq!(reader.tensor_bytes("weight").unwrap(), [0; 8]);
     let values = BTreeMap::from([("quantinfer.qif.ggml_dimension_order".into(), map)]);
     let mut bytes = Vec::new();
-    write_qif_v2(sample_manifest(), &values, |_| Ok(&[0; 8]), &mut bytes).unwrap();
-    assert!(crate::GgufReader::open_artifact(bytes)
-        .unwrap_err()
-        .to_string()
-        .contains("must be boolean"));
+    assert!(
+        write_qif_v2(sample_manifest(), &values, |_| Ok(&[0; 8]), &mut bytes)
+            .unwrap_err()
+            .to_string()
+            .contains("must be boolean")
+    );
+}
+
+#[test]
+fn structural_dimension_order_types_are_rejected_after_control_hash_repair() {
+    for value in [
+        MetadataValue::Map(BTreeMap::new()),
+        MetadataValue::U32(1),
+        MetadataValue::String("true".into()),
+        MetadataValue::Array(vec![]),
+    ] {
+        let encoded_value = metadata::encode(&BTreeMap::from([("x".into(), value)])).unwrap();
+        let key = b"quantinfer.qif.ggml_dimension_order";
+        let mut qmb = Vec::new();
+        qmb.extend_from_slice(&13_u32.to_le_bytes());
+        qmb.extend_from_slice(&1_u64.to_le_bytes());
+        qmb.extend_from_slice(&(key.len() as u64).to_le_bytes());
+        qmb.extend_from_slice(key);
+        // Strip the independent root map and its one-byte key, retaining the tagged value.
+        qmb.extend_from_slice(&encoded_value[12 + 8 + 1..]);
+        let mut bytes = single(&[0; 8]);
+        let offset = u64_at(&bytes, 40);
+        bytes[offset..offset + qmb.len()].copy_from_slice(&qmb);
+        bytes[48..56].copy_from_slice(&(qmb.len() as u64).to_le_bytes());
+        refresh_root(&mut bytes);
+        let error = Reader::open(&bytes).err().unwrap().to_string();
+        assert!(error.contains("must be boolean"), "{error}");
+        let path =
+            std::env::temp_dir().join(format!("qif-invalid-dimension-{}", std::process::id()));
+        fs::write(&path, &bytes).unwrap();
+        assert!(FileReader::open(&path)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("must be boolean"));
+        fs::remove_file(path).unwrap();
+    }
+    // Only the top-level structural field is reserved; names inside unknown hints remain data.
+    let hints = BTreeMap::from([(
+        "hints".into(),
+        MetadataValue::Map(BTreeMap::from([(
+            "quantinfer.qif.ggml_dimension_order".into(),
+            MetadataValue::U32(1),
+        )])),
+    )]);
+    assert_eq!(
+        metadata::decode(&metadata::encode(&hints).unwrap()).unwrap(),
+        hints
+    );
 }
 
 #[test]

@@ -80,14 +80,17 @@ cargo run --release --locked -p quantinfer-cli --features metal -- generate \
 
 ## Ascend CANN
 
-The optional Ascend crate now probes the CANN ACL runtime without adding a
-vendor dependency to the workspace. Set `ASCEND_ACL_LIBRARY` to the ACL
-shared library path and call `AscendRuntime::open()` to initialize CANN and
-query visible devices. Matrix operators still require the CANN operator ABI
-integration before an Ascend execution provider can be selected.
-`load_float_matmul_abi()` checks the ACLNN two-phase MatMul symbols in the
-operator library configured by `ASCEND_OP_LIBRARY`.
-The runtime capability model exposes Ascend devices as `Device::Npu`.
-After the ABI check, `AscendRuntime::execution_provider()` supplies the
-F32 MatMul plan to the shared runtime registry. Tensor creation and operator
-submission remain the next device-side step.
+The optional Ascend `native` feature provides `CannMatmulExecutor` and
+`AscendBackend::open(device)`. The executor allocates device storage, creates
+ACL tensors and a context/stream, copies F32 inputs, submits two-phase ACLNN
+MatMul, synchronizes, and copies the result back to a Core tensor. Other
+operators use the documented CPU fallback; quantized matmul is not advertised
+as an NPU operation.
+
+Build the CLI with `--features ascend` and select `generate --backend ascend`.
+Set `ASCEND_ACL_LIBRARY` and `ASCEND_OP_LIBRARY` when CANN's libraries are not
+discoverable through their default names. Portable builds do not load CANN.
+The provider exposes `Device::Npu` through the shared capability registry.
+Independent C ABI contract tests cover results, ownership and failure cleanup;
+they do not replace actual NPU measurements. See the
+[Ascend implementation and acceptance boundaries](ascend/README.md).

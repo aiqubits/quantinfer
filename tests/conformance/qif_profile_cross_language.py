@@ -27,6 +27,11 @@ def repair_single(data):
     data[88:120] = hashlib.sha256(b''.join(section(data, offset) for offset in (24, 40, 56))).digest()
 
 
+def dimension_metadata(tagged_value):
+    key = b'quantinfer.qif.ggml_dimension_order'
+    return struct.pack('<IQ', 13, 1) + struct.pack('<Q', len(key)) + key + tagged_value
+
+
 def locations(data):
     index = u64(data, 56)
     records = index + 48 + u64(data, index + 16) + u64(data, index + 24)
@@ -107,6 +112,13 @@ def single_cases(original):
     edit('metadata-root-tag', metadata_start, 'I', 9)
     edit('metadata-count', metadata_start + 4, 'Q', (1 << 64) - 1)
     edit('metadata-string-limit', metadata_start + 12, 'Q', (1 << 64) - 1)
+    for name, value in [
+        ('integer', struct.pack('<II', 4, 1)),
+        ('string', struct.pack('<IQ', 8, 4) + b'true'),
+        ('map', struct.pack('<IQ', 13, 0)),
+        ('array', struct.pack('<IQ', 9, 0)),
+    ]:
+        cases[f'dimension-order-{name}'] = reordered(original, {40: dimension_metadata(value)})
     offset = metadata_start + raw_metadata.index(struct.pack('<If', 6, 0.1))
     edit('metadata-unknown-type', offset, 'I', 99)
     model = json.loads(section(original, 24))
@@ -257,6 +269,10 @@ def main():
         # aliases must count toward expanded report bytes, not only disk bytes.
         check(fixtures / 'alias-report-budget.qif', False)
         original = (fixtures / 'single-none.qif').read_bytes()
+        for value in (0, 1):
+            path = root / f'dimension-order-bool-{value}.qif'
+            path.write_bytes(reordered(original, {40: dimension_metadata(struct.pack('<IB', 7, value))}))
+            check(path, True)
         upper = json.loads(section(original,24))
         for tensor in upper['tensors']:
             tensor['checksum_sha256'] = tensor['checksum_sha256'].upper()

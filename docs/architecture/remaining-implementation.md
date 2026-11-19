@@ -11,8 +11,8 @@
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `f651ed2` 的双环境专项及主 CI 已通过，各 147 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
-| 高级量化 provider | GPTQ/AWQ/AutoRound/LLM Compressor 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；不以 import/dequantize 冒充算法 | 未完成 |
-| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵远端通过；全局校准预算策略已本地闭环并接入 CI，当前批远端验证待完成，见下方 |
+| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ/AWQ/AutoRound 生产算法未完成；LLM Compressor 已有 WNA16 Adapter |
+| Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
@@ -203,3 +203,40 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   本批本地使用独立 target 目录完成 fmt/check/workspace test/Clippy 和两个 xtask
   smoke：245 passed / 0 failed / 5 ignored。该结果不复用审查工作区的 test binary，
   对应提交的远端 CI 另行核对。
+
+- 布局修复时更正了上一轮审查的一处反例假设：GGML 兼容 profile 的逻辑矩阵
+  已是 `[N,K]`，不能在改标 row-major 后额外转置 bytes 并声称权重未变。
+  采用明确坐标规则、非对称权重和独立 target 重测旧 `04900bf`：原生 QIF
+  混合布局被默认 factory 拒绝，直接模型入口产生错误 logits；GGML 兼容 profile
+  的等价权重没有失败。原审查中“GGML 混合布局导致 0.9860505”不作为已证实缺陷。
+- 新实现按 tensor descriptor 分派原生 QIF 的 packed/output-row 线性权重，并
+  规范化原生浮点 embedding/LM head 的布局；模型入口核对实际布局，CPU/GPU
+  preflight 对同一 dtype 的不同布局分别匹配。GGML 兼容维度和 Llama Q/K 通道
+  变换保持原约定，没有改变已有正常产物的 bytes 或 ID。
+  八种核心编码 × 两种布局 × 两种维度 profile 的非方形矩阵对 F64 参考通过，
+  quantized blocks 保持一致；两个 Dense adapter 的 72 组容器/codec/布局场景、
+  各自默认和直接入口的 prefill/decode/KV 对照通过。
+  QIF 规范补充坐标表、SHA-256 ID、QMB bool、LZ4 framing 和 QSIG 字段。
+  坐标定义区分矩阵执行 profile 与低层 raw IO，保留既有 scalar/vector 退化布局；
+  不把任意高 rank 的读写解释为已经支持 batched matrix kernel。独立三语言检查继续验证。
+
+  复核坐标规则时还将已有的 reserved dimension-order bool 约束前移到原生 QMB
+  writer/reader 控制区边界；C/Python 独立 reader 同步核对顶层类型，未知 hint
+  内部的同名 key 仍为普通数据。新增四种错误类型的 rehashed 反例和两个 bool
+  正例，避免“格式 verify 已通过、仅模型入口才发现结构类型错误”的不一致。
+
+- `1c748d9` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44283564873)
+  与 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44283564982)
+  已完成并成功；两个独立跨语言 job 各执行 147 项。Qwen3 的三种 K 质量矩阵、
+  六次 QIF 对照、同机性能和 llama.cpp 互操作也通过。这些结果不包含尚未提交的布局修复。
+- 本地布局与结构类型修复批为 251 passed / 0 failed / 6 ignored，含 doctest；
+  fmt/check、workspace all-targets Clippy、两个 xtask smoke 和五项 benchmark 工具测试通过。
+  独立 Rust/C/Python ASan/UBSan 矩阵实际重跑 153 项通过。
+  显式运行新增真实 SmolLM2 布局测试也通过：SINGLE/none、PACKAGE/zstd 各核对
+  272 个 tensor 的 bytes/layout/shape，完整 logits 与源 F32 模型相同，固定生成 token
+  一致，30 层 KV 均为 13。源 GGUF SHA-256 为
+  `2549efafb6629d3b44a3e1eba18bc2a222fcca24302fc2b7abe3f8b2d17cc762`；
+  仅改变两个非方形投影的物理布局，不重新量化。该批自身的远端 CI 在提交后核对。
+
+固定 `1c748d9` 的 [全条款复核](two-plan-review-1c748d9.md) 保留远端与本地的原始状态，
+不将后续修复反写成原提交已经通过。高级量化算法与完整 Studio 仍未完成。

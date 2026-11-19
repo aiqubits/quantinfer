@@ -75,6 +75,9 @@ impl LinearWeight {
 }
 
 pub(crate) fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeight> {
+    if reader.matrix_uses_output_rows(name)? {
+        return crate::ggml::load_ggml_linear(reader, name, None);
+    }
     match reader.tensor_info(name)?.dtype {
         GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => {
             Ok(LinearWeight::F32(reader.tensor_f32(name)?))
@@ -84,6 +87,23 @@ pub(crate) fn load_linear(reader: &GgufReader, name: &str) -> Result<LinearWeigh
         GgmlType::Q4_K => Ok(LinearWeight::Q4_K(reader.tensor_q4_k(name)?)),
         GgmlType::Q6_K => Ok(LinearWeight::Q6_K(reader.tensor_q6_k(name)?)),
         GgmlType::Q5_K => Ok(LinearWeight::Q5_K(reader.tensor_q5_k(name)?)),
+    }
+}
+
+/// Decode a floating native-view tensor, honoring a matrix's physical layout.
+/// GGML embedding/table reshaping remains in the dimension-order adapter.
+pub(crate) fn load_native_float(reader: &GgufReader, name: &str) -> Result<Tensor> {
+    let info = reader.tensor_info(name)?;
+    if !matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) {
+        return Err(RuntimeError::InvalidInput(format!(
+            "native model tensor {name} requires floating point storage"
+        )));
+    }
+    if info.shape.len() == 2 && reader.matrix_uses_output_rows(name)? {
+        crate::ggml::load_ggml_matrix(reader, name, None)
+    } else {
+        reader.tensor_storage_layout(name)?;
+        Ok(reader.tensor_f32(name)?)
     }
 }
 
@@ -120,3 +140,6 @@ pub(crate) fn add(lhs: &Tensor, rhs: &Tensor) -> Result<Tensor> {
         .collect();
     Ok(Tensor::from_f32(lhs.shape().clone(), values)?)
 }
+
+#[cfg(test)]
+mod tests;

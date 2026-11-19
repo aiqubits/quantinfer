@@ -107,7 +107,7 @@ header 长度为 144 字节；下表字段按文件顺序排列，字段 offset 
 | version | 4 | 固定为 `2` |
 | flags | 4 | profile、feature 和必需能力位 |
 | header_size | 4 | v2.0 固定为 `144` |
-| hash_algorithm | 4 | v2.0 必须支持 SHA-256；其他算法需能力协商 |
+| hash_algorithm | 4 | `1 = SHA-256`；v2.0 reader 拒绝其它 ID |
 | index_version | 4 | 当前为 `1` |
 | manifest_offset | 8 | 文件绝对偏移 |
 | manifest_length | 8 | canonical manifest 长度 |
@@ -196,10 +196,15 @@ array 使用 `u64 count + count 个带 tag 的 value`；map 使用 `u64 count + 
 个 string key/value 对`。v2.0 reader 限制嵌套深度、项目数、字符串长度和 metadata
 总长度，并拒绝 trailing bytes、重复 key、非有限浮点和未知 tag。
 
+`bool` 的 `u32LE tag=7` 后恰好有一个 `u8`：`0=false`、`1=true`，其它值
+MUST 拒绝。它不是 u32 整数值，不能额外写入三个 padding 字节。QMB 顶层
+也以 `u32LE tag=13 + u64LE count` 开始，随后按 map 规则编码；不能省略根 tag。
+
 metadata MUST 设置最大深度、最大 map/array 项数和最大字符串字节数。metadata 中的
 model/runtime hint 只能影响优化，不能改变 tensor 的正确解释。保留键
 `quantinfer.qif.ggml_dimension_order` 是兼容 GGUF 转换的结构字段，必须为 bool，
-控制兼容视图的维度顺序，不属于可忽略的 hint。包含 Map 的 metadata 保留在原生
+控制兼容视图的维度顺序，不属于可忽略的 hint。原生 writer 与所有 reader 在
+控制区编码/解码时就必须拒绝该键的其它类型，不得等到模型执行才检查。包含 Map 的 metadata 保留在原生
 视图中，不强制转换为 GGUF；兼容视图省略这些条目。
 
 ## 5. Binary index
@@ -306,6 +311,43 @@ ggml_output_rows
 
 新的 layout 必须使用新的 registry ID；不能通过复用旧 ID 改变含义。
 
+#### 5.2.1 矩阵坐标与兼容视图
+
+`row_major` 的物理元素次序按 QIF 原生 `logical_shape` 解释。令二维逻辑 shape
+为 `[A,B]`，逻辑坐标为 `(a,b)`，其扁平元素序号为 `a*B+b`。
+本节冻结 `ggml_output_rows` 的二维矩阵坐标规则；scalar/vector 是连续序列的退化情形。
+当前 dense executor 只把 rank-2 tensor 作为 linear matrix，不把更高 rank 的 raw
+读写能力解释为已经支持 batched matrix kernel 或任意高维 stride。
+
+保留结构字段 `quantinfer.qif.ggml_dimension_order` 缺失或为 false 时，兼容视图
+shape 与原生逻辑 shape 一致。该字段为 true 时，兼容视图反转各维度顺序；对二维
+tensor，视图 shape 为 `[B,A]`，视图坐标 `(b,a)` 对应原生坐标 `(a,b)`。
+反转 shape 本身不转置 payload bytes，也不改写 index 中的原生 shape。
+
+`ggml_output_rows` 按该矩阵视图的输出列连续存放输入元素。对于上述原生坐标，
+两个布局的物理元素序号固定如下；元素序号随后按 physical encoding 定位 block/code：
+
+| ggml_dimension_order | 兼容视图 shape | row_major 序号 | ggml_output_rows 序号 |
+| --- | --- | --- | --- |
+| false / 缺失 | `[A,B]` | `a*B+b` | `b*A+a` |
+| true | `[B,A]` | `a*B+b` | `a*B+b` |
+
+因此，在 GGML 兼容 profile 中，二维 `row_major` 与 `ggml_output_rows` 可以有
+相同 bytes；不能只改 layout 后再额外转置这些 bytes，并声称逻辑权重仍然相同。
+原生 profile 中二者则通常需要不同的元素次序。非方形且非对称的固定向量用于
+核对此区别，方形 shape 或对称矩阵不足以验证坐标规则。
+
+例如同一 dense 线性函数的 `[K=3,N=2]` 矩阵为 `[[1,4],[2,5],[3,6]]`：
+原生 profile 的 row-major bytes 表示序列为 `[1,4,2,5,3,6]`，output rows 为
+`[1,2,3,4,5,6]`；GGML 兼容 profile 的原生 shape 为 `[2,3]`，两种布局的序列
+均为 `[1,2,3,4,5,6]`，其兼容视图仍为 `[3,2]`。这组 profile 通过模型适配映射
+到相同线性函数；跨 profile 的原生 shape 不应被称为同一个未变换坐标的 tensor。
+
+存储布局不定义 RoPE 通道语义。GGML Llama Q/K 的 adjacent-pair 与 half-split
+变换由对应模型适配器单独处理；Qwen3 或其它角色不能无条件套用该变换。
+当前 CPU packed output-row kernel 还要求视图输入宽度按对应 block size 对齐；
+不满足时必须明确失败，不能把 blocks 当成 row-major 或静默重新量化。
+
 ### 5.3 Alias
 
 如果多个逻辑 tensor 共享相同物理 payload，除第一个 tensor 外，其余 tensor MUST 使用 `alias_target`，不得重复写入相同 bytes。
@@ -366,6 +408,11 @@ QIF2-SINGLE/QIF2-PACKAGE v2.0 core codec：
 不改变 wire 中的长度字段。writer 默认将压缩 tensor 切分为不超过 4 MiB 的
 raw chunk；PACKAGE 还受 shard 大小与压缩后大小约束。无压缩 chunk 不受上述
 压缩块大小上限限制。LZ4 的长度前缀 MUST 与 `raw_length` 相同，并在输出分配前检查。
+
+codec 2 的 stored bytes 是 `u32LE raw_length + 一个 raw LZ4 block`，前缀恰好
+4 字节，后面没有 LZ4 frame header，也不使用标准 LZ4 frame 封装。
+该具体 framing 与现有 `lz4_flex::compress_prepend_size` 输出一致；独立 reader
+必须先验证长度前缀，再把余下 bytes 作为一个 raw block 解码。
 
 文件和 PACKAGE 的 `verify()` 增量计算 tensor hash 并校验有限数值：无压缩块
 使用固定大小缓冲区，压缩块逐块解码，alias 不重复物化或校验相同物理 payload。
@@ -434,6 +481,16 @@ v2.0 不定义命令行
 
 QIF-SINGLE v2.0 定义固定 108 字节 Ed25519 envelope：`QSIG` magic、版本、算法 ID、公钥和
 签名。签名覆盖 root hash；reader 验证 envelope，但信任根和密钥分发由发布系统负责。
+
+| envelope offset | 字段 | 大小与值 |
+| --- | --- | --- |
+| 0 | magic | 4 bytes，`QSIG` |
+| 4 | envelope_version | u32LE，固定 `1` |
+| 8 | signature_algorithm | u32LE，`1 = Ed25519` |
+| 12 | public_key | 32 bytes |
+| 44 | signature | 64 bytes，先 R 再 S |
+
+envelope 总长必须恰好为 108；未知版本、算法 ID 或多余 bytes MUST 拒绝。
 此 profile MUST 使用 canonical 的公钥 A 与签名 R 编码，拒绝 small-order 的 A/R，
 且 scalar S MUST 满足 `0 <= S < l`（Ed25519 subgroup order）。验签使用原始 32 字节
 root hash 作为 message，检查标准未乘 cofactor 的 Ed25519 验证等式；Rust 使用
@@ -552,7 +609,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前公开 API 为 `quantinfer_format::qif::plan_qif_reshard`，已有跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；135 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
+8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；141 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
 9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 

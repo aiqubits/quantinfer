@@ -89,6 +89,9 @@ def metadata(data):
     result = value(0)
     require(result['type'] == 'Map', 'QMB root must be a map')
     cursor.end()
+    dimension_order = result['value'].get('quantinfer.qif.ggml_dimension_order')
+    require(dimension_order is None or dimension_order['type'] == 'Bool',
+            'GGML dimension order metadata must be boolean')
     return result['value']
 
 

@@ -34,3 +34,6 @@ quantinfer-backend-ascend = { workspace = true, optional = true }
 quantinfer-backend-kleidiai = { workspace = true, optional = true }
 quantinfer-backend-tmac = { workspace = true, optional = true }
 quantinfer-adapter-candle = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true

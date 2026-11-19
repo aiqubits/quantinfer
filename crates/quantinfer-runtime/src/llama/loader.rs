@@ -4,7 +4,7 @@ use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_model::{LlamaAdapter, LlamaConfig, ModelSpec, TensorRole};
 
 use crate::ggml::{load_ggml_as_float, load_ggml_linear, load_ggml_matrix};
-use crate::linear::{load_linear, transpose_matrix};
+use crate::linear::{load_linear, load_native_float, transpose_matrix};
 use crate::storage::dense_storage_name;
 use crate::{Result, RuntimeError};
 
@@ -22,6 +22,7 @@ impl<B: quantinfer_kernel::KernelBackend> LlamaModel<B> {
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         if let Some(manifest) = reader.embedded_manifest() {
+            reader.validate_manifest(manifest)?;
             crate::validate_manifest_for_backend(manifest, &backend)?;
         }
         let ggml_layout = uses_ggml_layout(reader)?;
@@ -33,7 +34,7 @@ impl<B: quantinfer_kernel::KernelBackend> LlamaModel<B> {
         let mut embedding = if ggml_layout {
             load_ggml_as_float(reader, &embedding_name)?
         } else {
-            reader.tensor_f32(&embedding_name)?
+            load_native_float(reader, &embedding_name)?
         };
         if ggml_layout {
             expect_shape(
@@ -49,7 +50,7 @@ impl<B: quantinfer_kernel::KernelBackend> LlamaModel<B> {
         let lm_head = match reader.tensor_info(&head_name) {
             Ok(_) if ggml_layout => load_ggml_matrix(reader, &head_name, None)?,
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
-                reader.tensor_f32(&head_name)?
+                load_native_float(reader, &head_name)?
             }
             Ok(_) => {
                 return Err(RuntimeError::InvalidInput(format!(

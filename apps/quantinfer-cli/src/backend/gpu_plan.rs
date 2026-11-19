@@ -19,7 +19,6 @@ pub(super) fn validate_on_device<P: RuntimeProvider + ?Sized>(
 ) -> Result<(), String> {
     use quantinfer_core::{DType, QuantizationScheme, OUTPUT_ROWS_LAYOUT};
     use quantinfer_format::GgmlType;
-    use quantinfer_format::GGML_OUTPUT_ROWS_LAYOUT;
     use quantinfer_runtime::{ExecutionRequest, Operation};
 
     let manifest = manifest.or(reader.embedded_manifest());
@@ -35,9 +34,6 @@ pub(super) fn validate_on_device<P: RuntimeProvider + ?Sized>(
             .validate_manifest(manifest)
             .map_err(|error| error.to_string())?;
     }
-    let ggml = reader
-        .uses_ggml_output_rows()
-        .map_err(|error| error.to_string())?;
     let request = ExecutionRequest {
         device,
         tensor_layout: "row_major".to_owned(),
@@ -85,15 +81,6 @@ pub(super) fn validate_on_device<P: RuntimeProvider + ?Sized>(
                 manifest.model_id, plan.provider_name
             ));
         }
-        if manifest.tensors.iter().any(|tensor| {
-            let layout = tensor.descriptor.physical_layout.as_str();
-            layout != "row_major" && !(ggml && layout == GGML_OUTPUT_ROWS_LAYOUT)
-        }) {
-            return Err(format!(
-                "model package declares an unsupported {} tensor layout",
-                plan.provider_name
-            ));
-        }
     }
     for (kind, dtype, quantization, block_size) in [
         (GgmlType::Q8_0, DType::Q8_0, QuantizationScheme::Q8_0, 32),
@@ -102,8 +89,22 @@ pub(super) fn validate_on_device<P: RuntimeProvider + ?Sized>(
         (GgmlType::Q5_K, DType::Q5_K, QuantizationScheme::Q5_K, 256),
         (GgmlType::Q6_K, DType::Q6_K, QuantizationScheme::Q6_K, 256),
     ] {
-        if reader.tensors().iter().any(|tensor| tensor.dtype == kind) {
-            let tensor_layout = if ggml {
+        let mut layouts = Vec::new();
+        for tensor in reader
+            .tensors()
+            .iter()
+            .filter(|tensor| tensor.dtype == kind)
+        {
+            let output_rows = tensor.shape.len() == 2
+                && reader
+                    .matrix_uses_output_rows(&tensor.name)
+                    .map_err(|e| e.to_string())?;
+            if !layouts.contains(&output_rows) {
+                layouts.push(output_rows);
+            }
+        }
+        for output_rows in layouts {
+            let tensor_layout = if output_rows {
                 OUTPUT_ROWS_LAYOUT
             } else {
                 "row_major"
@@ -185,6 +186,53 @@ mod tests {
             let reader = GgufReader::open(writer.finish().unwrap()).unwrap();
             assert!(validate(&reader, None, &provider()).is_err());
         }
+    }
+
+    #[test]
+    fn checks_both_layouts_of_one_quantized_dtype_before_device_initialization() {
+        use quantinfer::format::qif;
+        use std::collections::BTreeMap;
+        let mut manifest = ModelManifest::new("two-layouts", "llama");
+        manifest.quantization = QuantizationScheme::Q8_0;
+        for (name, layout) in [("native", "row_major"), ("rows", "ggml_output_rows")] {
+            let mut descriptor = TensorStorageDescriptor::quantized(
+                DType::Q8_0,
+                QuantizationScheme::Q8_0,
+                Shape::from(vec![32, 32]),
+                32,
+            )
+            .unwrap();
+            descriptor.physical_layout = layout.into();
+            manifest.tensors.push(TensorManifest {
+                name: name.into(),
+                descriptor,
+                checksum_sha256: None,
+            });
+        }
+        let mut bytes = Vec::new();
+        qif::write_qif(
+            manifest,
+            &BTreeMap::new(),
+            |_| Ok(&[0; 34 * 32]),
+            &mut bytes,
+        )
+        .unwrap();
+        let reader = GgufReader::open_artifact(bytes).unwrap();
+        quantinfer::cpu::resolve_backend(&reader, None).unwrap();
+        let mut backend = provider();
+        let mut quantized = backend.0[0].clone();
+        quantized.dtype = DType::Q8_0;
+        quantized.quantization = QuantizationScheme::Q8_0;
+        quantized.supported_operations = BTreeSet::from([Operation::QuantizedMatmul]);
+        quantized.alignment = 32;
+        backend.0.push(quantized.clone());
+        let error = validate(&reader, None, &backend).unwrap_err();
+        assert!(error.contains("output_rows"), "{error}");
+        quantized.tensor_layout = quantinfer::core::OUTPUT_ROWS_LAYOUT.into();
+        backend.0.push(quantized);
+        validate(&reader, None, &backend).unwrap();
+        backend.0.remove(1);
+        assert!(validate(&reader, None, &backend).is_err());
     }
 
     #[test]

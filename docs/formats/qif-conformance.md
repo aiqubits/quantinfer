@@ -86,7 +86,7 @@ python3 tests/conformance/qif_profile_cross_language.py \
   --c-reader /tmp/qif-c-reference --corpus "$PWD/fuzz/corpus/qif_v2_reader"
 ```
 
-The 135 curated cases include eight fully rehashed non-finite encoding fixtures, broken
+The 141 curated cases include eight fully rehashed non-finite encoding fixtures, broken
 signature bytes/key/envelope and a new authenticated root with an old signature.
 The PACKAGE cases cover traversal, absolute paths, symlink escape, duplicate
 JSON/shards, coordinates, shard lists/ranges/sizes/digests and overlapping data.
@@ -121,3 +121,21 @@ Compressed chunks are bounded by the current reader resource profile (128 MiB
 decoded, 129 MiB stored; zstd window at most 128 MiB). The writer uses at most
 4 MiB of raw data per compressed chunk. The 48 MiB test uses those writer
 defaults; it does not assert that a maximum-size allowed chunk fits that budget.
+
+Runtime layout tests are separate from physical-byte conformance reports.
+Eight encodings use a non-square 256×32 matrix, both layouts and both dimension
+profiles, with independent F64 matrix arithmetic and unchanged quantized blocks.
+Complete non-symmetric Qwen3/Llama fixtures additionally exercise 72 combinations
+of dimension profile, uniform/mixed layout, codec and owned/file/PACKAGE source,
+each through the default factory and direct backend entry point. They cover
+prefill, decode, KV lengths and raw-cache release. The GGML dimension profile
+reverses logical axes in the packed view; changing its layout label alone need
+not change physical bytes. Coordinate rules are in the [format plan](qif-v2-final-plan.md#521-矩阵坐标与兼容视图).
+
+The dimension-order field is structural metadata. The native writer and all
+three independent reader implementations reject a non-boolean top-level
+`quantinfer.qif.ggml_dimension_order` during control validation. Four rehashed
+negative controls exercise integer/string/map/array types, and two positive
+controls retain false/true. Nested keys under an unknown hint remain ordinary
+metadata. The current matrix is 141 curated cases plus 12 corpus seeds, or
+153 checks per CI environment.

@@ -45,15 +45,6 @@ fn resolve_backend_impl(
         request.head_dimension = manifest.kernel_requirements.head_dimension;
         request.maximum_sequence_length = manifest.kernel_requirements.maximum_sequence_length;
         request.alignment = manifest.kernel_requirements.alignment;
-        if manifest.tensors.iter().any(|tensor| {
-            let layout = &tensor.descriptor.physical_layout;
-            layout != &request.tensor_layout
-                && !(ggml_layout && layout == quantinfer_format::GGML_OUTPUT_ROWS_LAYOUT)
-        }) {
-            return Err(RuntimeError::InvalidInput(
-                "model package declares an unsupported tensor layout".to_owned(),
-            ));
-        }
     }
     let mut plan = resolver.resolve(&request)?;
     if let Some(manifest) = manifest {
@@ -101,10 +92,13 @@ fn resolve_backend_impl(
         if ggml_layout && ggml_float_weight(&tensor.name) {
             continue;
         }
-        if checked.contains(&tensor.dtype) {
+        let output_rows =
+            tensor.shape.len() == 2 && reader.matrix_uses_output_rows(&tensor.name)?;
+        if checked.contains(&(tensor.dtype, output_rows)) {
             continue;
         }
-        checked.push(tensor.dtype);
+        let first_dtype = !checked.iter().any(|(dtype, _)| *dtype == tensor.dtype);
+        checked.push((tensor.dtype, output_rows));
         let (dtype, scheme, block_size) = match tensor.dtype {
             GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => continue,
             GgmlType::Q8_0 => (DType::Q8_0, QuantizationScheme::Q8_0, Q8_0_BLOCK_SIZE),
@@ -117,9 +111,12 @@ fn resolve_backend_impl(
         request.quantization = scheme;
         request.operation = Some(Operation::QuantizedMatmul);
         request.alignment = Some(block_size);
-        if ggml_layout {
-            request.tensor_layout = OUTPUT_ROWS_LAYOUT.to_owned();
+        request.tensor_layout = if output_rows {
+            OUTPUT_ROWS_LAYOUT
+        } else {
+            "row_major"
         }
+        .to_owned();
         let quantized_plan = resolver.resolve(&request)?;
         if quantized_plan.provider_name != plan.provider_name {
             return Err(RuntimeError::InvalidInput(
@@ -128,7 +125,7 @@ fn resolve_backend_impl(
         }
         if mixed {
             mixed_plans.push(quantized_plan);
-            projection_schemes += 1;
+            projection_schemes += usize::from(first_dtype);
         } else if manifest.is_some_and(|manifest| {
             manifest.quantization == scheme
                 || (profile.is_some() && manifest.quantization == QuantizationScheme::None)

@@ -46,7 +46,8 @@ fn model() -> GgufReader {
                 if name.contains("norm") {
                     1.0
                 } else {
-                    (index % 7) as f32 * 0.01
+                    // Avoid symmetric square matrices hiding transposition errors.
+                    ((index * 17 + index / 3 + 5) % 29) as f32 * 0.03 - 0.4
                 }
             })
             .collect();

@@ -103,6 +103,10 @@ Json qmb(Bytes data) {
   Json result = value(&cursor, 0);
   CHECK(same(field(result, "type"), string("Map")) &&
         cursor.offset == data.size);
+  Json dimension_order = NULL;
+  if (json_object_object_get_ex(field(result, "value"),
+                                "quantinfer.qif.ggml_dimension_order", &dimension_order))
+    CHECK(same(field(dimension_order, "type"), string("Bool")));
   return field(result, "value");
 }
 void finite_payload(uint32_t dtype, Bytes data) {

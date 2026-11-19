@@ -4,7 +4,7 @@ use quantinfer_format::{GgmlType, GgufReader, GgufValue};
 use quantinfer_model::{ModelSpec, Qwen3Adapter, Qwen3Config, TensorRole};
 
 use crate::ggml::{load_ggml_as_float, load_ggml_linear, load_ggml_matrix};
-use crate::linear::{load_linear, transpose_matrix};
+use crate::linear::{load_linear, load_native_float, transpose_matrix};
 use crate::storage::dense_storage_name;
 use crate::{Result, RuntimeError};
 
@@ -22,6 +22,7 @@ impl<B: quantinfer_kernel::KernelBackend> Qwen3Model<B> {
 
     pub fn from_gguf(backend: B, reader: &GgufReader) -> Result<Self> {
         if let Some(manifest) = reader.embedded_manifest() {
+            reader.validate_manifest(manifest)?;
             crate::validate_manifest_for_backend(manifest, &backend)?;
         }
         let ggml_layout = reader.uses_ggml_output_rows()?;
@@ -39,7 +40,7 @@ impl<B: quantinfer_kernel::KernelBackend> Qwen3Model<B> {
             )?;
             embedding.reshape(spec.embedding.shape.clone())?
         } else {
-            reader.tensor_f32(&embedding_name)?
+            load_native_float(reader, &embedding_name)?
         };
         let final_norm_name = crate::tensor_source(&spec, TensorRole::FinalNormalization, None)?;
         let final_norm = reader.tensor_f32(&final_norm_name)?;
@@ -47,7 +48,7 @@ impl<B: quantinfer_kernel::KernelBackend> Qwen3Model<B> {
         let lm_head = match reader.tensor_info(&head_name) {
             Ok(_) if ggml_layout => load_ggml_matrix(reader, &head_name, None)?,
             Ok(info) if matches!(info.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16) => {
-                reader.tensor_f32(&head_name)?
+                load_native_float(reader, &head_name)?
             }
             Ok(info) => {
                 return Err(RuntimeError::InvalidInput(format!(

@@ -278,6 +278,14 @@ jobs:
           cargo test --release --locked -p quantinfer-runtime --test optimized_precision_conformance \
             -- --ignored --nocapture | tee smollm2-optimized-quality.log
           rm -- smollm2-optimized.gguf
+      - name: Gate native mixed-layout QIF against verified SmolLM2 F32
+        env:
+          QUANTINFER_LAYOUT_SOURCE_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
+          QUANTINFER_LAYOUT_REPORT: ${{ github.workspace }}/smollm2-layout-quality.json
+        run: |
+          export QUANTINFER_LAYOUT_SOURCE_SHA256=$(sha256sum smollm2-f32.gguf | cut -d ' ' -f 1)
+          cargo test --release --locked -p quantinfer --test qif_layout_conformance \
+            -- --ignored --nocapture | tee smollm2-layout-quality.log
       - name: Transcode SmolLM2 Q4_0 to QIF and verify inference
         shell: bash
         run: |
@@ -414,6 +422,7 @@ jobs:
             smollm2-k-quant-quality.log
             smollm2-precision-*.json
             smollm2-optimized-quality.*
+            smollm2-layout-quality.*
             optimized-calibration.jsonl
             optimized-imatrix.json
             smollm2-*.inventory
