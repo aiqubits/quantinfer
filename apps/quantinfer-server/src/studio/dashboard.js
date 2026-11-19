@@ -52,13 +52,24 @@ $('generate').addEventListener('click', async () => {
 function syncJobForm() {
   const kind = $('job-kind').value;
   const calibrated = kind === 'quantize' || kind === 'calibrate';
-  $('job-context-fields').hidden = !calibrated && kind !== 'benchmark';
-  $('job-context').required = calibrated || kind === 'benchmark';
-  $('job-data-fields').hidden = !calibrated;
-  $('job-quantize-fields').hidden = kind !== 'quantize';
-  $('job-codec-fields').hidden = kind !== 'quantize' && kind !== 'package';
-  $('job-package-fields').hidden = kind !== 'package';
-  $('job-benchmark-fields').hidden = kind !== 'benchmark';
+  const contextRequired = calibrated || kind === 'benchmark';
+  const sections = {
+    'job-context-fields': contextRequired,
+    'job-data-fields': calibrated,
+    'job-quantize-fields': kind === 'quantize',
+    'job-codec-fields': kind === 'quantize' || kind === 'package',
+    'job-package-fields': kind === 'package',
+    'job-benchmark-fields': kind === 'benchmark',
+  };
+  for (const [id, visible] of Object.entries(sections)) {
+    const section = $(id);
+    section.hidden = !visible;
+    // Hidden controls still participate in browser validation unless disabled.
+    for (const control of section.querySelectorAll('input, select, textarea')) {
+      control.disabled = !visible;
+    }
+  }
+  $('job-context').required = contextRequired;
   $('job-dataset').required = calibrated;
   $('benchmark-prompt').required = kind === 'benchmark';
 }
