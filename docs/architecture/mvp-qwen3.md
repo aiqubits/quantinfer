@@ -42,9 +42,14 @@ cover a fixed unsigned, uncompressed F32 golden profile. See the
 
 ## Remaining plan boundaries
 
-The full general plan's later phases are not complete. GPTQ/AWQ/AutoRound/LLM
-Compressor adapters import/dequantize existing quantized artifacts rather than
-run those algorithms from floating weights. Ascend now has a concrete CANN F32
+The full general plan's later phases are not complete. The GPTQ adapter now
+also has a full-Hessian calibrated matrix producer for native signed Q4_0/Q8_0,
+with independent upstream vectors and a real SmolLM2 projection quality test;
+whole-model orchestration remains pending. AWQ/AutoRound still import existing
+artifacts rather than run their quantization algorithms. LLM Compressor has
+the WNA16 import adapter requested by the general plan. See the
+[GPTQ profile and acceptance boundary](../../adapters/gptq/README.md).
+Ascend now has a concrete CANN F32
 MatMul executor and an optional CLI path, with independent C ABI contract tests;
 real-device acceptance remains separate. KleidiAI has a pinned native AArch64
 Q4_0 output-row microkernel with explicit activation-Q8 error checks and CPU

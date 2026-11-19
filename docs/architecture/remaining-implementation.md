@@ -11,7 +11,7 @@
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `f651ed2` 的双环境专项及主 CI 已通过，各 147 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
-| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ/AWQ/AutoRound 生产算法未完成；LLM Compressor 已有 WNA16 Adapter |
+| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 的完整 Hessian 矩阵生产 API、独立参考和真实单投影 QIF 路径已本地通过，仍需全模型编排；AWQ/AutoRound 算法未完成；LLM Compressor 已有 WNA16 Adapter |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
@@ -239,4 +239,30 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   仅改变两个非方形投影的物理布局，不重新量化。该批自身的远端 CI 在提交后核对。
 
 固定 `1c748d9` 的 [全条款复核](two-plan-review-1c748d9.md) 保留远端与本地的原始状态，
-不将后续修复反写成原提交已经通过。高级量化算法与完整 Studio 仍未完成。
+不将后续修复反写成原提交已经通过。高级量化的全部生产流程与完整 Studio 仍未完成。
+
+- `dcea320` 已发布 QIF 逐 tensor layout、结构类型校验和规范精确化修复。该提交的
+  常规 CI、Metal/WGPU/CUDA、Ascend、KleidiAI、T-MAC、GGUF 互操作及 push 时间预算
+  fuzz 已成功；[完整 Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44492248035)
+  也已成功。SmolLM2 新增真实布局门禁、Qwen3 三种 K 的六次 QIF 对照、同机性能
+  和 llama.cpp 互操作均通过；该提交实际触发的十项 workflow 已全部成功。
+- 新的 GPTQ provider 不再只有 import/dequantize：它累计完整 F64 Gram、对实际
+  激活 Hessian 加阻尼并求 inverse-Cholesky，执行逐通道误差反馈，支持静态分组及
+  activation order。F16 scale 在选码和反馈前冻结，4/8-bit 结果直接映射现有
+  Q4_0/Q8_0 output-row blocks；无校准或预算不足明确失败，不降级为 RTN。
+  固定上游 `2d65066` 的原始 Torch 实现独立生成八组码/scale 对照，Rust 全部逐项一致，
+  三种 codec 的 QIF 产物及原生 CPU 对照通过；生产 Rust API 不依赖 Torch/CUDA。
+- 新的真实 SmolLM2 单投影检查使用三个明确提示采集 21 个 token row：首层 query
+  的 GPTQ 投影 MSE 为 `0.000013752617658749938`，同一最终码表的 RTN 为
+  `0.002377514089817588`。SINGLE/none 与 PACKAGE/zstd 均保留相同量化 blocks，
+  holdout KL 为 `0.0000022303983379325617`、Top-10 重合 10，生成 token 与 F32
+  golden 一致。该结果不表示所有层均已 GPTQ，也不扩大为一般任务质量保证；
+  全模型编排、AWQ、AutoRound 和完整 Studio 继续保留为未完成项。
+  本批最终本地 workspace 为 257 passed / 0 failed / 7 ignored，含 doctest；
+  fmt/check/Clippy 与两个 xtask smoke 全部通过。新增真实模型用例已单独执行成功，
+  上游原始源码重算八组 fixture 也通过；远端结果按对应提交的 CI 另行核对。
+- 首次取得每日 900 秒配置的实际执行证据：固定 `1c748d9` 的
+  [schedule fuzz](https://github.com/aiqubits/quantinfer/actions/runs/44489991794)
+  三个 job 均成功，libFuzzer 各记录 901 秒。reader 为 1,005,919 runs / cov 4092，
+  PACKAGE index 为 776,352 / cov 2287，PACKAGE controls 为 1,977,629 / cov 9066；
+  corpus 和日志已保存。该实际时长补齐此前记录中的证据缺口，仍不是安全穷举证明。

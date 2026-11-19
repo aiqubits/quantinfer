@@ -165,6 +165,19 @@ pub trait QuantizationProvider {
     fn export_layout(&self) -> &'static str;
 }
 
+/// A quantization algorithm that requires measured projection activations.
+/// Calibration is owned by the algorithm's adapter; it need not be a diagonal
+/// importance vector, and must not be silently replaced by uncalibrated RTN.
+pub trait CalibratedQuantizationProvider: QuantizationProvider {
+    type Calibration;
+
+    fn quantize_calibrated(
+        &self,
+        input: &Tensor,
+        calibration: &Self::Calibration,
+    ) -> Result<QuantizedData>;
+}
+
 mod float;
 mod q4;
 mod q4_k;

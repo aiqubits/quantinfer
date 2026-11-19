@@ -2053,8 +2053,13 @@ dependencies = [
 name = "quantinfer-adapter-gptq"
 version = "0.1.0"
 dependencies = [
+ "half",
+ "quantinfer",
+ "quantinfer-backend-cpu",
  "quantinfer-core",
  "quantinfer-format",
+ "quantinfer-kernel",
+ "quantinfer-quant",
  "serde",
  "serde_json",
 ]

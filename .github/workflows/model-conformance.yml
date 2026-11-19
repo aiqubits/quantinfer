@@ -286,6 +286,14 @@ jobs:
           export QUANTINFER_LAYOUT_SOURCE_SHA256=$(sha256sum smollm2-f32.gguf | cut -d ' ' -f 1)
           cargo test --release --locked -p quantinfer --test qif_layout_conformance \
             -- --ignored --nocapture | tee smollm2-layout-quality.log
+      - name: Gate calibrated GPTQ on a real SmolLM2 projection
+        env:
+          QUANTINFER_GPTQ_SOURCE_GGUF: ${{ github.workspace }}/smollm2-f32.gguf
+          QUANTINFER_GPTQ_REPORT: ${{ github.workspace }}/smollm2-gptq-quality.json
+        run: |
+          export QUANTINFER_GPTQ_SOURCE_SHA256=$(sha256sum smollm2-f32.gguf | cut -d ' ' -f 1)
+          cargo test --release --locked -p quantinfer-adapter-gptq --test model_conformance \
+            -- --ignored --nocapture | tee smollm2-gptq-quality.log
       - name: Transcode SmolLM2 Q4_0 to QIF and verify inference
         shell: bash
         run: |
@@ -423,6 +431,7 @@ jobs:
             smollm2-precision-*.json
             smollm2-optimized-quality.*
             smollm2-layout-quality.*
+            smollm2-gptq-quality.*
             optimized-calibration.jsonl
             optimized-imatrix.json
             smollm2-*.inventory
@@ -516,6 +525,16 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.11.0'
           python -m pip install 'transformers==4.57.6'
           python tests/conformance/qwen3_reference.py qwen3 > qwen3-reference.json
+      - name: Recompute GPTQ vectors with pinned upstream implementation
+        run: |
+          upstream="$RUNNER_TEMP/gptq-reference-upstream"
+          mkdir -p "$upstream"
+          for source in gptq.py quant.py; do
+            curl --fail --location --retry 3 --output "$upstream/$source" \
+              "https://raw.githubusercontent.com/IST-DASLab/gptq/2d65066eeb06a5c9ff5184d8cebdf33662c67faf/$source"
+          done
+          python tests/conformance/gptq_reference.py --upstream "$upstream" \
+            --check tests/golden/gptq-static-profile.json --output qwen3-gptq-reference.json
       - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
@@ -646,6 +665,7 @@ jobs:
             qwen3-gguf.sha256
             qwen3-*.inventory
             qwen3-reference.json
+            qwen3-gptq-reference.json
             qwen3-conformance.log
             qwen3-*-benchmark.txt
             qwen3-*-paired-*.txt

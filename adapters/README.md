@@ -34,6 +34,13 @@ without a CPU memory budget.
 
 ## GPTQ
 
+`quantinfer-adapter-gptq` also provides a full-Hessian calibrated GPTQ
+producer for static signed four/eight-bit groups. It freezes F16 scales before
+error feedback and emits native Q4_0/Q8_0 output-row blocks without a second
+quantization. Calibration statistics, options, independent upstream vectors,
+the real SmolLM2 projection check and remaining workflow scope are documented
+in the [GPTQ provider guide](gptq/README.md).
+
 `quantinfer-adapter-gptq` decodes standard GPTQ SafeTensors linear weights
 (`qweight`, `qzeros`, `scales`, and optional `g_idx`) into a validated F32
 matrix. It supports 2-, 4-, and 8-bit 32-bit-word packing, grouped scales,

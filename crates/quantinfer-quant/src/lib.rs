@@ -17,9 +17,9 @@ pub use mixed_precision::{
     UnavailablePrecision,
 };
 pub use providers::{
-    FloatProvider, GgmlQ8_0Provider, NativeQ4KProvider, NativeQ4_0Provider, NativeQ5KProvider,
-    NativeQ6KProvider, NativeQ8_0Provider, QuantizationErrorReport, QuantizationProvider,
-    QuantizationStats, QuantizedData,
+    CalibratedQuantizationProvider, FloatProvider, GgmlQ8_0Provider, NativeQ4KProvider,
+    NativeQ4_0Provider, NativeQ5KProvider, NativeQ6KProvider, NativeQ8_0Provider,
+    QuantizationErrorReport, QuantizationProvider, QuantizationStats, QuantizedData,
 };
 pub use schemes::{
     dequantize_q4_0, dequantize_q4_k, dequantize_q5_k, dequantize_q6_k, dequantize_q8_0,
