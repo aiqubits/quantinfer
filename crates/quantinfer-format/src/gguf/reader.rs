@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::{borrow::Cow, path::Path, sync::Arc};
 
-use crate::{manifest::ModelManifest, qif_legacy, qif_v2};
+use crate::{manifest::ModelManifest, qif_v2};
 
 use super::encoding::{align_up, tensor_byte_size, Cursor};
 use super::types::{FormatError, GgmlType, GgufTensorInfo, GgufValue};
@@ -148,7 +148,13 @@ impl PackedTensorReader {
     /// adapters, not the format reader.
     pub fn uses_ggml_output_rows(&self) -> Result<bool> {
         if self.embedded_manifest.is_some() {
-            return qif_legacy::uses_ggml_dimension_order(&self.metadata);
+            return match self.metadata.get(qif_v2::GGML_DIMENSION_ORDER) {
+                Some(GgufValue::Bool(value)) => Ok(*value),
+                None => Ok(false),
+                Some(_) => Err(FormatError::Invalid(
+                    "QIF GGML dimension order metadata must be a boolean".into(),
+                )),
+            };
         }
         gguf_uses_ggml_rows(&self.metadata, &self.tensors)
     }

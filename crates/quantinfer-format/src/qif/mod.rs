@@ -189,6 +189,6 @@ mod writer;
 mod tests;
 
 pub use reader::QifReader;
-pub(crate) use reader::{has_magic, open_packed, uses_ggml_dimension_order};
+pub(crate) use reader::{has_magic, open_packed};
 pub use transcode::import_gguf;
 pub use writer::write_qif;

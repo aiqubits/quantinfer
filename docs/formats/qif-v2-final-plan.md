@@ -3,14 +3,12 @@
 对外 artifact、CLI 和 Rust API 统一使用 **QIF** 名称；QIF2-SINGLE、QIF2-PACKAGE
 及 QIF v1 只用于内部 wire/version 实现与历史文档，不作为对外能力标识。
 
-状态：QIF-SINGLE、QIF-PACKAGE、独立压缩 chunk 和 QIF-SINGLE 的 Ed25519 签名 envelope
-已有实现，本文固定 wire 字段；跨语言 golden reader、带 ASan/覆盖率的 seeded fuzz smoke test 和
-benchmark 已接入 CI。功能存在与 CI 通过不等于全部验收完成：跨语言验证范围、
-性能测量口径、默认模型加载器接入和长时 fuzzing 仍须分别验证。
+QIF-SINGLE、QIF-PACKAGE、独立压缩 chunk 和 QIF-SINGLE 的 Ed25519 签名 envelope
+已有实现。默认模型加载器使用 §9 的文件后端。CI 分别运行跨语言 reader 对照、
+性能测量、带 ASan 的 fuzz smoke 和定时长跑。验证矩阵与测量范围见 §10–11。
 
-QIF v1 已停止作为 QuantInfer 的目标格式。当前仓库中的 QIF v1 reader、writer 和
-历史测试只保留为旧 artifact 的读取与迁移参考；新 GGUF 转换器写入当前 QIF（内部 wire version 为 QIF2-SINGLE），
-新 runtime 不得把 QIF v1 当作新版格式的兼容依据。
+QIF v1 已退役。仓库中的 QIF v1 reader 和 writer 仅在格式 crate 的历史测试中编译。
+新转换器写入当前 QIF，公开 reader 和 runtime 拒绝 v1 artifact。
 
 本文定义全新的 QIF v2.0 wire format。当前仓库实现 QIF2-SINGLE 与
 QIF2-PACKAGE 两种 profile。文中的 **MUST**、**MUST NOT**、**SHOULD**、**MAY**
@@ -78,7 +76,7 @@ QIF v2.0 冻结两种容器 profile；对外 profile 名称统一为 QIF，内�
 QIF2 wire version 区分：
 
 - **QIF-SINGLE**（内部 QIF2-SINGLE）：一个文件，适合本地、边缘和单机服务。
-- **QIF-PACKAGE**（内部 QIF2-PACKAGE）：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，适合对象存储、大模型和并行读取。
+- **QIF-PACKAGE**（内部 QIF2-PACKAGE）：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，用于本地分片部署。对象存储 transport 属于后续 profile。
 
 两种 profile 共享 model manifest、tensor record、chunk record 与 tensor/chunk 的 SHA-256
 规则。SINGLE 使用固定 header 和可选签名，PACKAGE 使用目录清单和 shard 摘要；各自的
@@ -107,7 +105,7 @@ header 长度为 144 字节；下表字段按文件顺序排列，字段 offset 
 | --- | ---: | --- |
 | magic | 4 | 固定为 `QIF\0` |
 | version | 4 | 固定为 `2` |
-| flags | 4 | profile、feature 和必需能力位 |
+| flags | 4 | v2.0 固定为 `0` |
 | header_size | 4 | v2.0 固定为 `144` |
 | hash_algorithm | 4 | `1 = SHA-256`；v2.0 reader 拒绝其它 ID |
 | index_version | 4 | 当前为 `1` |
@@ -119,15 +117,15 @@ header 长度为 144 字节；下表字段按文件顺序排列，字段 offset 
 | index_length | 8 | index header、string/shape table、tensor/chunk records 总长度 |
 | payload_offset | 8 | payload 区域起始偏移 |
 | payload_length | 8 | payload 区域长度 |
-| root_hash | 32 | 对 canonical sections 和 chunk digest 的根校验 |
+| root_hash | 32 | §7.1 的 SINGLE 根摘要，chunk 摘要已包含在 binary index 中 |
 | signature_offset | 8 | 无签名时为 0；有签名时指向 108 字节 envelope |
 | signature_length | 8 | 无签名时为 0；有签名时固定为 108 |
 | reserved | 8 | 必须为 0，未来版本可扩展 |
 
-未知的必需 feature bit MUST 拒绝；未知的 advisory bit MAY 忽略。reader MUST 检查所有区域的边界、重叠、整数溢出和文件 EOF。
-
-QIF2-SINGLE v2.0 的 `flags` 固定为 `0`；codec 通过 chunk record 的 codec_id 表达，
-签名通过 header 的 signature offset/length 表达。v2.0 reader 遇到非零 flags 必须拒绝。
+reader MUST 检查所有区域的边界、重叠、整数溢出和文件 EOF。v2.0 未分配 header
+feature bit，遇到非零 `flags` MUST 拒绝。codec 由 chunk record 的 `codec_id`
+表示，签名由 header 的 signature offset/length 表示。必需运行能力由 §4.1 的
+manifest 字段声明。
 
 ## 4. Manifest 与 metadata
 
@@ -146,12 +144,17 @@ manifest MUST：
 - 限制最大字节数、最大深度和最大字符串长度；
 - 使用确定性 key 顺序和数字表示；
 - 记录 `schema_version` 与 `model_id`；
-- 记录 architecture、source revision、tokenizer、compatibility 和 tensor 列表；
+- 记录 architecture、source format、compatibility 和 tensor 列表。以
+  `source_revision`、`tokenizer_revision` 记录已知版本，未知时使用 JSON `null`。
 - 每个 tensor 在 manifest 中记录 name 与完整 logical storage descriptor；稳定的
   `tensor_id`、shape table 和物理 encoding 由 binary index 记录。semantic role
   需要时通过受控 metadata key 表达，不能被 reader 当作存储布局。
 
 manifest MUST NOT 保存任意可执行对象。
+
+字段、顺序和嵌套结构以 [ModelManifest](../../crates/quantinfer-format/src/manifest/types.rs)
+的 schema 1 为准。当前 Rust reader 的 manifest 上限为 64 MiB，嵌套深度为
+32，字符串上限为 16 MiB。QMB 使用 §4.2 的独立限制。
 
 格式库允许检查和转存带有未来运行时要求的 artifact；执行模型前必须单独检查
 compatibility。`minimum_quantinfer_version` 指 QuantInfer runtime 的 SemVer，
@@ -202,7 +205,8 @@ array 使用 `u64 count + count 个带 tag 的 value`；map 使用 `u64 count + 
 MUST 拒绝。它不是 u32 整数值，不能额外写入三个 padding 字节。QMB 顶层
 也以 `u32LE tag=13 + u64LE count` 开始，随后按 map 规则编码；不能省略根 tag。
 
-metadata MUST 设置最大深度、最大 map/array 项数和最大字符串字节数。metadata 中的
+当前 QMB reader 限制 metadata 总长度为 64 MiB，嵌套深度为 32，单个 map/array
+最多 1,048,576 项，字符串最多 16 MiB。metadata 中的
 model/runtime hint 只能影响优化，不能改变 tensor 的正确解释。保留键
 `quantinfer.qif.ggml_dimension_order` 是兼容 GGUF 转换的结构字段，必须为 bool，
 控制兼容视图的维度顺序，不属于可忽略的 hint。原生 writer 与所有 reader 在
@@ -390,7 +394,8 @@ chunk_hash
 QIF2-PACKAGE 的 chunk record 还 MUST 包含 `shard_id`；QIF2-SINGLE 使用
 固定的 `shard_id = 0`。
 
-v2.0 的文件 section 起点与 chunk 的物理 `stored_offset` MUST 是 4096 字节的倍数。
+v2.0 的 SINGLE manifest、metadata、index、payload、可选 signature section
+起点与两种 profile 的物理 `stored_offset` MUST 是 4096 字节的倍数。
 `raw_offset` 是 tensor 内连续的逻辑字节偏移，不受此物理对齐限制；例如合法的
 100-byte raw 分块可以使用 `0, 100, 200, ...`，不能向逻辑 tensor 插入对齐 padding。
 默认 alignment 为
@@ -478,6 +483,18 @@ MUST 一致；其它 packing、scale、axis 或 group 表达不能复用现有 e
 `ggml_output_rows` descriptor 还支持 `Axis(0)`。其它 axis 不在当前编码集合内。
 浮点 encoding 使用 `packing=none`，且不得声明量化 block/group/scale/zero point。
 
+浮点数的 payload 使用 little-endian IEEE binary32、binary16 或 bfloat16 bits。
+固定量化编码采用 QuantInfer 的标准 GGML block 字节布局，字段按下表从左到右排列。
+block 字段的解析见 [packed tensor decoder](../../crates/quantinfer-format/src/gguf/decode.rs)。
+
+| 编码 | 每块字节 | 字段顺序 |
+| --- | ---: | --- |
+| Q8_0 | 34 | F16LE scale，32 个 i8 code |
+| Q4_0 | 18 | F16LE scale，16 个 packed byte，低位对应索引 0–15，高位对应索引 16–31 |
+| Q4_K | 144 | F16LE scale，F16LE min scale，12 个 scale/min byte，128 个 packed code byte |
+| Q5_K | 176 | F16LE scale，F16LE min scale，12 个 scale/min byte，32 个 high-bit byte，128 个 low-bit byte |
+| Q6_K | 210 | 128 个 low-bit byte，64 个 high-bit byte，16 个 i8 scale，F16LE block scale |
+
 ## 7. 完整性与安全
 
 ### 7.1 Hash
@@ -551,16 +568,28 @@ shard-00001.qifd
 ...
 ```
 
-package manifest 为每个 shard 记录：
+`qif.json` 按以下字段顺序编码为 canonical JSON。
 
-- 相对路径；受限 URI 作为后续 transport profile 保留，v2.0 当前 reader 只接受包根目录内的本地相对路径；
-- 文件大小；
-- shard hash；
-- mesh axis、rank 和 shard coordinate；
-- 所属 tensor 名称；
-- model manifest 中的 global shape 与 tensor checksum。global index 的 chunk record
-  使用 tensor-relative `raw_offset/raw_length` 和 shard-relative
-  `stored_offset/stored_length`，因此一个 tensor 可以跨多个 shard 重组。
+| 字段 | 类型与约束 |
+| --- | --- |
+| `schema_version` | u32，固定为 `1` |
+| `profile` | string，取值见上文 |
+| `model` | §4.1 的 ModelManifest，含逻辑 shape 和 tensor checksum |
+| `metadata_path` | 本地相对路径，writer 使用 `metadata.qmb` |
+| `metadata_sha256` | QMB 文件 bytes 的小写十六进制 SHA-256 |
+| `index_path` | 本地相对路径，writer 使用 `index.qifi` |
+| `index_sha256` | index 文件 bytes 的小写十六进制 SHA-256 |
+| `shards` | 分片记录数组，数组顺序参与根摘要 |
+| `root_hash` | 下文定义的根摘要 |
+
+分片记录按 `path`（string）、`size`（u64）、`sha256`（string）、
+`mesh_axis`（u32）、`rank`（u32）、`coordinate`（u32 数组）、
+`tensors`（string 数组）的顺序编码。reader 要求 `rank` 大于零且等于
+`coordinate` 项数，按 index 核对每片的 tensor 名称集合（含 alias）。
+当前 writer 写入 `mesh_axis=0`、`rank=1` 和 `coordinate=[shard_id]`。
+实际读取由 chunk 的 `shard_id` 定位，路径为 `shard-{shard_id:05}.qifd`
+（十进制，至少五位）。物理偏移相对该分片，逻辑偏移相对 tensor，因此单个
+tensor 可以跨分片重组。
 
 package root hash 对以下内容依次计算 SHA-256：`root_hash` 值设为空字符串后的
 canonical `qif.json` 字节、`metadata.qmb` 的字节、`index.qifi` 的字节、按 `shards`

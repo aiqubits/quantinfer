@@ -105,7 +105,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<BTreeMap<String, MetadataValue>> {
 
 fn validate_structural_fields(values: &BTreeMap<String, MetadataValue>) -> Result<()> {
     if values
-        .get("quantinfer.qif.ggml_dimension_order")
+        .get(super::GGML_DIMENSION_ORDER)
         .is_some_and(|value| !matches!(value, MetadataValue::Bool(_)))
     {
         return Err(invalid("GGML dimension order metadata must be boolean"));

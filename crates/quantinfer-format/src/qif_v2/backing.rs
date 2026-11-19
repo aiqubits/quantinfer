@@ -190,7 +190,7 @@ pub(crate) fn open_packed_file(
 
 fn project(source: Source, budget: Option<usize>) -> Result<PackedTensorReader> {
     let controls = source.control();
-    let ggml = match controls.metadata.get("quantinfer.qif.ggml_dimension_order") {
+    let ggml = match controls.metadata.get(super::GGML_DIMENSION_ORDER) {
         Some(MetadataValue::Bool(value)) => *value,
         Some(_) => return Err(invalid("GGML dimension order metadata must be boolean")),
         None => false,

@@ -678,7 +678,7 @@ pub(crate) fn has_magic(bytes: &[u8]) -> bool {
 
 pub(crate) fn open_packed(bytes: Vec<u8>, budget: Option<usize>) -> Result<PackedTensorReader> {
     let reader = Reader::open(&bytes)?;
-    let ggml = match reader.metadata().get("quantinfer.qif.ggml_dimension_order") {
+    let ggml = match reader.metadata().get(super::GGML_DIMENSION_ORDER) {
         Some(MetadataValue::Bool(value)) => *value,
         Some(_) => return Err(invalid("GGML dimension order metadata must be boolean")),
         None => false,

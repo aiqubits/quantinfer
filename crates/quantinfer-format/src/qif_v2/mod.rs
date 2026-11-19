@@ -43,6 +43,7 @@ pub(crate) const VERSION: u32 = 2;
 pub(crate) const HEADER_SIZE: usize = 144;
 pub(crate) const INDEX_MAGIC: &[u8; 4] = b"QIDX";
 pub(crate) const INDEX_VERSION: u32 = 1;
+pub(crate) const GGML_DIMENSION_ORDER: &str = "quantinfer.qif.ggml_dimension_order";
 pub(crate) const ALIGNMENT: usize = 4096;
 pub(crate) const MAX_HEADER_SECTION: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_JSON_DEPTH: usize = 32;

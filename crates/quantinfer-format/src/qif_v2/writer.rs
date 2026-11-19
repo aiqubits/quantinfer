@@ -265,7 +265,7 @@ fn describe_gguf_controls(
     };
     let mut manifest = ModelManifest::new(model_id, architecture);
     metadata.insert(
-        "quantinfer.qif.ggml_dimension_order".to_owned(),
+        super::GGML_DIMENSION_ORDER.to_owned(),
         GgufValue::Bool(ggml),
     );
     let mut schemes = Vec::new();
