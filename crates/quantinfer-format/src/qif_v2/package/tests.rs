@@ -2,6 +2,8 @@ use super::*;
 use crate::TensorManifest;
 use quantinfer_core::{DType, Shape, TensorStorageDescriptor};
 
+mod alignment;
+
 fn path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qif-package-{name}-{}", std::process::id()))
 }

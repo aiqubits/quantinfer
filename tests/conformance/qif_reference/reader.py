@@ -185,7 +185,7 @@ def report(path, trusted_keys=()):
             if position == start:
                 require(offset == tensor['data_offset'], 'tensor data offset differs')
             if shard_id in ends:
-                require(offset == (ends[shard_id] + 4095) // 4096 * 4096, 'chunk alignment sequence differs')
+                require(offset >= ends[shard_id], 'chunk overlap or order differs')
             ends[shard_id] = offset + length
             require(chunk['codec'] == tensor['codec'] and chunk['raw_offset'] == raw_total,
                     'chunk codec/raw offset differs')

@@ -1131,8 +1131,8 @@ fn parse_index(
                         .stored_offset
                         .checked_add(previous.stored_length)
                         .ok_or_else(|| invalid("tensor stored offset overflows"))?;
-                    if chunk.stored_offset != align_u64(previous_end)? {
-                        return Err(invalid("tensor chunk offsets are not aligned"));
+                    if chunk.stored_offset < previous_end {
+                        return Err(invalid("tensor chunks overlap or are out of order"));
                     }
                 }
                 if chunk.raw_offset != raw_sum {
@@ -1377,14 +1377,6 @@ fn u32_at(bytes: &[u8], offset: usize) -> u32 {
 
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-
-fn align_u64(offset: u64) -> Result<u64> {
-    let alignment = ALIGNMENT as u64;
-    offset
-        .checked_add(alignment - 1)
-        .map(|value| value / alignment * alignment)
-        .ok_or_else(|| invalid("offset alignment overflows"))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

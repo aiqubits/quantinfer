@@ -248,6 +248,14 @@ raw_offset u64, raw_length u64, stored_offset u64, stored_length u64
 chunk_sha256[32]
 ```
 
+`name_ref` 与 `shape_ref` 是相对于各自 table 起点的字节偏移，不是项目序号；
+该位置分别以 string length 或 shape rank 开始。`tensor_id` 必须等于其在 tensor
+record 数组内从零开始的位置。tensor record 的 `flags` 和两个 `reserved` 必须为零。
+`chunk_start` 是从零开始的 chunk record 序号，`chunk_count` 指定连续记录数量。
+同一物理 tensor 的所有 chunk 必须使用与 tensor record 相同的 codec。
+`stored_length` 是这些 chunk 的 stored length 之和，不包含块间 padding；
+`data_offset` 等于首个 chunk 的 `stored_offset`，其基址见 §6.1。
+
 每个 tensor record MUST 包含：
 
 ```text
@@ -352,6 +360,10 @@ tensor，视图 shape 为 `[B,A]`，视图坐标 `(b,a)` 对应原生坐标 `(a,
 
 如果多个逻辑 tensor 共享相同物理 payload，除第一个 tensor 外，其余 tensor MUST 使用 `alias_target`，不得重复写入相同 bytes。
 
+alias 必须指向序号更小的物理 tensor，不得指向另一个 alias；alias record 的
+`chunk_count` 必须为零，其 shape、encoding、layout、codec、长度、checksum 和
+`data_offset` 必须与目标一致。
+
 当前 QIF2-SINGLE 与 QIF2-PACKAGE writer 会在 tensor descriptor 和原始 payload
 一致时自动去重并生成 alias record；reader、file-backed reader 和 package reader
 都会沿 alias 解析到物理 tensor。低层 `tensor_data`/`read_range` 与显式全量
@@ -382,6 +394,16 @@ v2.0 的文件 section 起点与 chunk 的物理 `stored_offset` MUST 是 4096 �
 默认 alignment 为
 4096 字节；实现 MAY 使用更大的 64 KiB 或 2 MiB 对齐。选择的 alignment 必须
 是 2 的幂，且不小于 4096 字节。
+
+SINGLE 的 `stored_offset` 和 tensor `data_offset` 是相对于 header 所指定
+payload section 起点的字节偏移；实际文件位置为 `payload_offset + stored_offset`。
+PACKAGE 的相应偏移相对于该 chunk 所属 shard 文件的起点。
+reader 必须使用显式 offset 定位，不得假定下一块紧邻
+`align_4096(previous_end)`；块间允许 padding，以支持较大的物理对齐。
+同一 tensor 在同一文件／shard 内的 chunk 按 raw 顺序物理递增且不得重叠，
+不同物理 tensor 的 chunk 也不得重叠。padding 不属于 chunk 或 tensor 的内容，
+不计入其长度及内容 hash；index 中的偏移仍受 root hash 保护。此规则不改变
+writer 默认的 4 KiB 放置，也不要求 reader 推断 writer 选择了哪一种较大对齐。
 
 无压缩 chunk MUST 可以通过 offset/length 直接读取；压缩 chunk MUST 可以独立解压和
 独立校验，禁止使用跨 chunk 的连续压缩流。mmap 的零拷贝 tensor 视图只适用于
@@ -609,7 +631,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前公开 API 为 `quantinfer_format::qif::plan_qif_reshard`，已有跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；141 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
+8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；177 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
 9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 

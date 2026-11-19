@@ -14,7 +14,9 @@ converted before entering `quantinfer-core`, `quantinfer-kernel`, or
 Qwen3 Dense is the original model target. Its loader validates head dimensions,
 grouped-query attention, Q/K head RMSNorm, RoPE configuration,
 `tie_word_embeddings`, and unsupported sliding-window or custom RoPE scaling
-fields. Llama Dense is also represented by a separate model/runtime module.
+fields. The RoPE dimension, value head width and scaling checks apply to both
+native and GGML dimension profiles; storage order does not alter model semantics.
+Llama Dense is also represented by a separate model/runtime module.
 MoE and sliding-window execution remain outside the supported scope.
 
 The runtime supports single-sequence prefill/decode, request-local KV caches,

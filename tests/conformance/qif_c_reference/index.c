@@ -185,8 +185,7 @@ Json parse_index(Bytes data, Json model, const Shards *shards) {
           k--;
           if (chunks[k].shard == chunk->shard) {
             uint64_t end = chunks[k].offset + chunks[k].stored;
-            CHECK(end <= UINT64_MAX - 4095 &&
-                  chunk->offset == (end + 4095) / 4096 * 4096);
+            CHECK(chunk->offset >= end);
             break;
           }
         }

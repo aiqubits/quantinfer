@@ -871,8 +871,8 @@ fn parse_package_index(
                     ));
                 }
                 if let Some(previous_end) = shard_end.get(&chunk.shard_id) {
-                    if chunk.stored_offset != align_u64(*previous_end)? {
-                        return Err(invalid("package tensor chunk offsets are not aligned"));
+                    if chunk.stored_offset < *previous_end {
+                        return Err(invalid("package tensor chunks overlap or are out of order"));
                     }
                 }
                 if chunk.raw_offset != raw_sum {
@@ -1062,14 +1062,6 @@ fn package_root_hash(
     }
     let bytes: [u8; HASH_SIZE] = digest.finalize().into();
     hex_encode(&bytes)
-}
-
-fn align_u64(offset: u64) -> Result<u64> {
-    let alignment = ALIGNMENT as u64;
-    offset
-        .checked_add(alignment - 1)
-        .map(|value| value / alignment * alignment)
-        .ok_or_else(|| invalid("package offset alignment overflows"))
 }
 
 fn resolve_path(root: &Path, relative: &str) -> Result<PathBuf> {

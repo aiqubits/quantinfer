@@ -9,7 +9,7 @@ matrix below does not prove every possible artifact or deployment correct.
 | Rust mmap | Same validated memory reader over a read-only mapping | Unsafe constructor requires backing-file immutability; borrowed uncompressed views; opening alone does not verify payload |
 | Rust/C/Python golden reports | Header bytes, parsed string/shape/tensor/chunk fields, section SHA-256, chunk/tensor digests, payload bytes | One unsigned/uncompressed F32 tensor containing `[1.0, 2.0]`, original and reordered control sections |
 | Cross-language negative fixtures | Payload corruption, overflowing index length, truncation, oversized rank with consistent root | All three processes must fail; this is not a general invalid-artifact equivalence proof |
-| Independent C/Python core profiles / native Rust | Full reports of model, typed QMB (floating IEEE bits), index records/chunks and reconstructed bytes; all eight encodings × two layouts, aliases, rank-zero scalars, three codecs × unsigned SINGLE/signed SINGLE/PACKAGE | 141 curated cases plus 12 reader corpus seeds: relocated controls, empty artifacts, multi-chunk/multi-shard reconstruction, repaired semantic failures, Unicode/NUL keys, report budgets and pinned-key trust policy; C runs with ASan/UBSan |
+| Independent C/Python core profiles / native Rust | Full reports of model, typed QMB (floating IEEE bits), index records/chunks and reconstructed bytes; all eight encodings × two layouts, aliases, rank-zero scalars, three codecs × unsigned SINGLE/signed SINGLE/PACKAGE | 177 curated cases plus 12 reader corpus seeds: relocated controls, empty artifacts, multi-chunk/multi-shard reconstruction, repaired semantic failures, Unicode/NUL keys, report budgets and pinned-key trust policy; C runs with ASan/UBSan |
 | Linux resource limits | Six 64 MiB tensor/alias fixtures verified through both native and runtime file-backed readers in separate processes with a 48 MiB address-space limit; unknown overlapping names fail cleanly | SINGLE/PACKAGE with none/zstd/LZ4, writer-default chunks; not a universal peak-memory bound |
 | Runtime loading | Control-only open, cold-corruption isolation, per-tensor raw hashes, shared alias cache, typed reads without retained raw bytes, storage budget preflight | Fixed local inference/encoding tests and explicit real-model CI profile/codec matrix; not layer-level out-of-core execution |
 | Instrumented fuzz | Reader, global PACKAGE index, PACKAGE JSON/QMB/path/shard mutations; default runtime comparison; see [fuzz/README.md](../../fuzz/README.md) | Three bounded ASan targets; quick smoke plus scheduled time-budget runs, saved corpus/log/crash artifacts; not exhaustive safety proof |
@@ -86,7 +86,7 @@ python3 tests/conformance/qif_profile_cross_language.py \
   --c-reader /tmp/qif-c-reference --corpus "$PWD/fuzz/corpus/qif_v2_reader"
 ```
 
-The 141 curated cases include eight fully rehashed non-finite encoding fixtures, broken
+The 177 curated cases include eight fully rehashed non-finite encoding fixtures, broken
 signature bytes/key/envelope and a new authenticated root with an old signature.
 The PACKAGE cases cover traversal, absolute paths, symlink escape, duplicate
 JSON/shards, coordinates, shard lists/ranges/sizes/digests and overlapping data.
@@ -137,5 +137,15 @@ three independent reader implementations reject a non-boolean top-level
 `quantinfer.qif.ggml_dimension_order` during control validation. Four rehashed
 negative controls exercise integer/string/map/array types, and two positive
 controls retain false/true. Nested keys under an unknown hint remain ordinary
-metadata. The current matrix is 141 curated cases plus 12 corpus seeds, or
-153 checks per CI environment.
+metadata. The current matrix is 177 curated cases plus 12 corpus seeds, or
+189 checks per CI environment.
+
+Larger physical alignment is verified independently for none/zstd/LZ4, with
+4 KiB, 64 KiB and 2 MiB SINGLE sections/chunks and the same index/payload
+in PACKAGE shards. Eighteen positive and eighteen rehashed unaligned,
+overlapping or backward-offset cases extend the curated matrix. Tensor
+logical values and raw digests stay unchanged; padding is outside chunk
+lengths and content hashes. Readers locate explicit offsets rather than
+requiring the next chunk at the smallest possible 4 KiB boundary. Native
+Rust tests additionally compare memory/file/mmap/default loading, aliases
+and ranges spanning both chunks. Writers retain their existing 4 KiB default.

@@ -150,24 +150,21 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfi
         architectures: Vec::new(),
     };
     config.validate().map_err(RuntimeError::InvalidInput)?;
-    if ggml_layout {
-        for key in ["llama.rope.dimension_count", "llama.attention.value_length"] {
-            if metadata_usize(reader, key)?
-                .is_some_and(|value| value != config.effective_head_dim())
-            {
-                return Err(RuntimeError::InvalidInput(format!(
-                    "unsupported GGML metadata {key}"
-                )));
-            }
+    // Storage dimension order does not change the model's attention semantics.
+    for key in ["llama.rope.dimension_count", "llama.attention.value_length"] {
+        if metadata_usize(reader, key)?.is_some_and(|value| value != config.effective_head_dim()) {
+            return Err(RuntimeError::InvalidInput(format!(
+                "unsupported model metadata {key}"
+            )));
         }
-        if reader
-            .metadata_value("llama.rope.scaling.type")?
-            .is_some_and(|value| value != &GgufValue::String("none".to_owned()))
-        {
-            return Err(RuntimeError::InvalidInput(
-                "custom GGML RoPE scaling is unsupported".to_owned(),
-            ));
-        }
+    }
+    if reader
+        .metadata_value("llama.rope.scaling.type")?
+        .is_some_and(|value| !matches!(value, GgufValue::String(kind) if kind == "none"))
+    {
+        return Err(RuntimeError::InvalidInput(
+            "custom RoPE scaling is unsupported".to_owned(),
+        ));
     }
     Ok(config)
 }

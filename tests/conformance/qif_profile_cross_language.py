@@ -11,6 +11,8 @@ import subprocess
 import sys
 import tempfile
 
+from qif_alignment_fixtures import aligned_single, package_from_single
+
 from qif_reference.schema import canonical
 
 
@@ -265,6 +267,36 @@ def main():
                     check(relocated, True)
         for name in ('empty.qif', 'empty-package', 'multi-chunk-zstd.qif', 'multi-chunk-lz4.qif'):
             check(fixtures / name, True)
+        # Larger physical alignment leaves authenticated offsets and logical
+        # bytes intact. The readers must not require tightly packed 4 KiB gaps.
+        for codec in ('none', 'zstd', 'lz4'):
+            source_codec = 'zstd' if codec == 'none' else codec
+            source = (fixtures / f'multi-chunk-{source_codec}.qif').read_bytes()
+            for alignment in (4096, 65536, 2097152):
+                data = aligned_single(source, alignment, codec == 'none')
+                path = root / f'alignment-{codec}-{alignment}.qif'
+                path.write_bytes(data)
+                check(path, True)
+                package = root / f'alignment-{codec}-{alignment}-package'
+                document = package_from_single(data, package)
+                repair_package(package, document)
+                check(package, True)
+            for defect in ('unaligned', 'overlap', 'backward'):
+                data = aligned_single(source, 65536, codec == 'none')
+                index, record, chunks = locations(data)
+                if defect == 'backward':
+                    struct.pack_into('<Q', data, chunks + 24, 65536)
+                    struct.pack_into('<Q', data, record + 64, 65536)
+                struct.pack_into('<Q', data, chunks + 72 + 24,
+                                 65537 if defect == 'unaligned' else 0)
+                repair_single(data)
+                path = root / f'bad-alignment-{codec}-{defect}.qif'
+                path.write_bytes(data)
+                check(path, False)
+                package = root / f'bad-alignment-{codec}-{defect}-package'
+                document = package_from_single(data, package)
+                repair_package(package, document)
+                check(package, False)
         # Valid wire input, deliberately beyond the reporting tools' budget:
         # aliases must count toward expanded report bytes, not only disk bytes.
         check(fixtures / 'alias-report-budget.qif', False)
