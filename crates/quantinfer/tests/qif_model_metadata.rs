@@ -4,7 +4,7 @@
 mod fixture;
 
 use quantinfer::{
-    cpu::{resolve_backend, CpuModel, ModelSource},
+    cpu::{estimated_weight_bytes, resolve_backend, validate_memory_budget, CpuModel, ModelSource},
     format::{qif, qif::MetadataValue, GgufReader},
     runtime::DecoderModel,
 };
@@ -14,6 +14,37 @@ struct Root(PathBuf);
 impl Drop for Root {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn native_cpu_budget_counts_file_buffers_and_layout_workspace() {
+    let root =
+        Root(std::env::temp_dir().join(format!("quantinfer-model-budget-{}", std::process::id())));
+    fs::create_dir(&root.0).unwrap();
+    let source = fixture::model("llama");
+    for mixed_layout in [false, true] {
+        let artifact = fixture::publication(&source, "llama", false, mixed_layout);
+        let file = root.0.join(format!("layout-{mixed_layout}.qif"));
+        qif::write_qif(
+            artifact.manifest,
+            &artifact.metadata,
+            |name| Ok(artifact.data[name].as_slice()),
+            &mut fs::File::create(&file).unwrap(),
+        )
+        .unwrap();
+        let reader = ModelSource::open(&file).unwrap().open_reader(None).unwrap();
+        assert!(reader.is_file_backed());
+        let spec = CpuModel::spec_from_gguf(&reader, None).unwrap();
+        let base = reader.loading_memory_bytes().unwrap()
+            + estimated_weight_bytes(&reader, &spec).unwrap();
+        // The largest floating output-row matrix in this fixture is 8 × 16.
+        let budget = base + if mixed_layout { 512 } else { 0 };
+        validate_memory_budget(&reader, &spec, 12, 1, budget).unwrap();
+        let error = validate_memory_budget(&reader, &spec, 12, 1, budget - 1).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains(&format!("estimate is {budget} bytes")));
     }
 }
 

@@ -8,7 +8,8 @@ use quantinfer_core::{
 use quantinfer_format::{GgmlType, GgufReader, ModelManifest};
 use quantinfer_model::{ModelSpec, TensorRole};
 use quantinfer_runtime::{
-    ExecutionRequest, ExecutionResolver, InferenceProfile, Operation, Result, RuntimeError,
+    ExecutionRequest, ExecutionResolver, InferenceProfile, MemoryPlan, Operation, Result,
+    RuntimeError,
 };
 
 mod model;
@@ -223,6 +224,52 @@ pub fn estimated_weight_bytes(reader: &GgufReader, spec: &ModelSpec) -> Result<u
         bytes = bytes.checked_add(head_bytes).ok_or_else(invalid)?;
     }
     Ok(bytes)
+}
+
+/// Check estimated CPU weight loading and inference buffers against the budget.
+pub fn validate_memory_budget(
+    reader: &GgufReader,
+    spec: &ModelSpec,
+    context: usize,
+    prefill_tokens: usize,
+    budget: usize,
+) -> Result<()> {
+    let weights = estimated_weight_bytes(reader, spec)?;
+    let ggml = reader.uses_ggml_output_rows()?;
+    let overflow =
+        || RuntimeError::InvalidInput("model loading memory size overflows usize".to_owned());
+    let mut layout_workspace = 0;
+    for tensor in reader
+        .tensors()
+        .iter()
+        .filter(|tensor| tensor.shape.len() == 2)
+    {
+        let floating = matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16);
+        let needs_workspace = if ggml {
+            // Some GGML weights coexist with a decoded or reordered copy.
+            tensor.name != "token_embd.weight" || !floating
+        } else {
+            floating && reader.matrix_uses_output_rows(&tensor.name)?
+        };
+        if needs_workspace {
+            let bytes = tensor.shape[0]
+                .checked_mul(tensor.shape[1])
+                .and_then(|elements| elements.checked_mul(size_of::<f32>()))
+                .ok_or_else(overflow)?;
+            layout_workspace = layout_workspace.max(bytes);
+        }
+    }
+    let loading_bytes = reader
+        .loading_memory_bytes()?
+        .checked_add(weights)
+        .and_then(|bytes| bytes.checked_add(layout_workspace))
+        .ok_or_else(overflow)?;
+    if loading_bytes > budget {
+        return Err(RuntimeError::InvalidInput(format!(
+            "the model loading estimate is {loading_bytes} bytes, budget is {budget}"
+        )));
+    }
+    MemoryPlan::for_dense_prefill(spec, weights, context, prefill_tokens)?.ensure_budget(budget)
 }
 
 #[cfg(test)]

@@ -99,6 +99,23 @@ def check(args):
             assert profile["settings"]["quantization_variant"] == "q4_0"
             call(base, profile_path, method="PUT", body=configuration | {"memory_budget_bytes": 1}, expect=400)
             assert call(base, profile_path) == profile
+            budget = 500_000_000
+            bounded_path = "/studio/api/profiles/bounded"
+            bounded = call(base, bounded_path, method="PUT",
+                           body=configuration | {"memory_budget_bytes": budget})
+            assert bounded["settings"]["memory_budget_bytes"] == budget
+            call(base, "/studio/api/models/bounded", method="PUT",
+                 body={"source": source, "profile": "bounded"}, expect=204)
+            bounded_generation = {"model": "bounded", "tokens": [1, 2], "max_new_tokens": 1}
+            bounded_tokens = call(base, "/v1/generate", method="POST", body=bounded_generation)["tokens"]
+            expected = subprocess.check_output([
+                args.cli, "generate", "--input", package, "--tokens", "1,2",
+                "--max-sequence-length", "12", "--max-new-tokens", "1",
+                "--memory-budget-bytes", str(budget),
+            ], text=True)
+            assert f"generated_tokens={bounded_tokens}" in expected
+            call(base, "/studio/api/models/bounded", method="DELETE", expect=204)
+            call(base, bounded_path, method="DELETE", expect=204)
             registration = {"source": source, "profile": "short-context", "lora": "peft"}
             call(base, "/studio/api/models/smol", method="PUT", body=registration, expect=204)
             call(base, "/studio/api/models/smol", method="PUT", body=registration | {"source": "smol.gguf"}, expect=400)

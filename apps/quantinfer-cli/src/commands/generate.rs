@@ -1,14 +1,13 @@
 //! CPU generation command and memory planning helpers.
 
 use std::fs;
-use std::mem::size_of;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
+use quantinfer::cpu::{load_gguf_tokenizer, validate_memory_budget, CpuModel, ModelSource};
 use quantinfer::model::ModelSpec;
-use quantinfer_format::{GgmlType, GgufReader};
-use quantinfer_runtime::{select_token, GenerationConfig, MemoryPlan};
+use quantinfer_format::GgufReader;
+use quantinfer_runtime::{select_token, GenerationConfig};
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
 
 use super::common::{last_logits, parse_options, parse_token_ids};
@@ -412,42 +411,6 @@ fn check_memory_plan(
     let Some(budget) = budget else {
         return Ok(());
     };
-    let weights = quantinfer::cpu::estimated_weight_bytes(reader, spec)
-        .map_err(|error| format!("cannot estimate CPU weight memory: {error}"))?;
-    let workspace = if reader
-        .uses_ggml_output_rows()
-        .map_err(|error| error.to_string())?
-    {
-        // GGML weights can coexist with a decoded or reordered copy during loading.
-        reader
-            .tensors()
-            .iter()
-            .filter(|tensor| tensor.shape.len() == 2)
-            .filter(|tensor| {
-                tensor.name != "token_embd.weight"
-                    || !matches!(tensor.dtype, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
-            })
-            .try_fold(0usize, |largest, tensor| {
-                let elements = tensor.shape[0].checked_mul(tensor.shape[1])?;
-                Some(largest.max(elements))
-            })
-            .and_then(|elements| elements.checked_mul(size_of::<f32>()))
-            .ok_or_else(|| "model loading workspace size overflows usize".to_owned())?
-    } else {
-        0
-    };
-    let loading_bytes = reader
-        .loading_memory_bytes()
-        .map_err(|error| error.to_string())?
-        .checked_add(weights)
-        .and_then(|bytes| bytes.checked_add(workspace))
-        .ok_or_else(|| "model loading memory size overflows usize".to_owned())?;
-    if loading_bytes > budget {
-        return Err(format!(
-            "memory budget check failed: the model loading estimate is {loading_bytes} bytes, budget is {budget}"
-        ));
-    }
-    MemoryPlan::for_dense_prefill(spec, weights, context, prompt_length)
-        .and_then(|plan| plan.ensure_budget(budget))
+    validate_memory_budget(reader, spec, context, prompt_length, budget)
         .map_err(|error| format!("memory budget check failed: {error}"))
 }

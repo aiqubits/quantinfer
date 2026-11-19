@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use quantinfer::cpu::{
-    estimated_weight_bytes, load_gguf_tokenizer, resolve_profiled_backend, CpuModel, ModelSource,
+    load_gguf_tokenizer, resolve_profiled_backend, validate_memory_budget, CpuModel, ModelSource,
 };
 use quantinfer::format::{ExecutionVariant, GgufReader, ModelManifest};
-use quantinfer::runtime::{InferenceProfile, MemoryPlan};
+use quantinfer::runtime::InferenceProfile;
 use quantinfer::tokenizer::GgufBpeTokenizer;
 use serde::{Deserialize, Serialize};
 
@@ -62,6 +62,12 @@ impl ServedModel {
         let reader = source
             .open_reader(budget)
             .map_err(|error| error.to_string())?;
+        let manifest = source.package().map(|package| &package.manifest);
+        let profiled = entry
+            .profile
+            .as_ref()
+            .map(|profile| validated_profile(&reader, manifest, profile))
+            .transpose()?;
         if managed && reader.qif_metadata().is_some() {
             reader.verify_qif().map_err(|error| error.to_string())?;
         }
@@ -72,12 +78,6 @@ impl ServedModel {
             .then(|| load_gguf_tokenizer(&reader))
             .transpose()
             .map_err(|error| error.to_string())?;
-        let manifest = source.package().map(|package| &package.manifest);
-        let profiled = entry
-            .profile
-            .as_ref()
-            .map(|profile| validated_profile(&reader, manifest, profile))
-            .transpose()?;
         let adapter = entry
             .lora
             .as_ref()
@@ -157,31 +157,13 @@ pub(crate) fn validated_profile(
     }
     resolve_profiled_backend(reader, &manifest, profile).map_err(|error| error.to_string())?;
     if let Some(budget) = profile.memory_budget_bytes {
-        let weights = estimated_weight_bytes(reader, &spec).map_err(|error| error.to_string())?;
-        let largest_tensor = reader
-            .tensors()
-            .iter()
-            .map(|tensor| tensor.size)
-            .max()
-            .unwrap_or(0);
-        let loading = reader
-            .loading_memory_bytes()
-            .map_err(|error| error.to_string())?
-            .checked_add(weights)
-            .and_then(|bytes| bytes.checked_add(largest_tensor))
-            .ok_or("model memory estimate exceeds usize")?;
-        if loading > budget {
-            return Err(format!(
-                "profile budget {budget} is below the model loading estimate {loading}"
-            ));
-        }
-        MemoryPlan::for_dense_prefill(
+        validate_memory_budget(
+            reader,
             &spec,
-            weights,
             profile.context_length,
             profile.context_length,
+            budget,
         )
-        .and_then(|plan| plan.ensure_budget(budget))
         .map_err(|error| error.to_string())?;
     }
     Ok(manifest)
