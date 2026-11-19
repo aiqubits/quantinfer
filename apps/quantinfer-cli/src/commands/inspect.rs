@@ -8,15 +8,15 @@ use quantinfer_format::{
 };
 use serde_json::{json, Value};
 
-use super::common::{has_flag, option_value};
+use super::common::Options;
 
-pub(crate) fn inspect_gguf(arguments: &[String]) -> Result<(), String> {
-    let path = input(arguments)?;
-    let source = ModelSource::open(&path).map_err(|error| error.to_string())?;
+pub(crate) fn inspect_gguf(options: &Options<'_>) -> Result<(), String> {
+    let path = input(options)?;
+    let source = ModelSource::open(path).map_err(|error| error.to_string())?;
     let reader = source
         .open_reader(None)
         .map_err(|error| error.to_string())?;
-    if has_flag(arguments, "--json") {
+    if options.has("--json") {
         println!(
             "{}",
             json!({"metadata": reader.metadata(), "tensors": reader.tensors()})
@@ -36,13 +36,15 @@ pub(crate) fn inspect_gguf(arguments: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn input(arguments: &[String]) -> Result<String, String> {
-    option_value(arguments, "--input")?.ok_or_else(|| "provide --input PATH".into())
+fn input<'a>(options: &Options<'a>) -> Result<&'a str, String> {
+    options
+        .value("--input")
+        .ok_or_else(|| "provide --input PATH".into())
 }
 
-pub(crate) fn native(arguments: &[String], verify: bool) -> Result<(), String> {
-    let input = input(arguments)?;
-    let path = Path::new(&input);
+pub(crate) fn native(options: &Options<'_>, verify: bool) -> Result<(), String> {
+    let input = input(options)?;
+    let path = Path::new(input);
     let report = if path.is_dir() {
         if path.join("manifest.json").exists() {
             return Err("native QIF commands require a qif.json package without manifest.json; use inspect-gguf or verify-package for a manifest.json model package".into());
@@ -71,7 +73,7 @@ pub(crate) fn native(arguments: &[String], verify: bool) -> Result<(), String> {
             verify,
         )
     };
-    if has_flag(arguments, "--json") {
+    if options.has("--json") {
         println!("{report}");
     } else {
         println!(

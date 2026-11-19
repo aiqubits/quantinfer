@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::mem::size_of;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use quantinfer::cpu::{load_gguf_tokenizer, CpuModel, ModelSource};
@@ -11,12 +11,12 @@ use quantinfer_format::{GgmlType, GgufReader};
 use quantinfer_runtime::{select_token, GenerationConfig, MemoryPlan};
 use quantinfer_tokenizer::{ChatMessage, Qwen3ChatTemplate, ThinkingMode, Tokenizer};
 
-use super::common::{has_flag, last_logits, option_value, parse_token_ids, validate_options};
+use super::common::{last_logits, parse_options, parse_token_ids};
 use super::package::load_inference_profile;
 use crate::backend::Backend;
 
 pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
-    validate_options(
+    let options = parse_options(
         arguments,
         &[
             ("--backend", true),
@@ -31,23 +31,26 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
             ("--max-sequence-length", true),
             ("--memory-budget-bytes", true),
             ("--profile", false),
+            ("--profile-report", true),
             ("--inference-profile", true),
             ("--chat", false),
             ("--role", true),
             ("--think", false),
         ],
     )?;
-    let backend = Backend::parse(option_value(arguments, "--backend")?.as_deref())?;
-    let path = option_value(arguments, "--input")?
+    let backend = Backend::parse(options.value("--backend"))?;
+    let path = options
+        .value("--input")
         .map(PathBuf::from)
         .ok_or_else(|| "generate requires --input".to_owned())?;
-    let lora = option_value(arguments, "--lora")?.map(PathBuf::from);
-    let token_ids = option_value(arguments, "--tokens")?;
-    let prompt_text = option_value(arguments, "--prompt")?;
+    let lora = options.value("--lora").map(PathBuf::from);
+    let token_ids = options.value("--tokens");
+    let prompt_text = options.value("--prompt");
     if token_ids.is_some() == prompt_text.is_some() {
         return Err("generate requires exactly one of --tokens or --prompt".to_owned());
     }
-    let max_new_tokens = option_value(arguments, "--max-new-tokens")?
+    let max_new_tokens = options
+        .value("--max-new-tokens")
         .map(|value| {
             value
                 .parse::<usize>()
@@ -55,7 +58,8 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or(GenerationConfig::default().max_new_tokens);
-    let temperature = option_value(arguments, "--temperature")?
+    let temperature = options
+        .value("--temperature")
         .map(|value| {
             value
                 .parse::<f32>()
@@ -63,14 +67,16 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or(0.0);
-    let eos_token_id = option_value(arguments, "--eos-token-id")?
+    let eos_token_id = options
+        .value("--eos-token-id")
         .map(|value| {
             value
                 .parse::<usize>()
                 .map_err(|error| format!("invalid --eos-token-id: {error}"))
         })
         .transpose()?;
-    let seed = option_value(arguments, "--seed")?
+    let seed = options
+        .value("--seed")
         .map(|value| {
             value
                 .parse::<u64>()
@@ -78,22 +84,28 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
         })
         .transpose()?
         .unwrap_or(GenerationConfig::default().seed);
-    let requested_max_sequence_length = option_value(arguments, "--max-sequence-length")?
+    let requested_max_sequence_length = options
+        .value("--max-sequence-length")
         .map(|value| {
             value
                 .parse::<usize>()
                 .map_err(|error| format!("invalid --max-sequence-length: {error}"))
         })
         .transpose()?;
-    let memory_budget_bytes = option_value(arguments, "--memory-budget-bytes")?
+    let memory_budget_bytes = options
+        .value("--memory-budget-bytes")
         .map(|value| {
             value
                 .parse::<usize>()
                 .map_err(|error| format!("invalid --memory-budget-bytes: {error}"))
         })
         .transpose()?;
-    let profile = has_flag(arguments, "--profile");
-    let inference_profile_name = option_value(arguments, "--inference-profile")?;
+    let profile_report = options.value("--profile-report").map(PathBuf::from);
+    if profile_report.as_ref().is_some_and(|path| path.exists()) {
+        return Err("profile report already exists".into());
+    }
+    let profile = options.has("--profile") || profile_report.is_some();
+    let inference_profile_name = options.value("--inference-profile");
     if backend != Backend::Cpu
         && (memory_budget_bytes.is_some() || inference_profile_name.is_some())
     {
@@ -105,7 +117,7 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
     let source = ModelSource::open(&path).map_err(|error| error.to_string())?;
     let package = source.package();
     let inference_profile = inference_profile_name
-        .map(|name| load_inference_profile(package, &name))
+        .map(|name| load_inference_profile(package, name))
         .transpose()?;
     let (requested_max_sequence_length, memory_budget_bytes) =
         if let Some(profile) = &inference_profile {
@@ -134,16 +146,16 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
         None
     };
     let prompt_tokens = if let Some(token_ids) = token_ids {
-        let prompt_tokens = parse_token_ids(&token_ids)?;
+        let prompt_tokens = parse_token_ids(token_ids)?;
         if prompt_tokens.is_empty() {
             return Err("--tokens must contain at least one token id".to_owned());
         }
         prompt_tokens
     } else {
         let prompt_text = prompt_text.expect("prompt text was checked above");
-        let prompt_text = if has_flag(arguments, "--chat") {
-            let role = option_value(arguments, "--role")?.unwrap_or_else(|| "user".to_owned());
-            let thinking = if has_flag(arguments, "--think") {
+        let prompt_text = if options.has("--chat") {
+            let role = options.value("--role").unwrap_or("user");
+            let thinking = if options.has("--think") {
                 ThinkingMode::Enabled
             } else {
                 ThinkingMode::Disabled
@@ -152,7 +164,7 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
                 .render(&[ChatMessage::new(role, prompt_text)], thinking, true)
                 .map_err(|error| error.to_string())?
         } else {
-            prompt_text
+            prompt_text.to_owned()
         };
         tokenizer
             .as_ref()
@@ -285,29 +297,88 @@ pub(crate) fn generate(arguments: &[String]) -> Result<(), String> {
     }
     if let (Some(first), Some(last)) = (first_token_at, last_token_at) {
         let decode = last.duration_since(first);
-        println!(
-            "model_load_ms={:.3}",
-            model_load_elapsed.as_secs_f64() * 1000.0
-        );
-        println!(
-            "ttft_ms={:.3}",
-            first.duration_since(prefill_started).as_secs_f64() * 1000.0
-        );
-        println!("profile_decode_ms={:.3}", decode.as_secs_f64() * 1000.0);
-        if !decode.is_zero() {
-            println!(
-                "profile_decode_tokens_per_sec={:.3}",
-                (generated.len() - 1) as f64 / decode.as_secs_f64()
-            );
+        let model_load_ms = model_load_elapsed.as_secs_f64() * 1000.0;
+        let ttft_ms = first.duration_since(prefill_started).as_secs_f64() * 1000.0;
+        let profile_decode_ms = decode.as_secs_f64() * 1000.0;
+        let profile_decode_tokens_per_sec =
+            (!decode.is_zero()).then(|| (generated.len() - 1) as f64 / decode.as_secs_f64());
+        let peak_rss = peak_rss_kib();
+        println!("model_load_ms={:.3}", model_load_ms);
+        println!("ttft_ms={:.3}", ttft_ms);
+        println!("profile_decode_ms={profile_decode_ms:.3}");
+        if let Some(rate) = profile_decode_tokens_per_sec {
+            println!("profile_decode_tokens_per_sec={rate:.3}");
         }
         println!("kv_cache_bytes={}", cache.memory_bytes());
         println!("kv_cache_capacity_bytes={}", cache.capacity_bytes());
         println!("max_sequence_length={max_sequence_length}");
         println!(
             "peak_rss_kib={}",
-            peak_rss_kib().map_or_else(|| "unmeasured".to_owned(), |rss| rss.to_string())
+            peak_rss.map_or_else(|| "unmeasured".to_owned(), |rss| rss.to_string())
         );
+        if let Some(report) = profile_report {
+            write_profile_report(
+                &report,
+                &path,
+                serde_json::json!({
+                    "model_load_ms": model_load_ms,
+                    "prefill_ms": prefill_elapsed.as_secs_f64() * 1000.0,
+                    "ttft_ms": ttft_ms,
+                    "decode_tokens": generated.len(),
+                    "profile_decode_ms": profile_decode_ms,
+                    "profile_decode_tokens_per_sec": profile_decode_tokens_per_sec,
+                    "kv_cache_bytes": cache.memory_bytes(),
+                    "kv_cache_capacity_bytes": cache.capacity_bytes(),
+                    "max_sequence_length": max_sequence_length,
+                    "peak_rss_kib": peak_rss,
+                }),
+            )?;
+        }
     }
+    Ok(())
+}
+
+fn write_profile_report(
+    report: &Path,
+    artifact: &Path,
+    metrics: serde_json::Value,
+) -> Result<(), String> {
+    let digest_path = if artifact.is_dir() {
+        let qif = artifact.join("qif.json");
+        if qif.is_file() {
+            qif
+        } else {
+            artifact.join("manifest.json")
+        }
+    } else {
+        artifact.to_owned()
+    };
+    let digest = |path: &Path| -> Result<String, String> {
+        let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+        quantinfer_format::sha256_reader(&mut file).map_err(|e| e.to_string())
+    };
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let data = serde_json::json!({
+        "schema_version": 1,
+        "metrics": metrics,
+        "artifact_sha256": digest(&digest_path)?,
+        "artifact_digest_scope": if artifact.is_dir() { "manifest" } else { "whole_file" },
+        "cli_sha256": digest(&executable)?,
+        "cache_state": "uncontrolled",
+    });
+    let parent = report
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut stage = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    serde_json::to_writer(&mut stage, &data).map_err(|error| error.to_string())?;
+    stage
+        .as_file()
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+    stage
+        .persist_noclobber(report)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

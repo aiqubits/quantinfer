@@ -46,8 +46,7 @@ PACKAGE and SINGLE signatures. See the
 
 ## Remaining plan boundaries
 
-The full general plan's later phases are not complete. The GPTQ adapter now
-also has a full-Hessian calibrated matrix producer for native signed Q4_0/Q8_0,
+The GPTQ adapter has a full-Hessian calibrated matrix producer for native signed Q4_0/Q8_0,
 with independent upstream vectors and a real SmolLM2 projection quality test.
 The optional converter `gptq` workflow now calibrates and replaces every dense
 projection, checks optional holdout gates and publishes verified QIF with exact
@@ -66,10 +65,10 @@ real-device acceptance remains separate. KleidiAI has a pinned native AArch64
 Q4_0 output-row microkernel with explicit activation-Q8 error checks and CPU
 fallbacks. The T-MAC boundary provides a native Rust LUT4 profile with AVX2/NEON
 selectors plus its downstream-kernel hook; it does not bundle the upstream
-TVM/autotuning stack. Studio currently provides
-registry browsing, generation and counters, not the full quantization,
-calibration and profile/package editing workflow. These are implementation
-gaps separate from outstanding vendor-hardware measurements.
+TVM/autotuning stack. [Studio](../../apps/quantinfer-server/README.md) provides
+local calibration, quantization, QIF packaging, profile and registry management,
+LoRA registration and model benchmark charts. Its fixed SmolLM2 workflow checks
+artifact integrity, task cancellation and restart persistence.
 
 ## Repository workflow
 

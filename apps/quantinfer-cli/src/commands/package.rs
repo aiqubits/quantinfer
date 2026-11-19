@@ -5,18 +5,19 @@ use std::collections::BTreeMap;
 use quantinfer_format::ModelPackage;
 use quantinfer_runtime::InferenceProfile;
 
-use super::common::{has_flag, option_value};
+use super::common::Options;
 
-pub(crate) fn open_package(arguments: &[String]) -> Result<ModelPackage, String> {
-    let path = option_value(arguments, "--input")?
+pub(crate) fn open_package(options: &Options<'_>) -> Result<ModelPackage, String> {
+    let path = options
+        .value("--input")
         .ok_or_else(|| "provide a model package directory with --input".to_owned())?;
     ModelPackage::open(path).map_err(|error| error.to_string())
 }
 
-pub(crate) fn verify_package(arguments: &[String]) -> Result<(), String> {
-    let package = open_package(arguments)?;
+pub(crate) fn verify_package(options: &Options<'_>) -> Result<(), String> {
+    let package = open_package(options)?;
     let verified = package.verify_all().map_err(|error| error.to_string())?;
-    if has_flag(arguments, "--json") {
+    if options.has("--json") {
         println!(
             "{}",
             serde_json::json!({ "manifest": package.manifest, "verified_artifacts": verified })
@@ -30,8 +31,8 @@ pub(crate) fn verify_package(arguments: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn list_profiles(arguments: &[String]) -> Result<(), String> {
-    let package = open_package(arguments)?;
+pub(crate) fn list_profiles(options: &Options<'_>) -> Result<(), String> {
+    let package = open_package(options)?;
     let profiles = package
         .manifest
         .checksums
@@ -45,7 +46,7 @@ pub(crate) fn list_profiles(arguments: &[String]) -> Result<(), String> {
             Ok((name, profile))
         })
         .collect::<Result<BTreeMap<_, _>, String>>()?;
-    if has_flag(arguments, "--json") {
+    if options.has("--json") {
         println!(
             "{}",
             serde_json::to_string(&profiles).map_err(|error| error.to_string())?

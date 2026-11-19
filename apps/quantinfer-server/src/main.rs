@@ -6,6 +6,7 @@ mod rate;
 mod registry;
 mod routes;
 mod state;
+mod studio;
 
 use std::env;
 use std::sync::{Arc, Mutex};
@@ -29,6 +30,7 @@ async fn main() {
     let args: Vec<_> = env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         println!("quantinfer-server [--bind ADDRESS] [--model NAME=PATH] [--model-registry FILE] [--context-length N] [--max-requests N] [--max-batch-sequences N] [--max-batch-tokens N] [--kv-budget-bytes N] [--request-timeout-ms N] [--requests-per-second N]");
+        println!("Studio management on loopback: --studio-dir DIR --studio-converter PATH --studio-cli PATH");
         return;
     }
     if let Err(error) = run(args).await {
@@ -39,16 +41,22 @@ async fn main() {
 
 async fn run(args: Vec<String>) -> Result<(), String> {
     let settings = Settings::parse(args)?;
-    let models = Arc::new(ModelRegistry::new(
-        settings.models,
-        settings.model_registry,
-    )?);
-    #[cfg(unix)]
-    let reload = models.watch()?;
     let listener = TcpListener::bind(&settings.bind)
         .await
         .map_err(|error| format!("cannot bind {}: {error}", settings.bind))?;
     let address = listener.local_addr().map_err(|error| error.to_string())?;
+    let jobs = settings
+        .studio
+        .as_ref()
+        .map(|studio| studio::Jobs::new(&studio.root, &studio.converter, &studio.cli, address))
+        .transpose()?;
+    let models = Arc::new(ModelRegistry::new(
+        settings.models,
+        settings.model_registry,
+        jobs.as_deref().map(studio::Jobs::registry_path),
+    )?);
+    #[cfg(unix)]
+    let reload = models.watch()?;
     let metrics = Arc::new(Metrics::default());
     let (queue, worker) = engine::start(
         settings.maximum_requests,
@@ -57,7 +65,7 @@ async fn run(args: Vec<String>) -> Result<(), String> {
         metrics.clone(),
     )?;
     let state = Arc::new(AppState {
-        models,
+        models: models.clone(),
         queue,
         metrics,
         context_length: settings.context_length,
@@ -66,16 +74,20 @@ async fn run(args: Vec<String>) -> Result<(), String> {
             .requests_per_second
             .map(|limit| Mutex::new(RateLimit::new(limit, Instant::now()))),
     });
-    let router = Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(|| async { Json(json!({"status": "ok"})) }))
         .route("/v1/models", get(list_models))
         .route("/v1/generate", post(generate))
         .route("/metrics", get(metrics_response))
         .route("/studio", get(studio))
         .route("/studio/api/registry", get(studio_registry))
-        .fallback(|| async { error_response((StatusCode::NOT_FOUND, "not_found".to_owned())) })
-        .layer(DefaultBodyLimit::max(64 * 1024))
         .with_state(state);
+    if let Some(jobs) = &jobs {
+        router = router.merge(studio::router(jobs.clone(), models));
+    }
+    let router = router
+        .fallback(|| async { error_response((StatusCode::NOT_FOUND, "not_found".to_owned())) })
+        .layer(DefaultBodyLimit::max(64 * 1024));
     println!("quantinfer-server listening on {address}");
     let served = axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
@@ -84,6 +96,9 @@ async fn run(args: Vec<String>) -> Result<(), String> {
     #[cfg(unix)]
     if let Some(reload) = reload {
         reload.abort();
+    }
+    if let Some(jobs) = jobs {
+        jobs.close().await;
     }
     served?;
     worker

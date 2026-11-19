@@ -18,6 +18,8 @@ mod reshard;
 mod signature;
 mod writer;
 
+pub use package::repack_package;
+
 pub(crate) use writer::{write_spooled_package, write_spooled_single};
 
 pub use metadata::MetadataValue;

@@ -14,7 +14,7 @@
 | 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter | GPTQ 完整 Hessian 与整模型流程已通过远端验收；AWQ 原生缩放、clipping 和 QIF 发布已通过 `34d7756` 的[整模型专项](https://github.com/aiqubits/quantinfer/actions/runs/44532255162/job/135588360329)。AutoRound 原生 SignRound 的独立 Torch 对照、小模型和真实 SmolLM2 整模型门禁本地通过，远端证据按自己的提交记录。LLM Compressor 已有 WNA16 Adapter |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
-| Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
+| Studio | 量化任务、校准 workflow、registry/profile/package 管理、LoRA 和 benchmark 可视化 | 固定 SmolLM2 已在本地通过 HTTP 校准、AWQ 发布、重分片与校验，Profile 和 LoRA 生效、失败清理、运行取消、benchmark JSON 和重启恢复。已接入 Model Conformance |
 | Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | `00049bd` 新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过；远端 CI 已成功 |
 | 模型参数与 QIF 对齐 | 已知模型参数按语义校验，不随存储维度模式跳过；SINGLE/PACKAGE 按显式偏移支持较大物理对齐，仍拒绝重叠、倒序和未对齐块 | `df4eb15` 本地 240 次模型加载、九种 codec/alignment 和三语言 189 项都通过；七个实际触发的远端 workflow 通过，含 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44523217346) |
 | 滑动窗口、分片资源与发布 | 两种 Dense adapter 明确拒绝不支持的滑动窗口；PACKAGE reader 以单分片句柄读取；writer 完成全量校验后发布 | 本地 288 次模型加载、64 分片与 32 描述符限制、暂存目录校验失败及清理回归、三语言 189 项通过。性能 CI 启用 `pipefail` 和补齐 CPU SIMD 变更触发；对应远端 CI 单列 |

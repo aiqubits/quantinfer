@@ -14,8 +14,16 @@ pub(crate) struct QifOptions {
 
 impl QifOptions {
     pub(crate) fn parse(arguments: &[String]) -> Result<Self, String> {
+        Self::parse_with_default(arguments, false)
+    }
+
+    pub(super) fn parse_with_default(
+        arguments: &[String],
+        default_package: bool,
+    ) -> Result<Self, String> {
         let package = match optional_value(arguments, "--qif-profile").as_deref() {
-            None | Some("single") => false,
+            None => default_package,
+            Some("single") => false,
             Some("package") => true,
             _ => return Err("--qif-profile must be single or package".into()),
         };
@@ -42,6 +50,11 @@ impl QifOptions {
             codec,
             shard_bytes,
         })
+    }
+
+    pub(super) fn repack(&self, reader: &GgufReader, output: &Path) -> Result<(), String> {
+        quantinfer_format::qif::repack_package(reader, output, self.shard_bytes, self.codec)
+            .map_err(|error| error.to_string())
     }
 
     pub(super) fn publish(

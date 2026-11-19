@@ -11,6 +11,7 @@ pub(crate) struct Settings {
     pub(crate) bind: String,
     pub(crate) models: BTreeMap<String, PathBuf>,
     pub(crate) model_registry: Option<PathBuf>,
+    pub(crate) studio: Option<StudioSettings>,
     pub(crate) context_length: usize,
     pub(crate) maximum_requests: usize,
     pub(crate) batch: engine::BatchLimits,
@@ -19,12 +20,19 @@ pub(crate) struct Settings {
     pub(crate) requests_per_second: Option<NonZeroUsize>,
 }
 
+pub(crate) struct StudioSettings {
+    pub(crate) root: PathBuf,
+    pub(crate) converter: PathBuf,
+    pub(crate) cli: PathBuf,
+}
+
 impl Settings {
     pub(crate) fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
         let mut settings = Self {
             bind: "127.0.0.1:8080".to_owned(),
             models: BTreeMap::new(),
             model_registry: None,
+            studio: None,
             context_length: 512,
             maximum_requests: 8,
             batch: engine::BatchLimits {
@@ -36,6 +44,7 @@ impl Settings {
             requests_per_second: None,
         };
         let mut seen = BTreeSet::new();
+        let (mut studio_root, mut studio_converter, mut studio_cli) = (None, None, None);
         let mut args = args.into_iter();
         while let Some(flag) = args.next() {
             let value = args
@@ -73,6 +82,9 @@ impl Settings {
                     settings.request_timeout = Duration::from_millis(number()? as u64)
                 }
                 "--model-registry" => settings.model_registry = Some(PathBuf::from(value)),
+                "--studio-dir" => studio_root = Some(PathBuf::from(value)),
+                "--studio-converter" => studio_converter = Some(PathBuf::from(value)),
+                "--studio-cli" => studio_cli = Some(PathBuf::from(value)),
                 "--model" => {
                     let (name, path) = value
                         .split_once('=')
@@ -96,6 +108,17 @@ impl Settings {
         {
             return Err("context, request timeout and KV budget must be positive and --max-requests must be 1..=1024".to_owned());
         }
+        settings.studio = match (studio_root, studio_converter, studio_cli) {
+            (None, None, None) => None,
+            (Some(root), Some(converter), Some(cli)) => Some(StudioSettings {
+                root,
+                converter,
+                cli,
+            }),
+            _ => {
+                return Err("set --studio-dir, --studio-converter and --studio-cli together".into())
+            }
+        };
         Ok(settings)
     }
 }

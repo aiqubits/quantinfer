@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QuantInfer Studio</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.45 system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 1050px; padding: 2rem; }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+    h1 { margin: 0; }
+    .status { color: #087f5b; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+    section { border: 1px solid #8886; border-radius: .7rem; padding: 1rem; }
+    label { display: block; margin: .6rem 0 .2rem; }
+    textarea, input, select, button { box-sizing: border-box; font: inherit; width: 100%; padding: .5rem; }
+    textarea { min-height: 8rem; resize: vertical; }
+    button { cursor: pointer; margin-top: .8rem; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #8882; padding: .7rem; border-radius: .4rem; }
+    code { font-size: .9em; }
+    .sample { display: grid; grid-template-columns: 7rem 1fr 6rem; gap: .5rem; align-items: center; margin: .4rem 0; }
+    .bar { height: .7rem; border-radius: .35rem; background: #4c6ef5; min-width: 2px; }
+    #operations { margin-top: 1rem; }
+    #operations [hidden] { display: none; }
+    .job { border-top: 1px solid #8886; padding-block: .6rem; }
+    .job button { width: auto; }
+    .metric { display: grid; grid-template-columns: 8rem 1fr 7rem; gap: .5rem; }
+    meter { width: 100%; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>QuantInfer Studio</h1>
+    <span id="health" class="status">checking service…</span>
+  </header>
+  <p>Inspect the live model registry, run a generation smoke test, and view
+     runtime counters without installing a separate frontend.</p>
+  <div class="grid">
+    <section>
+      <h2>Model registry</h2>
+      <p id="models">loading…</p>
+      <pre id="registry-details">loading package and profile metadata…</pre>
+      <button id="refresh" type="button">Refresh</button>
+    </section>
+    <section>
+      <h2>Generation</h2>
+      <label for="model">Model</label>
+      <select id="model"></select>
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" placeholder="Write a prompt or use token IDs below"></textarea>
+      <label for="max-tokens">Max new tokens</label>
+      <input id="max-tokens" type="number" min="1" max="4096" value="32">
+      <button id="generate" type="button">Generate</button>
+      <pre id="result">No request yet.</pre>
+    </section>
+    <section>
+      <h2>Benchmark counters</h2>
+      <pre id="metrics">loading…</pre>
+      <h3>Live generation samples</h3>
+      <div id="benchmarks">Run a generation request to collect a sample.</div>
+      <p>Use a benchmark job or <code>quantinfer-cli generate --profile</code>
+        to measure a specific model.</p>
+    </section>
+  </div>
+  <section id="operations" hidden>
+    <h2>Model jobs</h2>
+    <div class="grid">
+      <form id="job-form">
+        <label for="job-kind">Action</label>
+        <select id="job-kind"><option value="quantize">Quantize</option><option value="calibrate">Collect imatrix</option><option value="package">Create QIF package</option><option value="verify">Verify package</option><option value="benchmark">Benchmark</option></select>
+        <label for="job-source">Model artifact</label>
+        <select id="job-source" required></select>
+        <div id="job-context-fields">
+          <label for="job-context">Context tokens</label>
+          <input id="job-context" type="number" min="1" max="8192" value="512">
+        </div>
+        <div id="job-data-fields">
+          <label for="job-dataset">Calibration dataset</label>
+          <select id="job-dataset"></select>
+        </div>
+        <div id="job-quantize-fields">
+          <label for="job-algorithm">Algorithm</label>
+          <select id="job-algorithm"><option value="gptq">GPTQ</option><option value="awq">AWQ</option><option value="autoround">AutoRound</option></select>
+          <label for="job-bits">Weight bits</label>
+          <select id="job-bits"><option>4</option><option>8</option></select>
+          <label for="job-group">Group size</label>
+          <input id="job-group" type="number" min="32" step="32" value="32">
+          <label for="job-profile">QIF container</label>
+          <select id="job-profile"><option value="single">Single file</option><option value="package">Package</option></select>
+          <label for="job-validation">Validation dataset</label>
+          <select id="job-validation"></select>
+        </div>
+        <div id="job-codec-fields">
+          <label for="job-codec">Codec</label>
+          <select id="job-codec"><option value="none">None</option><option value="zstd">Zstandard</option><option value="lz4">LZ4</option></select>
+        </div>
+        <div id="job-package-fields" hidden>
+          <label for="job-shard-mib">Shard size limit (MiB)</label>
+          <input id="job-shard-mib" type="number" min="1" max="65536" placeholder="Default 1024">
+        </div>
+        <div id="job-benchmark-fields" hidden>
+          <label for="benchmark-prompt">Benchmark prompt</label>
+          <textarea id="benchmark-prompt" maxlength="4096"></textarea>
+          <label for="benchmark-tokens">Max new tokens</label>
+          <input id="benchmark-tokens" type="number" min="1" max="512" value="16">
+        </div>
+        <button type="submit">Start job</button>
+      </form>
+      <form id="dataset-form">
+        <h3>Save calibration prompts</h3>
+        <label for="dataset-name">Dataset filename</label>
+        <input id="dataset-name" required placeholder="calibration.jsonl">
+        <label for="dataset-text">One JSON string or text record per line</label>
+        <textarea id="dataset-text" required placeholder='"A short prompt."'></textarea>
+        <button type="submit">Save dataset</button>
+      </form>
+      <form id="registration-form">
+        <h3>Register a served model</h3>
+        <label for="register-name">Model ID</label>
+        <input id="register-name" required maxlength="128">
+        <label for="register-source">Model artifact</label>
+        <select id="register-source" required></select>
+        <label for="register-lora">LoRA adapter</label>
+        <select id="register-lora"></select>
+        <label for="register-profile">Inference profile</label>
+        <select id="register-profile"></select>
+        <button type="submit">Register or replace</button>
+        <label for="registered-model">Studio-managed model</label>
+        <select id="registered-model"></select>
+        <button id="remove-model" type="button">Remove registration</button>
+      </form>
+      <form id="profile-form">
+        <h3>Inference profile</h3>
+        <label for="profile-name">Profile name</label>
+        <input id="profile-name" required maxlength="110">
+        <label for="profile-source">Model artifact</label>
+        <select id="profile-source" required></select>
+        <label for="profile-context">Context tokens</label>
+        <input id="profile-context" type="number" min="1" value="512" required>
+        <label for="profile-threads">CPU threads</label>
+        <input id="profile-threads" type="number" min="1" max="64" value="1" required>
+        <label for="profile-budget">Memory budget (bytes)</label>
+        <input id="profile-budget" type="number" min="1" placeholder="Optional">
+        <details>
+          <summary>Variant and reference values</summary>
+          <label for="profile-variant">Execution variant</label>
+          <input id="profile-variant" placeholder="Default CPU variant">
+          <label for="profile-quality">Quality threshold</label>
+          <input id="profile-quality" type="number" min="0" step="any">
+          <label for="profile-performance">Throughput baseline (tokens/s)</label>
+          <input id="profile-performance" type="number" min="0" step="any">
+        </details>
+        <button type="submit">Save profile</button>
+        <label for="profile-existing">Saved profiles</label>
+        <select id="profile-existing"></select>
+        <button type="button" id="load-profile">Edit selected profile</button>
+        <button type="button" id="delete-profile">Delete selected profile</button>
+      </form>
+    </div>
+    <p id="job-status" role="status"></p>
+    <div id="job-history"></div>
+  </section>

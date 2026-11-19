@@ -378,6 +378,13 @@ jobs:
           python3 tests/conformance/make_lora_fixture.py config.json "$RUNNER_TEMP/http-lora"
           python3 tests/conformance/http_smoke.py target/release/quantinfer-server \
             smollm2-f32.gguf tests/golden/smollm2-135m-f32.json "$RUNNER_TEMP/http-lora"
+      - name: Exercise managed Studio workflows with SmolLM2
+        run: |
+          cargo build --release --locked -p quantinfer-convert --features gptq,awq,autoround
+          python3 tests/conformance/studio_workflows.py \
+            --server target/release/quantinfer-server --cli target/release/quantinfer-cli \
+            --converter target/release/quantinfer-convert --gguf smollm2-f32.gguf \
+            --lora "$RUNNER_TEMP/http-lora"
           target/release/quantinfer-convert from-gguf --input smollm2-f32.gguf \
             --output smollm2-runtime-package --qif-profile package --qif-codec zstd \
             --max-shard-bytes 16777216

@@ -10,11 +10,12 @@ use quantinfer_core::Tensor;
 use quantinfer_runtime::{dense_storage_name, Result as RuntimeResult, RuntimeError};
 use quantinfer_tokenizer::Tokenizer;
 
-use crate::commands::common::option_value;
+use crate::commands::common::Options;
 
-pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
+pub(crate) fn collect_imatrix(options: &Options<'_>) -> Result<(), String> {
     let path = |flag| {
-        option_value(arguments, flag)?
+        options
+            .value(flag)
             .map(PathBuf::from)
             .ok_or_else(|| format!("collect-imatrix requires {flag}"))
     };
@@ -31,7 +32,8 @@ pub fn collect_imatrix(arguments: &[String]) -> Result<(), String> {
         File::open(&dataset)
             .map_err(|error| format!("cannot open {}: {error}", dataset.display()))?,
     );
-    let context = option_value(arguments, "--max-sequence-length")?
+    let context = options
+        .value("--max-sequence-length")
         .map(|value| value.parse::<usize>())
         .transpose()
         .map_err(|error| format!("invalid --max-sequence-length: {error}"))?;

@@ -10,7 +10,7 @@ use std::env;
 
 use crate::calibration;
 
-use common::{has_flag, option_value, print_help, validate_options};
+use common::{parse_options, print_help};
 use generate::generate;
 use package::{list_profiles, verify_package};
 
@@ -20,15 +20,15 @@ pub(crate) fn run() -> Result<(), String> {
         None | Some("--help") | Some("-h") => print_help(),
         Some("--version") => println!("quantinfer {}", env!("CARGO_PKG_VERSION")),
         Some("render-chat") => {
-            let options = &arguments[1..];
-            validate_options(
-                options,
+            let options = parse_options(
+                &arguments[1..],
                 &[("--role", true), ("--text", true), ("--think", false)],
             )?;
-            let role = option_value(options, "--role")?.unwrap_or_else(|| "user".to_owned());
-            let text = option_value(options, "--text")?
+            let role = options.value("--role").unwrap_or("user");
+            let text = options
+                .value("--text")
                 .ok_or_else(|| "render-chat requires --text".to_owned())?;
-            let thinking = if has_flag(options, "--think") {
+            let thinking = if options.has("--think") {
                 ThinkingMode::Enabled
             } else {
                 ThinkingMode::Disabled
@@ -39,23 +39,23 @@ pub(crate) fn run() -> Result<(), String> {
             print!("{prompt}");
         }
         Some("inspect-gguf") => {
-            validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
-            inspect::inspect_gguf(&arguments[1..])?;
+            let options = parse_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
+            inspect::inspect_gguf(&options)?;
         }
         Some("inspect" | "verify") => {
-            validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
-            inspect::native(&arguments[1..], arguments[0] == "verify")?;
+            let options = parse_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
+            inspect::native(&options, arguments[0] == "verify")?;
         }
         Some("verify-package") => {
-            validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
-            verify_package(&arguments[1..])?
+            let options = parse_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
+            verify_package(&options)?
         }
         Some("list-profiles") => {
-            validate_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
-            list_profiles(&arguments[1..])?
+            let options = parse_options(&arguments[1..], &[("--input", true), ("--json", false)])?;
+            list_profiles(&options)?
         }
         Some("collect-imatrix") => {
-            validate_options(
+            let options = parse_options(
                 &arguments[1..],
                 &[
                     ("--input", true),
@@ -64,7 +64,7 @@ pub(crate) fn run() -> Result<(), String> {
                     ("--max-sequence-length", true),
                 ],
             )?;
-            calibration::collect_imatrix(&arguments[1..])?
+            calibration::collect_imatrix(&options)?
         }
         Some("generate") => generate(&arguments[1..])?,
         Some(command) => return Err(format!("unknown command {command}; use --help")),
@@ -84,16 +84,14 @@ mod tests {
 
     #[test]
     fn rejects_unknown_or_incomplete_options() {
+        assert!(super::common::parse_options(&["--json".to_owned()], &[("--json", false)]).is_ok());
         assert!(
-            super::common::validate_options(&["--json".to_owned()], &[("--json", false)]).is_ok()
+            super::common::parse_options(&["--typo".to_owned()], &[("--json", false)]).is_err()
         );
         assert!(
-            super::common::validate_options(&["--typo".to_owned()], &[("--json", false)]).is_err()
+            super::common::parse_options(&["--input".to_owned()], &[("--input", true)]).is_err()
         );
-        assert!(
-            super::common::validate_options(&["--input".to_owned()], &[("--input", true)]).is_err()
-        );
-        assert!(super::common::validate_options(
+        assert!(super::common::parse_options(
             &[
                 "--input".to_owned(),
                 "one.gguf".to_owned(),
@@ -103,5 +101,32 @@ mod tests {
             &[("--input", true)],
         )
         .is_err());
+    }
+
+    #[test]
+    fn option_values_can_match_other_flag_names() {
+        let arguments = [
+            "--prompt",
+            "--profile-report",
+            "--profile-report",
+            "report.json",
+            "--role",
+            "--chat",
+        ]
+        .map(str::to_owned);
+        let options = super::common::parse_options(
+            &arguments,
+            &[
+                ("--prompt", true),
+                ("--profile-report", true),
+                ("--role", true),
+                ("--chat", false),
+            ],
+        )
+        .unwrap();
+        assert_eq!(options.value("--prompt"), Some("--profile-report"));
+        assert_eq!(options.value("--profile-report"), Some("report.json"));
+        assert_eq!(options.value("--role"), Some("--chat"));
+        assert!(!options.has("--chat"));
     }
 }

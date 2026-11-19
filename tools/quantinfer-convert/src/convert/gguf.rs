@@ -80,6 +80,21 @@ pub(crate) fn run() -> Result<(), String> {
         )?;
         return super::qif::convert_qif(&arguments[1..]);
     }
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == "repack-qif")
+    {
+        validate_options(
+            &arguments[1..],
+            &[
+                ("--input", true),
+                ("--output", true),
+                ("--qif-codec", true),
+                ("--max-shard-bytes", true),
+            ],
+        )?;
+        return super::qif::repack_qif(&arguments[1..]);
+    }
     validate_options(
         &arguments,
         &[

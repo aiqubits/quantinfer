@@ -32,6 +32,31 @@ const CHUNK_RECORD_SIZE: usize = 72;
 const DEFAULT_SHARD_LIMIT: usize = 1024 * 1024 * 1024;
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
+/// Repackage verified native QIF, preserving tensor content and logical metadata.
+/// The output PACKAGE has its own checksums and no signature.
+pub fn repack_package(
+    reader: &crate::PackedTensorReader,
+    output: impl AsRef<Path>,
+    max_shard_bytes: Option<usize>,
+    codec: Codec,
+) -> Result<()> {
+    let manifest = reader
+        .embedded_manifest()
+        .ok_or_else(|| invalid("native QIF manifest is required"))?;
+    let metadata = reader
+        .qif_metadata()
+        .ok_or_else(|| invalid("native QIF metadata is required"))?;
+    reader.verify_qif()?;
+    write_package_from_source(
+        manifest.clone(),
+        metadata,
+        |name| reader.tensor_data(name),
+        output.as_ref(),
+        max_shard_bytes,
+        codec,
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PackageManifest {
     schema_version: u32,

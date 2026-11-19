@@ -13,6 +13,7 @@ mod qif_v2;
 pub mod qif {
     pub use super::qif_v2::import_gguf;
     pub use super::qif_v2::plan_qif_v2_reshard as plan_qif_reshard;
+    pub use super::qif_v2::repack_package;
     pub use super::qif_v2::write_qif_v2 as write_qif;
     pub use super::qif_v2::write_qif_v2_package as write_qif_package;
     pub use super::qif_v2::write_qif_v2_package_with_codec as write_qif_package_with_codec;

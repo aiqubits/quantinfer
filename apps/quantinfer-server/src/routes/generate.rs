@@ -73,9 +73,7 @@ async fn start_request(state: &AppState, request: GenerateRequest) -> Result<Res
             format!("unknown model {}", request.model),
         )
     })?;
-    let context = state
-        .context_length
-        .min(model.decoder.max_position_embeddings());
+    let context = state.context_length.min(model.context_length());
     let max_new_tokens = request.max_new_tokens.unwrap_or(32);
     if !(1..=4096).contains(&max_new_tokens) {
         return Err(bad("max_new_tokens must be 1..=4096".to_owned()));
