@@ -2013,9 +2013,12 @@ dependencies = [
 name = "quantinfer-adapter-autoround"
 version = "0.1.0"
 dependencies = [
+ "half",
  "quantinfer-adapter-gptq",
  "quantinfer-core",
  "quantinfer-format",
+ "quantinfer-quant",
+ "rayon",
  "serde",
  "serde_json",
 ]
@@ -2200,6 +2203,7 @@ name = "quantinfer-convert"
 version = "0.1.0"
 dependencies = [
  "quantinfer",
+ "quantinfer-adapter-autoround",
  "quantinfer-adapter-awq",
  "quantinfer-adapter-ggml",
  "quantinfer-adapter-gptq",

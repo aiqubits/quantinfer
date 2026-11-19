@@ -1,4 +1,4 @@
-#![cfg(any(feature = "gptq", feature = "awq"))]
+#![cfg(any(feature = "gptq", feature = "awq", feature = "autoround"))]
 
 use quantinfer::{
     cpu::{CpuModel, ModelSource},
@@ -105,8 +105,12 @@ fn whole_model(algorithm: &str) {
     let output = root.path().join("model.qif");
     let quality = root.path().join("quality.json");
     let start = Instant::now();
-    let process = Command::new(env!("CARGO_BIN_EXE_quantinfer-convert"))
-        .arg(algorithm)
+    let mut command = Command::new(env!("CARGO_BIN_EXE_quantinfer-convert"));
+    command.arg(algorithm);
+    if algorithm == "autoround" {
+        command.args(["--iterations", "32", "--threads", "4"]);
+    }
+    let process = command
         .arg("--input")
         .arg(&input)
         .arg("--dataset")
@@ -173,8 +177,13 @@ fn whole_model(algorithm: &str) {
                 .find(|v| v["tensor"] == tensor.name)
                 .unwrap();
             assert_eq!(record["payload_sha256"], hash);
-            if algorithm == "gptq" {
+            if algorithm != "awq" {
                 assert_eq!(record["calibration_rows"], 159);
+            }
+            if algorithm == "autoround" {
+                assert!(
+                    record["best_mse"].as_f64().unwrap() <= record["initial_mse"].as_f64().unwrap()
+                );
             }
         } else if algorithm == "awq" && is_folded_norm(&tensor.name) {
             assert_eq!(tensor.dtype, GgmlType::F32);
@@ -191,6 +200,14 @@ fn whole_model(algorithm: &str) {
         hashes.insert(tensor.name.clone(), hash);
     }
     assert_eq!(hashes.len(), source_hashes.len());
+    if algorithm == "autoround" {
+        assert_eq!(quality["iterations"], 32);
+        assert!(quality["projections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["improved_outputs"].as_u64().unwrap() > 0));
+    }
     if algorithm == "awq" {
         assert_eq!(quality["normalizations"].as_array().unwrap().len(), 60);
         assert_eq!(quality["scale_searches"].as_array().unwrap().len(), 90);
@@ -274,4 +291,11 @@ fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
 #[ignore = "requires the pinned SmolLM2 F32 GGUF and all 210 AWQ projections"]
 fn whole_model_awq_meets_quality_and_lossless_publication_gates() {
     whole_model("awq");
+}
+
+#[cfg(feature = "autoround")]
+#[test]
+#[ignore = "requires the pinned SmolLM2 F32 GGUF and all 210 AutoRound projections"]
+fn whole_model_autoround_meets_quality_and_lossless_publication_gates() {
+    whole_model("autoround");
 }

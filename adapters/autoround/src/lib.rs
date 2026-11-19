@@ -6,6 +6,9 @@
 
 #![forbid(unsafe_code)]
 
+mod quantize;
+pub use quantize::{AutoRoundCalibration, AutoRoundOptions, AutoRoundProvider, AutoRoundResult};
+
 pub use quantinfer_adapter_gptq::ZeroPointLayout;
 use quantinfer_adapter_gptq::{dequantize as dequantize_gptq, GptqConfig, GptqTensorSource};
 use quantinfer_core::Tensor;

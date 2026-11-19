@@ -8,6 +8,9 @@ license.workspace = true
 quantinfer-adapter-gptq.workspace = true
 quantinfer-core.workspace = true
 quantinfer-format.workspace = true
+quantinfer-quant.workspace = true
+half.workspace = true
+rayon = "1.12"
 serde.workspace = true
 serde_json.workspace = true
 

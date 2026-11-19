@@ -1,10 +1,14 @@
 //! Sequential, activation-calibrated whole-model quantization workflow.
 
+#[cfg(feature = "autoround")]
+pub(crate) mod autoround;
 #[cfg(feature = "awq")]
 pub(crate) mod awq;
 mod dataset;
 #[cfg(feature = "gptq")]
 mod gptq;
+#[cfg(any(feature = "awq", feature = "autoround"))]
+mod layer;
 #[cfg(feature = "gptq")]
 pub(crate) use gptq::run;
 mod model;

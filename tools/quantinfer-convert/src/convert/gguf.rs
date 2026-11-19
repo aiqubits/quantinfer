@@ -56,6 +56,15 @@ pub(crate) fn run() -> Result<(), String> {
     }
     if arguments
         .first()
+        .is_some_and(|argument| argument == "autoround")
+    {
+        #[cfg(feature = "autoround")]
+        return crate::calibrated::autoround::run(&arguments[1..]);
+        #[cfg(not(feature = "autoround"))]
+        return Err("autoround requires a converter built with --features autoround".into());
+    }
+    if arguments
+        .first()
         .is_some_and(|argument| argument == "from-gguf")
     {
         validate_options(

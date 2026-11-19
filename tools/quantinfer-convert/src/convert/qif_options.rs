@@ -68,7 +68,7 @@ impl QifOptions {
         Ok(())
     }
 
-    #[cfg(any(feature = "gptq", feature = "awq"))]
+    #[cfg(any(feature = "gptq", feature = "awq", feature = "autoround"))]
     pub(crate) fn publish_tensors<'a>(
         &self,
         manifest: quantinfer_format::ModelManifest,

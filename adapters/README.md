@@ -100,6 +100,10 @@ tensor to a runtime.
 
 ## AutoRound
 
+The [native AutoRound provider](autoround/README.md) uses SignRound calibration
+to choose rounding offsets and symmetric clipping scales. It publishes native
+Q4_0/Q8_0 blocks with projection and model-level verification.
+
 `quantinfer-adapter-autoround` parses AutoRound's quantization metadata
 aliases and reuses the GPTQ-compatible packed tensor decoder for
 `qweight/qzeros/scales` matrices. It accepts one-file and indexed sharded

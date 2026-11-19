@@ -2,6 +2,8 @@
 
 mod layer;
 
+use super::layer as execution;
+
 use super::{
     execute, model, options, packing, validation, ModelQuantizer, Production, ProductionContext,
 };
@@ -78,7 +80,7 @@ impl ModelQuantizer for Workflow {
             ggml,
             statistics_bytes,
         } = ctx;
-        let mut hidden = layer::embed_prompts(model, spec, prompts, statistics_bytes)?;
+        let mut hidden = execution::embed_prompts(model, spec, prompts, statistics_bytes)?;
         let mut payloads = BTreeMap::new();
         let mut records = Vec::new();
         let mut norms = Vec::new();
@@ -90,19 +92,18 @@ impl ModelQuantizer for Workflow {
             .map(|t| (t.name.clone(), t))
             .collect();
         for index in 0..spec.layers.len() {
-            let mut layer = layer::Layer {
+            let mut layer = execution::Layer {
                 model,
                 index,
                 context,
-                provider: &self.provider,
             };
             let mut source_hashes = BTreeMap::new();
             for role in model::GROUPS.into_iter().flatten().copied() {
                 source_hashes.insert(role, validation::tensor_hash(layer.weight(role)?)?);
             }
-            scales.extend(layer.scale(&hidden)?);
+            scales.extend(layer.scale(&self.provider, &hidden)?);
             if self.clipping {
-                clipping.extend(layer.clip(&hidden)?);
+                clipping.extend(layer.clip(&self.provider, &hidden)?);
             }
 
             for role in [

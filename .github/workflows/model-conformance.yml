@@ -449,7 +449,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        algorithm: [gptq, awq]
+        algorithm: [gptq, awq, autoround]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -474,6 +474,8 @@ jobs:
       - name: Gate all 210 ${{ matrix.algorithm }} projections, holdout quality and QIF parity
         shell: bash
         env:
+          QUANTINFER_AUTOROUND_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
+          QUANTINFER_AUTOROUND_WORKFLOW_REPORT: ${{ github.workspace }}/autoround-whole-model-quality.json
           QUANTINFER_AWQ_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
           QUANTINFER_AWQ_WORKFLOW_REPORT: ${{ github.workspace }}/awq-whole-model-quality.json
           QUANTINFER_GPTQ_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
@@ -586,6 +588,10 @@ jobs:
         run: |
           python tests/conformance/awq_reference.py --check tests/golden/awq-signed-profile.json \
             --output qwen3-awq-reference.json
+      - name: Recompute AutoRound SignSGD vectors with Torch autograd
+        run: |
+          python tests/conformance/autoround_reference.py --check tests/golden/autoround-signed-profile.json \
+            --output qwen3-autoround-reference.json
       - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
@@ -718,6 +724,7 @@ jobs:
             qwen3-reference.json
             qwen3-gptq-reference.json
             qwen3-awq-reference.json
+            qwen3-autoround-reference.json
             qwen3-conformance.log
             qwen3-*-benchmark.txt
             qwen3-*-paired-*.txt

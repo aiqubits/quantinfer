@@ -54,9 +54,12 @@ projection, checks optional holdout gates and publishes verified QIF with exact
 reload parity. Its real whole-model case is the fixed SmolLM2 four-bit profile;
 the separate model CI recomputes all 210 projections. The native AWQ workflow
 adds activation-aware scaling and clipping for full-model QIF publication.
-AutoRound currently supports existing checkpoint imports. LLM Compressor has
+AutoRound also has a calibrated, per-projection SignRound workflow, with an
+independent Torch reference and the same verified whole-model publication
+protocol. LLM Compressor has
 the WNA16 import adapter requested by the general plan. See the
-[GPTQ profile and acceptance boundary](../../adapters/gptq/README.md).
+[GPTQ](../../adapters/gptq/README.md), [AWQ](../../adapters/awq/README.md) and
+[AutoRound](../../adapters/autoround/README.md) for their tested profiles.
 Ascend now has a concrete CANN F32
 MatMul executor and an optional CLI path, with independent C ABI contract tests;
 real-device acceptance remains separate. KleidiAI has a pinned native AArch64

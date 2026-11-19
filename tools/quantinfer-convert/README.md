@@ -15,7 +15,8 @@ Input can be floating GGUF, native QIF SINGLE/PACKAGE, or a verified model
 package with its embedded tokenizer. Qwen3 and Llama dense models are supported.
 Every input tensor must be F32/F16/BF16; already-quantized sources fail explicitly.
 
-See [AWQ](#awq) for activation-aware scaling and clipping.
+See [AWQ](#awq) for activation-aware scaling and clipping and
+[AutoRound](#autoround) for SignRound calibration.
 
 JSONL datasets contain one JSON string or an object with a `text` string per
 line. Nonempty strings may contain whitespace. Blank lines are ignored. Prompt
@@ -102,3 +103,27 @@ The [AWQ adapter](../../adapters/awq/README.md) documents the exact grid,
 upstream algorithm references and independent Torch vectors. The full
 SmolLM2 test uses the same 13 calibration and four fixed validation inputs
 as the GPTQ test.
+
+## AutoRound
+
+Build with `--features autoround` and select `quantinfer-convert autoround`.
+Use the same floating source, JSONL datasets and QIF publication options.
+The signed native profile supports `--bits 4|8`, `--group-size` in positive
+multiples of 32, `--iterations 1..4096` (default 200), and `--threads 1..64`
+(default available parallelism capped at eight). `--rounding-lr` and
+`--clipping-lr` override the two initial step sizes, each in `(0, 1]`.
+The default for both is `1 / iterations`; the steps decay linearly.
+
+Calibration propagates the packed layer outputs and observes the actual inputs
+to all seven projections. For each output channel, SignRound tunes rounding
+offsets and a symmetric clipping multiplier per group against the full
+activation-weighted projection reconstruction loss. The optimizer retains the
+lowest measured loss for each row, including the initial RTN state, measured on
+the stored F16 grid. The report gives both losses, the number of improved
+output rows and the calibration row count for every projection. Nonprojection
+payloads are preserved.
+
+The [AutoRound provider guide](../../adapters/autoround/README.md) documents the
+profile, tested bounds and independent Torch autograd reference. The fixed
+SmolLM2 conformance test uses four threads and 32 iterations. It evaluates the
+same 13 calibration inputs and four held-out prompts as GPTQ and AWQ.

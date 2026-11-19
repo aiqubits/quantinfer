@@ -9,6 +9,8 @@ ggml = ["dep:quantinfer-adapter-ggml"]
 gptq = ["dep:quantinfer", "dep:quantinfer-adapter-gptq", "dep:sha2"]
 awq = ["dep:quantinfer", "dep:quantinfer-adapter-awq", "dep:quantinfer-backend-cpu", "dep:sha2"]
 
+autoround = ["dep:quantinfer", "dep:quantinfer-adapter-autoround", "dep:quantinfer-backend-cpu", "dep:sha2"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -23,3 +25,4 @@ quantinfer-adapter-gptq = { workspace = true, optional = true }
 quantinfer-adapter-awq = { workspace = true, optional = true }
 quantinfer-backend-cpu = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+quantinfer-adapter-autoround = { workspace = true, optional = true }

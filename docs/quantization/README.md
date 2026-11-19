@@ -1,7 +1,7 @@
 # Quantization
 
-Calibrated full-model GPTQ and AWQ are available through the converter's
-optional `gptq` and `awq` features. See the [offline workflow](../../tools/quantinfer-convert/README.md)
+Calibrated full-model GPTQ, AWQ and AutoRound are available through the converter's
+optional `gptq`, `awq` and `autoround` features. See the [offline workflow](../../tools/quantinfer-convert/README.md)
 for floating sources, datasets, resource limits, quality gates and QIF
 publication. The signed four/eight-bit profiles produce weights directly for native QIF.
 
