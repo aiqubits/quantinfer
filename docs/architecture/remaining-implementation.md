@@ -16,7 +16,9 @@
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
 | Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | `00049bd` 新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过；远端 CI 已成功 |
-| 模型参数与 QIF 对齐 | 已知模型参数按语义校验，不随存储维度模式跳过；SINGLE/PACKAGE 按显式偏移支持较大物理对齐，仍拒绝重叠、倒序和未对齐块 | 本地 240 次模型加载正反例、九种 codec/alignment 的全部 reader 对照和独立三语言 189 项检查通过；隔离验证的 fmt/check/Clippy、260 passed（含 doctest）／7 ignored、两个 xtask smoke、可选 GPTQ/Candle、资源与独立三语言 189 项均通过；本批自身远端 CI 待确认 |
+| 模型参数与 QIF 对齐 | 已知模型参数按语义校验，不随存储维度模式跳过；SINGLE/PACKAGE 按显式偏移支持较大物理对齐，仍拒绝重叠、倒序和未对齐块 | `df4eb15` 本地 240 次模型加载、九种 codec/alignment 和三语言 189 项都通过；七个实际触发的远端 workflow 通过，含 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44523217346) |
+| 滑动窗口、分片资源与发布 | 两种 Dense adapter 明确拒绝不支持的滑动窗口；PACKAGE reader 以单分片句柄读取；writer 完成全量校验后发布 | 本地 288 次模型加载、64 分片与 32 描述符限制、暂存目录校验失败及清理回归、三语言 189 项通过。性能 CI 启用 `pipefail` 和补齐 CPU SIMD 变更触发；对应远端 CI 单列 |
+| 分片 SafeTensors 默认输出 | 分片 reader 和 GGUF 输出逐 tensor 处理；QIF 默认输出也需避免一次性物化全部权重 | QIF 仍整读中间 GGUF，待实现并以进程资源限制验收 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
 QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名不混作当前 wire core 的缺陷；若后续扩展这些 profile，仍需单独冻结版本/编码与验收。

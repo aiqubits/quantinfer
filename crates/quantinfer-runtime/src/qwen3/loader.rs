@@ -172,6 +172,11 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<Qwen3Confi
             "custom RoPE scaling is unsupported".to_owned(),
         ));
     }
+    if metadata_usize(reader, "qwen3.attention.sliding_window")?.is_some_and(|size| size != 0) {
+        return Err(RuntimeError::InvalidInput(
+            "Qwen3 sliding-window attention is unsupported".to_owned(),
+        ));
+    }
     Ok(config)
 }
 

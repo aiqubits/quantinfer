@@ -80,7 +80,9 @@ QIF2 wire version 区分：
 - **QIF-SINGLE**（内部 QIF2-SINGLE）：一个文件，适合本地、边缘和单机服务。
 - **QIF-PACKAGE**（内部 QIF2-PACKAGE）：`qif.json`、`index.qifi`、`metadata.qmb` 和多个 `.qifd` shard，适合对象存储、大模型和并行读取。
 
-两种 profile 使用同一套 manifest、tensor record、chunk record 和 hash 规则。差异只在 payload 的物理位置与 package manifest。
+两种 profile 共享 model manifest、tensor record、chunk record 与 tensor/chunk 的 SHA-256
+规则。SINGLE 使用固定 header 和可选签名，PACKAGE 使用目录清单和 shard 摘要；各自的
+root hash 定义见 §7.1 与 §8。
 
 ### 3.1 文件区域
 
@@ -406,8 +408,8 @@ reader 必须使用显式 offset 定位，不得假定下一块紧邻
 writer 默认的 4 KiB 放置，也不要求 reader 推断 writer 选择了哪一种较大对齐。
 
 无压缩 chunk MUST 可以通过 offset/length 直接读取；压缩 chunk MUST 可以独立解压和
-独立校验，禁止使用跨 chunk 的连续压缩流。mmap 的零拷贝 tensor 视图只适用于
-无压缩 chunk；映射压缩文件仍需要为解压后的数据分配空间。
+独立校验，禁止使用跨 chunk 的连续压缩流。当前 mmap 的零拷贝 tensor 视图适用于
+SINGLE 中由单个无压缩 chunk 表示的 tensor；压缩和多 chunk 视图通过范围读取或复制重组。
 物理 chunk 的 `raw_length` 和 `stored_length` MUST 大于零；空 chunk 不允许出现在
 index 中，避免不同读取与验证路径对空压缩流产生不同解释。
 
@@ -482,12 +484,12 @@ MUST 一致；其它 packing、scale、axis 或 group 表达不能复用现有 e
 
 SHA-256 是 v2.0 必选算法，以保持跨语言和现有 QuantInfer 生态的可用性。BLAKE3 可以作为后续可选算法，但不能成为 v2.0 的唯一依赖。
 
-v2.0 的 hash 层级为：
+两种 profile 的数据摘要和 SINGLE 的根摘要如下，PACKAGE 的根摘要见 §8。
 
 ```text
 chunk hash = SHA-256(stored chunk bytes)
 tensor hash = SHA-256(raw tensor bytes)
-root hash = SHA-256(canonical manifest + canonical metadata + binary index)
+SINGLE root hash = SHA-256(canonical manifest + canonical metadata + binary index)
 ```
 
 复用 `ModelManifest` 的 tensor checksum 按 SHA-256 十六进制值比较，允许大写
@@ -556,12 +558,18 @@ package manifest 为每个 shard 记录：
 - shard hash；
 - mesh axis、rank 和 shard coordinate；
 - 所属 tensor 名称；
-- package root hash（覆盖 root_hash 置空后的 canonical package manifest、metadata、global index 和 shard hashes）；
 - model manifest 中的 global shape 与 tensor checksum。global index 的 chunk record
   使用 tensor-relative `raw_offset/raw_length` 和 shard-relative
   `stored_offset/stored_length`，因此一个 tensor 可以跨多个 shard 重组。
 
-路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 的发布必须使用临时目录、完整校验和原子 rename；未完成 package 不得被 reader 视为有效模型。
+package root hash 对以下内容依次计算 SHA-256：`root_hash` 值设为空字符串后的
+canonical `qif.json` 字节、`metadata.qmb` 的字节、`index.qifi` 的字节、按 `shards`
+数组顺序串接的每个 `sha256` 字段的 UTF-8 字节。shard 摘要的输入为整个 shard 文件，
+包含块间 padding。根摘要以小写十六进制存入 `root_hash`。
+
+路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 在临时目录写入后由 reader
+执行全量 `verify()`，通过后才原子 rename 至发布路径。默认 reader 在打开时逐一验证
+shard 路径和大小，读取时复用最近访问的一个 shard 文件句柄。
 
 writer 的 `max_shard_bytes` 限制最终 shard 文件大小，包含 alignment padding 和
 codec framing。writer 必须在放置前计算对齐后的终点；压缩后超过限制时缩小 raw
@@ -598,7 +606,8 @@ API 要求：
 
 - 内存 reader 打开时验证 header、manifest、metadata、index 和 root hash；
 - `read_range` 只复制请求的 tensor 子范围；
-- QIF-SINGLE/PACKAGE 提供按需 file-backed range read，并提供只读 `qif::MappedFile` 映射入口；
+- QIF-SINGLE/PACKAGE 都提供按需 file-backed range read；SINGLE 另提供只读
+  `qif::MappedFile` 映射入口，无压缩的单 chunk tensor 可通过 `tensor_bytes` 借用；
   mmap 的 unsafe 操作被隔离在单独模块。`MappedFile::open` 是 unsafe API，调用者
   必须保证映射及所有借用 view 存活期间，底层文件不被任何线程或进程修改/截断，
   并仍需通过同一 QIF reader 校验。只读映射和 hash 校验不提供文件不变性保证；
@@ -626,7 +635,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 
 1. file-backed index open 不读取 payload（当前 `qif::FileReader::open` 已满足）；
 2. 只读取一个 tensor 时，不触碰其他 tensor 的 payload（当前 file-backed `read_range` 已满足）；
-3. 无压缩路径能返回 mmap/range view（当前 `qif::MappedFile` 与 file-backed range read 已满足）；
+3. SINGLE 的无压缩单 chunk 路径能返回借用 mmap view，两种 profile 都可读取指定范围并返回对应 bytes；
 4. 压缩路径只解压当前请求的 tensor/chunk（当前 codec reader 已满足）；
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前公开 API 为 `quantinfer_format::qif::plan_qif_reshard`，已有跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
@@ -670,7 +679,8 @@ QIF v2 的实际价值不是声称全面击败 SafeTensors、GGUF 或 DCP，而�
 - 保持 QuantInfer 自有的 logical descriptor、semantic tensor role 和 backend capability 边界。
 
 因此，QIF v2.0 的成功标准是：**同一套可验证权重语义，能在单文件或 package
-shard 中通过 mmap、file-backed range read、独立 codec 解压和完整校验稳定加载。**
+shard 中通过 file-backed range read、独立 codec 解压和完整校验稳定加载，SINGLE
+另支持只读 mmap。**
 性能优劣仍必须由可复现 benchmark 证明，不能由格式设计直接推出。
 
 ## 13. 参考资料

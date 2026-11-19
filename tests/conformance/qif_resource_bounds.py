@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise default QIF verification under a Linux address-space budget."""
+"""Exercise default QIF verification under Linux process resource limits."""
 import argparse
 import hashlib
 from pathlib import Path
@@ -16,6 +16,7 @@ def u64(data, offset):
 
 def set_limits():
     resource.setrlimit(resource.RLIMIT_AS, (48 * 1024 * 1024, 48 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
@@ -59,23 +60,24 @@ def main():
     parser.add_argument('--verifier', required=True)
     args = parser.parse_args()
     if sys.platform != 'linux':
-        parser.error('the address-space check requires Linux RLIMIT_AS')
+        parser.error('the resource check requires Linux RLIMIT_AS and RLIMIT_NOFILE')
     with tempfile.TemporaryDirectory(prefix='qif-resource-check-') as temporary:
         root = Path(temporary)/'fixtures'
         subprocess.run([args.generator, str(root)], check=True, timeout=180)
+        assert len(list((root/'package-none').glob('shard-*.qifd'))) == 64
         for name in ('none.qif', 'zstd.qif', 'lz4.qif', 'package-none', 'package-zstd', 'package-lz4'):
             for mode in ([], ['--packed']):
                 result = subprocess.run([args.verifier, *mode, str(root/name)], preexec_fn=set_limits,
                                         capture_output=True, text=True, timeout=45)
                 if result.returncode != 0:
-                    raise AssertionError(f'{name} {mode}: verification failed with 48 MiB address space: {result.stderr}')
+                    raise AssertionError(f'{name} {mode}: verification failed with 48 MiB and 32 descriptors: {result.stderr}')
         malformed = root/'unknown-names.qif'
         malformed.write_bytes(unknown_names_fixture((root/'name-seed.qif').read_bytes()))
         result = subprocess.run([args.verifier, str(malformed)], preexec_fn=set_limits,
                                 capture_output=True, text=True, timeout=15)
         if result.returncode != 1 or 'not in manifest' not in result.stderr:
             raise AssertionError(f'unknown names must fail cleanly before allocating all names: {result.stderr[:500]}')
-    print('QIF resources: six 64 MiB tensor variants verified within 48 MiB through native and runtime readers; unknown names rejected cleanly')
+    print('QIF resources: six 64 MiB tensor variants (including a 64-shard package) verified within 48 MiB and 32 descriptors through both readers; unknown names rejected cleanly')
 
 
 if __name__ == '__main__':

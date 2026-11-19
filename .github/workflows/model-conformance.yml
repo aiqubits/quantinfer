@@ -27,11 +27,13 @@ on:
       - "crates/quantinfer/**"
       - "crates/quantinfer-core/**"
       - "crates/quantinfer-format/**"
+      - "crates/quantinfer-kernel/**"
       - "crates/quantinfer-model/**"
       - "crates/quantinfer-quant/**"
       - "crates/quantinfer-runtime/**"
       - "crates/quantinfer-tokenizer/**"
       - "backends/cpu/**"
+      - "backends/cpu-simd/**"
       - "adapters/lora/**"
       - "adapters/gptq/**"
       - "adapters/awq/**"
@@ -49,6 +51,9 @@ on:
       - "model-zoo/manifests/**"
       - "model-zoo/tokenizer/**"
       - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
       - ".github/workflows/model-conformance.yml"
 
 env:

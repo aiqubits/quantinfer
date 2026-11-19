@@ -166,6 +166,11 @@ fn config_from_gguf(reader: &GgufReader, ggml_layout: bool) -> Result<LlamaConfi
             "custom RoPE scaling is unsupported".to_owned(),
         ));
     }
+    if metadata_usize(reader, "llama.attention.sliding_window")?.is_some_and(|size| size != 0) {
+        return Err(RuntimeError::InvalidInput(
+            "Llama sliding-window attention is unsupported".to_owned(),
+        ));
+    }
     Ok(config)
 }
 

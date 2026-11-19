@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -28,6 +29,7 @@ const INDEX_HEADER_SIZE: usize = 48;
 const TENSOR_RECORD_SIZE: usize = 120;
 const CHUNK_RECORD_SIZE: usize = 72;
 const DEFAULT_SHARD_LIMIT: usize = 1024 * 1024 * 1024;
+static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PackageManifest {
@@ -104,15 +106,18 @@ pub fn write_qif_v2_package_with_codec<'a>(
             output_dir.display()
         )));
     }
-    let temporary = output_dir.with_extension(format!("tmp-{}", std::process::id()));
-    if temporary.exists() {
-        return Err(invalid("temporary package output already exists"));
-    }
     let max_shard_bytes = max_shard_bytes.unwrap_or(DEFAULT_SHARD_LIMIT);
     if max_shard_bytes == 0 {
         return Err(invalid("package shard size must be greater than zero"));
     }
-    fs::create_dir_all(&temporary).map_err(io_error)?;
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let stage_id = NEXT_STAGE.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".qif-stage-{}-{stage_id}", std::process::id()));
+    fs::create_dir(&temporary).map_err(io_error)?;
     let result = write_package_contents(
         &mut manifest,
         metadata,
@@ -120,12 +125,13 @@ pub fn write_qif_v2_package_with_codec<'a>(
         &temporary,
         max_shard_bytes,
         codec.id(),
-    );
-    if let Err(error) = result {
+    )
+    .and_then(|()| PackageReader::open(&temporary)?.verify())
+    .and_then(|()| fs::rename(&temporary, output_dir).map_err(io_error));
+    if result.is_err() {
         let _ = fs::remove_dir_all(&temporary);
-        return Err(error);
     }
-    fs::rename(&temporary, output_dir).map_err(io_error)
+    result
 }
 
 fn write_package_contents<'a>(
@@ -363,13 +369,18 @@ fn write_package_contents<'a>(
     write_atomic_file(&output_dir.join("qif.json"), &package_bytes)
 }
 
+struct OpenShard {
+    name: String,
+    file: File,
+}
+
 pub struct PackageReader {
     root: PathBuf,
     manifest: ModelManifest,
     metadata: BTreeMap<String, MetadataValue>,
     tensors: Vec<TensorInfo>,
     pub(super) chunks: Vec<PackageChunk>,
-    shards: BTreeMap<String, File>,
+    open_shard: Option<OpenShard>,
     entries: BTreeMap<String, ShardManifest>,
     pub(super) artifact_length: u64,
     pub(super) control_length: usize,
@@ -428,31 +439,27 @@ impl PackageReader {
         }
         let metadata = super::metadata::decode(&metadata_bytes)?;
         let (tensors, chunks) = parse_package_index(&index, &package.model)?;
-        let mut shards = BTreeMap::new();
         let mut entries = BTreeMap::new();
         for entry in package.shards {
-            if entries.insert(entry.path.clone(), entry.clone()).is_some() {
-                return Err(invalid("duplicate QIF package shard"));
-            }
-            let path = resolve_path(&root, &entry.path)?;
-            let file = File::open(&path).map_err(io_error)?;
+            let file = open_shard(&root, &entry.path)?;
             let size = file.metadata().map_err(io_error)?.len();
             if size != entry.size {
                 return Err(invalid(format!("QIF shard {} size mismatch", entry.path)));
             }
-            shards.insert(entry.path.clone(), file);
+            if entries.insert(entry.path.clone(), entry).is_some() {
+                return Err(invalid("duplicate QIF package shard"));
+            }
         }
         for chunk in &chunks {
             let path = format!("shard-{:05}.qifd", chunk.shard_id);
-            let file = shards
+            let entry = entries
                 .get(&path)
                 .ok_or_else(|| invalid("QIF package index references a missing shard"))?;
-            let size = file.metadata().map_err(io_error)?.len();
             if chunk
                 .stored_offset
                 .checked_add(chunk.stored_length)
                 .is_none()
-                || chunk.stored_offset + chunk.stored_length > size
+                || chunk.stored_offset + chunk.stored_length > entry.size
                 || chunk.stored_offset % ALIGNMENT as u64 != 0
             {
                 return Err(invalid("package chunk exceeds its shard"));
@@ -535,7 +542,7 @@ impl PackageReader {
             metadata,
             tensors,
             chunks,
-            shards,
+            open_shard: None,
             entries,
             artifact_length,
             control_length,
@@ -570,9 +577,8 @@ impl PackageReader {
         }
         let chunk = self.chunks[tensor.chunk_start].shard_id;
         self.entries
-            .keys()
-            .find(|path| path.as_str() == format!("shard-{chunk:05}.qifd"))
-            .map(String::as_str)
+            .get_key_value(&format!("shard-{chunk:05}.qifd"))
+            .map(|(path, _)| path.as_str())
             .ok_or_else(|| invalid("package shard is missing"))
     }
     pub fn read_range(&mut self, name: &str, range: std::ops::Range<usize>) -> Result<Vec<u8>> {
@@ -606,10 +612,7 @@ impl PackageReader {
                 continue;
             }
             let shard_name = format!("shard-{:05}.qifd", chunk.shard_id);
-            let file = self
-                .shards
-                .get_mut(&shard_name)
-                .ok_or_else(|| invalid("package shard is missing"))?;
+            let file = shard_file(&self.root, &mut self.open_shard, &shard_name)?;
             if chunk.codec == CODEC_NONE {
                 let offset = chunk
                     .stored_offset
@@ -645,19 +648,13 @@ impl PackageReader {
             let mut verifier = PayloadVerifier::new(dtype_from_id(tensor.dtype)?, &tensor.name);
             for chunk in &self.chunks[tensor.chunk_start..tensor.chunk_start + tensor.chunk_count] {
                 let path = format!("shard-{:05}.qifd", chunk.shard_id);
-                let file = self
-                    .shards
-                    .get_mut(&path)
-                    .ok_or_else(|| invalid("package shard is missing"))?;
+                let file = shard_file(&self.root, &mut self.open_shard, &path)?;
                 chunk.verify_file(file, 0, &mut verifier)?;
             }
             verifier.finish(tensor.raw_length, &tensor.checksum_sha256)?;
         }
         for (path, entry) in &self.entries {
-            let file = self
-                .shards
-                .get_mut(path)
-                .ok_or_else(|| invalid("package shard is missing"))?;
+            let file = shard_file(&self.root, &mut self.open_shard, path)?;
             file.seek(SeekFrom::Start(0)).map_err(io_error)?;
             if crate::sha256_reader(file).map_err(io_error)? != entry.sha256 {
                 return Err(invalid(format!("package shard {path} checksum mismatch")));
@@ -1084,6 +1081,30 @@ fn resolve_path(root: &Path, relative: &str) -> Result<PathBuf> {
         return Err(invalid(format!("package path escapes root: {relative}")));
     }
     Ok(path)
+}
+
+fn open_shard(root: &Path, name: &str) -> Result<File> {
+    let path = resolve_path(root, name)?;
+    if !fs::metadata(&path).map_err(io_error)?.is_file() {
+        return Err(invalid(format!("QIF shard {name} is not a regular file")));
+    }
+    crate::manifest::open_readonly_nofollow(&path).map_err(io_error)
+}
+
+fn shard_file<'a>(
+    root: &Path,
+    open: &'a mut Option<OpenShard>,
+    name: &str,
+) -> Result<&'a mut File> {
+    if open.as_ref().is_none_or(|shard| shard.name != name) {
+        // Release the current descriptor before opening another shard.
+        *open = None;
+        *open = Some(OpenShard {
+            name: name.to_owned(),
+            file: open_shard(root, name)?,
+        });
+    }
+    Ok(&mut open.as_mut().expect("shard is open").file)
 }
 
 fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<()> {

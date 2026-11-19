@@ -41,6 +41,7 @@ fn model_parameter_validation_is_independent_of_container_and_dimension_profile(
                         ("rope.scaling.type", MetadataValue::String("none".into())),
                         ("rope.dimension_count", MetadataValue::U32(4)),
                         ("attention.value_length", MetadataValue::U64(4)),
+                        ("attention.sliding_window", MetadataValue::U32(0)),
                         ("optional.hint", MetadataValue::Map(BTreeMap::new())),
                     ],
                     true,
@@ -51,6 +52,19 @@ fn model_parameter_validation_is_independent_of_container_and_dimension_profile(
                         ("rope.scaling.type", MetadataValue::String("linear".into())),
                         ("rope.scaling.factor", MetadataValue::F32(2.0)),
                     ],
+                    false,
+                ),
+                (
+                    "sliding-window",
+                    vec![("attention.sliding_window", MetadataValue::U32(2))],
+                    false,
+                ),
+                (
+                    "sliding-window-map",
+                    vec![(
+                        "attention.sliding_window",
+                        MetadataValue::Map(BTreeMap::new()),
+                    )],
                     false,
                 ),
                 (
@@ -174,5 +188,5 @@ fn model_parameter_validation_is_independent_of_container_and_dimension_profile(
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!((accepted, rejected), (48, 192));
+    assert_eq!((accepted, rejected), (48, 240));
 }

@@ -251,3 +251,28 @@ fn package_range_does_not_read_the_unrequested_chunk_tail() {
     assert!(reader.verify().is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn failed_staging_verification_does_not_publish_a_package() {
+    let parent = path("failed-staged-verification");
+    fs::create_dir(&parent).unwrap();
+    let output = parent.join("model.qif");
+    let result = write_qif_v2_package(
+        manifest(),
+        &BTreeMap::new(),
+        |_| {
+            let stage = fs::read_dir(&parent).unwrap().next().unwrap().unwrap();
+            fs::write(stage.path().join("metadata.qmb"), b"changed in staging").unwrap();
+            Ok(&[0; 8])
+        },
+        &output,
+        None,
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("control checksum mismatch"));
+    assert!(!output.exists());
+    assert!(fs::read_dir(&parent).unwrap().next().is_none());
+    fs::remove_dir(parent).unwrap();
+}
