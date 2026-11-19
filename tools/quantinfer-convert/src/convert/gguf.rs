@@ -42,6 +42,12 @@ pub(crate) fn run() -> Result<(), String> {
         print_help();
         return Ok(());
     }
+    if arguments.first().is_some_and(|argument| argument == "gptq") {
+        #[cfg(feature = "gptq")]
+        return crate::calibrated::run(&arguments[1..]);
+        #[cfg(not(feature = "gptq"))]
+        return Err("gptq requires a converter built with --features gptq".into());
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == "from-gguf")

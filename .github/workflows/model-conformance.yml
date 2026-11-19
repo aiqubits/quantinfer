@@ -440,6 +440,42 @@ jobs:
             smollm2-*-paired-samples/*.txt
             smollm2-qif-comparison.txt
 
+  gptq-whole-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
+        with:
+          toolchain: 1.99.1
+      - name: Download and verify the pinned calibration source model
+        run: |
+          manifest=model-zoo/manifests/smollm2-135m.json
+          source_url=$(jq -r '.source_repository + "/resolve/" + .source_revision' "$manifest")
+          jq -r '(.artifacts[], .weights) | "\(.sha256)  \(.path)"' "$manifest" > smollm2.sha256
+          while read -r _ path; do
+            curl --fail --location --retry 3 --output "$path" "$source_url/$path"
+          done < smollm2.sha256
+          sha256sum --check smollm2.sha256
+      - name: Build the calibrated workflow and its floating source
+        run: |
+          cargo build --release --locked -p quantinfer-convert --features gptq
+          target/release/quantinfer-convert --config config.json --weights model.safetensors \
+            --tokenizer tokenizer.json --output-format gguf --output smollm2-f32.gguf
+      - name: Gate all 210 GPTQ projections, holdout quality and QIF parity
+        shell: bash
+        env:
+          QUANTINFER_GPTQ_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
+          QUANTINFER_GPTQ_WORKFLOW_REPORT: ${{ github.workspace }}/gptq-whole-model-quality.json
+        run: |
+          cargo test --release --locked -p quantinfer-convert --features gptq \
+            --test gptq_model_conformance -- --ignored --nocapture | tee gptq-whole-model-quality.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: gptq-whole-model-quality
+          path: gptq-whole-model-*
+
   smollm2-external-f16:
     runs-on: ubuntu-latest
     timeout-minutes: 15

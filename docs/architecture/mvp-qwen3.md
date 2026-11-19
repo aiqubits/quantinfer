@@ -46,8 +46,11 @@ PACKAGE and SINGLE signatures. See the
 
 The full general plan's later phases are not complete. The GPTQ adapter now
 also has a full-Hessian calibrated matrix producer for native signed Q4_0/Q8_0,
-with independent upstream vectors and a real SmolLM2 projection quality test;
-whole-model orchestration remains pending. AWQ/AutoRound still import existing
+with independent upstream vectors and a real SmolLM2 projection quality test.
+The optional converter `gptq` workflow now calibrates and replaces every dense
+projection, checks optional holdout gates and publishes verified QIF with exact
+reload parity. Its real whole-model case is the fixed SmolLM2 four-bit profile;
+the separate model CI recomputes all 210 projections. AWQ/AutoRound still import existing
 artifacts rather than run their quantization algorithms. LLM Compressor has
 the WNA16 import adapter requested by the general plan. See the
 [GPTQ profile and acceptance boundary](../../adapters/gptq/README.md).

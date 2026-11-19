@@ -11,16 +11,35 @@
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `dcea320` 与 `02f7d9a` 的双环境专项及主 CI 已通过，各 153 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
-| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 的完整 Hessian 矩阵生产 API、独立参考和真实单投影 QIF 路径已本地通过，仍需全模型编排；AWQ/AutoRound 算法未完成；LLM Compressor 已有 WNA16 Adapter |
+| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 完整 Hessian API 与全模型 CLI/QIF 编排已实现，独立矩阵参考、小型全流程及正式真实 SmolLM2 全模型质量/两 profile 验收均本地通过；本批远端 CI 待确认。AWQ/AutoRound 算法未完成；LLM Compressor 已有 WNA16 Adapter |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
-| Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | 本地修复新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；旧 plain-QTensor 入口拒绝无法表达的 transpose；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过，待本批远端 CI |
+| Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | `00049bd` 新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过；远端 CI 已成功 |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
 QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名不混作当前 wire core 的缺陷；若后续扩展这些 profile，仍需单独冻结版本/编码与验收。
 
 ## 已完成迭代的证据
+
+- `00049bd` 的 [CI](https://github.com/aiqubits/quantinfer/actions/runs/44510167004)
+  已成功，实际执行新 Candle 矩阵、默认检查、双环境 153 项跨语言对照、资源检查、
+  三个 fuzz smoke 和原生 x86/ARM SIMD；该批仅触发此一个工作流。
+- 新全模型 GPTQ CLI 使用源模型、真实校准激活和前面已更新的投影，按层依次生产
+  210 个 SmolLM2 Q4_0 投影。13 条声明校准输入共 159 token rows，四条验证输入
+  KL 为 `0.429150 / 0.340109 / 0.092968 / 0.233445`，Top-10 为 `7 / 6 / 7 / 7`，
+  均通过预先设置且未放宽的 `0.5 / 6` 门槛；首轮 CLI 耗时 979.69 秒。
+  此前三提示 21-row 的 KL `0.552594` 失败未被改写为成功，也未发布其产物。
+  提示来源及开发/验证边界见 [fixtures](../../tests/fixtures/gptq/README.md)。
+  新正式验收测试随后实际重算全部 210 个投影，并检查两种 QIF profile 的全部
+  raw hash、完整 logits、确定性 generation 和每层 KV，已通过；算法/发布子进程
+  耗时 1012.82 秒，完整测试 1023.28 秒。四条质量结果与首轮完全一致。
+  原有单投影的更严格门槛和独立八组 upstream vectors 保留；全模型固定样例
+  不扩大为其它模型/参数的通用任务准确率。新独立远端 job 待对应提交确认。
+  本地标准 workspace 为 257 项运行时测试通过、7 ignored，另 1 项 compile-fail
+  doctest 通过；gptq feature 的五项全流程集成检查、strict Top-K 单测、可选
+  Clippy 和 format description release 回归通过。F16/BF16 输入的非投影 payload
+  按原精度逐字节保留；模型包来源 revision 与校验和失败路径单独验证。
 
 - 对 `02f7d9a` 的独立审查发现 Candle packed 导入忽略原生 output-row 坐标：
   合法 Q8_0 `[32,64]` 的逻辑元素从 -10 被误读成 -12；原有两个可选 feature 测试

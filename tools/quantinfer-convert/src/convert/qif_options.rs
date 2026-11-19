@@ -6,14 +6,14 @@ use quantinfer_format::{
 };
 use std::path::Path;
 
-pub(super) struct QifOptions {
+pub(crate) struct QifOptions {
     package: bool,
     codec: Codec,
     shard_bytes: Option<usize>,
 }
 
 impl QifOptions {
-    pub(super) fn parse(arguments: &[String]) -> Result<Self, String> {
+    pub(crate) fn parse(arguments: &[String]) -> Result<Self, String> {
         let package = match optional_value(arguments, "--qif-profile").as_deref() {
             None | Some("single") => false,
             Some("package") => true,
@@ -65,6 +65,44 @@ impl QifOptions {
         temporary
             .persist_noclobber(output)
             .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[cfg(feature = "gptq")]
+    pub(crate) fn publish_tensors<'a>(
+        &self,
+        manifest: quantinfer_format::ModelManifest,
+        metadata: &std::collections::BTreeMap<String, quantinfer_format::qif::MetadataValue>,
+        tensor_bytes: impl FnMut(&str) -> quantinfer_format::Result<&'a [u8]>,
+        output: &Path,
+    ) -> Result<(), String> {
+        if self.package {
+            return quantinfer_format::qif::write_qif_package_with_codec(
+                manifest,
+                metadata,
+                tensor_bytes,
+                output,
+                self.shard_bytes,
+                self.codec,
+            )
+            .map_err(|error| error.to_string());
+        }
+        let parent = output
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        quantinfer_format::qif::write_qif_with_codec(
+            manifest,
+            metadata,
+            tensor_bytes,
+            temporary.as_file_mut(),
+            self.codec,
+        )
+        .map_err(|e| e.to_string())?;
+        temporary
+            .persist_noclobber(output)
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 }

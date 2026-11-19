@@ -107,6 +107,28 @@ type Imported<'a> = (
     BTreeMap<String, Cow<'a, [u8]>>,
 );
 fn import_parts(reader: &GgufReader, model_id: impl Into<String>) -> Result<Imported<'_>> {
+    let (manifest, metadata) = describe_gguf(reader, model_id)?;
+    let mut payloads = BTreeMap::<String, Cow<'_, [u8]>>::new();
+    for tensor in reader.tensors() {
+        let bytes = reader.tensor_bytes(&tensor.name)?;
+        let payload =
+            if tensor.dtype == GgmlType::Q4_0 && reader.uses_legacy_quant_block_layout()? {
+                Cow::Owned(repack_q4_0(bytes))
+            } else {
+                Cow::Borrowed(bytes)
+            };
+        payloads.insert(tensor.name.clone(), payload);
+    }
+    Ok((manifest, metadata, payloads))
+}
+
+/// Describe GGUF controls in the native QIF coordinate system without reading
+/// or copying tensor payloads. Checksums are filled when the artifact is
+/// written. Native QIF callers should retain its embedded manifest/metadata.
+pub fn describe_gguf(
+    reader: &GgufReader,
+    model_id: impl Into<String>,
+) -> Result<(ModelManifest, BTreeMap<String, MetadataValue>)> {
     if reader.embedded_manifest().is_some() {
         return Err(invalid(
             "source must be GGUF; repack native QIF through its native reader/writer",
@@ -124,10 +146,8 @@ fn import_parts(reader: &GgufReader, model_id: impl Into<String>) -> Result<Impo
         "quantinfer.qif.ggml_dimension_order".to_owned(),
         GgufValue::Bool(ggml),
     );
-    let mut payloads = BTreeMap::<String, Cow<'_, [u8]>>::new();
     let mut schemes = Vec::new();
     for tensor in reader.tensors() {
-        let bytes = reader.tensor_bytes(&tensor.name)?;
         let (dtype, scheme, block_size) = descriptor_parts(tensor.dtype)?;
         let mut shape = tensor.shape.clone();
         if ggml {
@@ -148,12 +168,6 @@ fn import_parts(reader: &GgufReader, model_id: impl Into<String>) -> Result<Impo
                 descriptor.quantization_axis = quantinfer_core::QuantizationAxis::Axis(0);
             }
         }
-        let payload = if dtype == DType::Q4_0 && reader.uses_legacy_quant_block_layout()? {
-            Cow::Owned(repack_q4_0(bytes))
-        } else {
-            Cow::Borrowed(bytes)
-        };
-        payloads.insert(tensor.name.clone(), payload);
         manifest.tensors.push(TensorManifest {
             name: tensor.name.clone(),
             descriptor,
@@ -168,7 +182,8 @@ fn import_parts(reader: &GgufReader, model_id: impl Into<String>) -> Result<Impo
             _ => QuantizationScheme::Mixed,
         },
     };
-    Ok((manifest, metadata_from_gguf(&metadata), payloads))
+    manifest.validate()?;
+    Ok((manifest, metadata_from_gguf(&metadata)))
 }
 
 /// Write a QIF-SINGLE artifact using the required uncompressed codec.

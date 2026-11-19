@@ -1,5 +1,11 @@
 # Quantization
 
+Calibrated full-model GPTQ is available through the converter's optional
+`gptq` feature. See the [offline workflow](../../tools/quantinfer-convert/README.md)
+for floating sources, datasets, resource limits, quality gates and QIF
+publication. Its static signed four/eight-bit profile is separate from the
+external GPTQ/AWQ/AutoRound checkpoint importers.
+
 ## Collect calibration weights
 
 Run the model on representative prompts to measure each input channel's

@@ -91,9 +91,37 @@ cargo test --release --locked -p quantinfer-adapter-gptq \
   --test model_conformance -- --ignored --nocapture
 ```
 
-Whole-model quantization/calibration orchestration and Studio integration
-remain to be implemented. The API can quantize compatible individual matrices;
-the single-projection test does not establish full-model GPTQ acceptance.
+## Whole-model workflow
+
+The optional converter `gptq` feature provides sequential full-model calibration
+for Qwen3/Llama floating GGUF and native QIF sources. It replaces Q/K/V,
+attention-output, gate/up and down projections in each layer while collecting
+later inputs from the already-quantized model. It preserves source profiles,
+typed metadata and nonprojection bytes, and publishes only after quality gates,
+full verification and exact reload parity. See the
+[workflow and resource boundaries](../../tools/quantinfer-convert/README.md).
+
+The separate whole-model conformance test quantizes all 210 SmolLM2 projections,
+using 13 declared calibration prompts (159 token rows) and four validation
+inputs. It keeps KL <= 0.5 nats and Top-10 overlap >= 6 per input; the stricter
+single-projection gate above remains separate. The first expanded local run
+passed with KL 0.429150/0.340109/0.092968/0.233445 and overlap 7/6/7/7.
+It does not require cross-precision generated tokens to match and does not
+establish general task accuracy. The initial 21-row whole-model quality failure
+is preserved in the [prompt provenance](../../tests/fixtures/gptq/README.md).
+CI recomputes the complete workflow in a separate model job and checks both
+SINGLE/none and PACKAGE/zstd without requantizing the output.
+
+```sh
+QUANTINFER_GPTQ_WORKFLOW_SOURCE=/path/to/pinned-smollm2-f32.gguf \
+QUANTINFER_GPTQ_WORKFLOW_REPORT=/path/to/whole-model-quality.json \
+cargo test --release --locked -p quantinfer-convert --features gptq \
+  --test gptq_model_conformance -- --ignored --nocapture
+```
+
+Studio integration remains pending. The small workflow matrix covers both
+architectures and four/eight-bit production; the real whole-model quality
+case is the fixed SmolLM2 four-bit profile, not every model or option.
 
 ## Existing checkpoint import
 

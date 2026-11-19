@@ -28,7 +28,7 @@ pub use writer::{write_qif_v2, write_qif_v2_signed, write_qif_v2_with_codec, Cod
 pub(crate) use backing::{open_packed_file, open_packed_path, FileBacking};
 pub(crate) use reader::has_magic;
 pub(crate) use reader::open_packed;
-pub use writer::{import_gguf, import_gguf_package, import_gguf_with_codec};
+pub use writer::{describe_gguf, import_gguf, import_gguf_package, import_gguf_with_codec};
 
 use std::collections::BTreeMap;
 

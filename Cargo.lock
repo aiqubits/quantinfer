@@ -2197,13 +2197,16 @@ dependencies = [
 name = "quantinfer-convert"
 version = "0.1.0"
 dependencies = [
+ "quantinfer",
  "quantinfer-adapter-ggml",
+ "quantinfer-adapter-gptq",
  "quantinfer-core",
  "quantinfer-format",
  "quantinfer-model",
  "quantinfer-quant",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "tempfile",
 ]
 

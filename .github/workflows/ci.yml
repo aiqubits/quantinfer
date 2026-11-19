@@ -21,6 +21,11 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: python3 -m unittest discover -s benches -p 'test_*.py'
       - run: cargo test --locked -p quantinfer-adapter-candle --features candle
+      - name: Check calibrated quantization workflow feature
+        run: |
+          cargo check --locked -p quantinfer-convert --features gptq
+          cargo test --locked -p quantinfer-convert --features gptq
+          cargo clippy --locked -p quantinfer-convert --features gptq --all-targets -- -D warnings
       - name: Install independent golden reader hash dependency
         run: |
           sudo apt-get update
