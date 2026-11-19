@@ -150,66 +150,35 @@ impl PackedTensorReader {
         if self.embedded_manifest.is_some() {
             return qif_legacy::uses_ggml_dimension_order(&self.metadata);
         }
-        if self
-            .metadata
-            .keys()
-            .any(|key| key.ends_with(".tie_word_embeddings"))
-        {
-            return Ok(false);
-        }
-        let length = self
-            .metadata
-            .iter()
-            .find(|(key, _)| key.ends_with(".embedding_length"));
-        let Ok(embedding) = self.tensor_info("token_embd.weight") else {
-            return Ok(false);
-        };
-        if let (Some((length_key, value)), [first, second]) = (length, embedding.shape.as_slice()) {
-            let hidden = match value {
-                GgufValue::U32(value) => u64::from(*value),
-                GgufValue::U64(value) => *value,
-                GgufValue::I32(value) if *value >= 0 => *value as u64,
-                GgufValue::I64(value) if *value >= 0 => *value as u64,
-                _ => {
-                    return Err(FormatError::Invalid(format!(
-                        "GGUF metadata {length_key} must be an unsigned integer"
-                    )))
-                }
-            };
-            let hidden = usize::try_from(hidden).map_err(|_| {
-                FormatError::Invalid(format!("GGUF metadata {length_key} overflows usize"))
-            })?;
-            match (*first == hidden, *second == hidden) {
-                (true, false) => return Ok(true),
-                (false, true) => return Ok(false),
-                _ => {}
-            }
-        }
-        Ok(self.metadata.contains_key("general.file_type"))
+        gguf_uses_ggml_rows(&self.metadata, &self.tensors)
     }
 
     pub(crate) fn uses_legacy_quant_block_layout(&self) -> Result<bool> {
         if self.embedded_manifest.is_some() {
             return Ok(false);
         }
-        match self.metadata.get(QUANT_BLOCK_LAYOUT) {
-            Some(GgufValue::String(layout)) if layout == "ggml" => Ok(false),
-            Some(_) => Err(FormatError::Invalid(
-                "unsupported GGUF quantization block layout".to_owned(),
-            )),
-            // Older QuantInfer converter outputs declare the architecture-specific
-            // tie flag. The old standalone writer could omit the architecture.
-            None => Ok(match self.metadata.get("general.architecture") {
-                Some(GgufValue::String(architecture)) => self
-                    .metadata
-                    .contains_key(&format!("{architecture}.tie_word_embeddings")),
-                _ => true,
-            }),
-        }
+        gguf_uses_legacy_blocks(&self.metadata)
     }
 
     pub fn open(bytes: Vec<u8>) -> Result<Self> {
-        let mut cursor = Cursor::new(&bytes);
+        let GgufControls {
+            metadata,
+            tensors,
+            data_start,
+        } = Self::parse_gguf_controls(&bytes, bytes.len())?;
+        Ok(Self {
+            bytes,
+            metadata,
+            tensors,
+            data_start,
+            embedded_manifest: None,
+            qif_metadata: None,
+            file_backing: None,
+        })
+    }
+
+    pub(super) fn parse_gguf_controls(bytes: &[u8], file_length: usize) -> Result<GgufControls> {
+        let mut cursor = Cursor::new(bytes);
         if cursor.read_exact(4)? != &GGUF_MAGIC[..] {
             return Err(FormatError::Invalid("invalid GGUF magic".to_owned()));
         }
@@ -321,7 +290,7 @@ impl PackedTensorReader {
                         tensor.name
                     ))
                 })?;
-            if data_end > bytes.len() {
+            if data_end > file_length {
                 return Err(FormatError::Invalid(format!(
                     "GGUF tensor {} data is truncated",
                     tensor.name
@@ -335,14 +304,10 @@ impl PackedTensorReader {
                 "GGUF tensor payloads overlap".to_owned(),
             ));
         }
-        Ok(Self {
-            bytes,
+        Ok(GgufControls {
             metadata,
             tensors,
             data_start,
-            embedded_manifest: None,
-            qif_metadata: None,
-            file_backing: None,
         })
     }
 
@@ -447,4 +412,70 @@ impl PackedTensorReader {
             .find(|tensor| tensor.name == name)
             .ok_or_else(|| FormatError::Invalid(format!("unknown GGUF tensor {name}")))
     }
+}
+
+pub(super) fn gguf_uses_ggml_rows(
+    metadata: &BTreeMap<String, GgufValue>,
+    tensors: &[GgufTensorInfo],
+) -> Result<bool> {
+    if metadata
+        .keys()
+        .any(|key| key.ends_with(".tie_word_embeddings"))
+    {
+        return Ok(false);
+    }
+    let length = metadata
+        .iter()
+        .find(|(key, _)| key.ends_with(".embedding_length"));
+    let Some(embedding) = tensors
+        .iter()
+        .find(|tensor| tensor.name == "token_embd.weight")
+    else {
+        return Ok(false);
+    };
+    if let (Some((length_key, value)), [first, second]) = (length, embedding.shape.as_slice()) {
+        let hidden = match value {
+            GgufValue::U32(value) => u64::from(*value),
+            GgufValue::U64(value) => *value,
+            GgufValue::I32(value) if *value >= 0 => *value as u64,
+            GgufValue::I64(value) if *value >= 0 => *value as u64,
+            _ => {
+                return Err(FormatError::Invalid(format!(
+                    "GGUF metadata {length_key} must be an unsigned integer"
+                )))
+            }
+        };
+        let hidden = usize::try_from(hidden).map_err(|_| {
+            FormatError::Invalid(format!("GGUF metadata {length_key} overflows usize"))
+        })?;
+        match (*first == hidden, *second == hidden) {
+            (true, false) => return Ok(true),
+            (false, true) => return Ok(false),
+            _ => {}
+        }
+    }
+    Ok(metadata.contains_key("general.file_type"))
+}
+
+pub(super) fn gguf_uses_legacy_blocks(metadata: &BTreeMap<String, GgufValue>) -> Result<bool> {
+    match metadata.get(QUANT_BLOCK_LAYOUT) {
+        Some(GgufValue::String(layout)) if layout == "ggml" => Ok(false),
+        Some(_) => Err(FormatError::Invalid(
+            "unsupported GGUF quantization block layout".to_owned(),
+        )),
+        // Older QuantInfer converter outputs declare the architecture-specific
+        // tie flag. The old standalone writer could omit the architecture.
+        None => Ok(match metadata.get("general.architecture") {
+            Some(GgufValue::String(architecture)) => {
+                metadata.contains_key(&format!("{architecture}.tie_word_embeddings"))
+            }
+            _ => true,
+        }),
+    }
+}
+
+pub(crate) struct GgufControls {
+    pub metadata: BTreeMap<String, GgufValue>,
+    pub tensors: Vec<GgufTensorInfo>,
+    pub data_start: usize,
 }

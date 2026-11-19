@@ -2,7 +2,7 @@
 use crate::common::optional_value;
 use quantinfer_format::{
     qif::{import_gguf_package, import_gguf_with_codec, Codec},
-    GgufReader,
+    GgufReader, GgufSpool,
 };
 use std::path::Path;
 
@@ -61,6 +61,33 @@ impl QifOptions {
         let mut temporary =
             tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
         import_gguf_with_codec(reader, model_id, temporary.as_file_mut(), self.codec)
+            .map_err(|error| error.to_string())?;
+        temporary
+            .persist_noclobber(output)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub(super) fn publish_spool(
+        &self,
+        spool: GgufSpool<std::fs::File>,
+        model_id: &str,
+        output: &Path,
+    ) -> Result<(), String> {
+        if self.package {
+            return spool
+                .finish_qif_package(model_id, output, self.shard_bytes, self.codec)
+                .map_err(|error| error.to_string());
+        }
+        let parent = output
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+        let mut payload = tempfile::tempfile_in(parent).map_err(|error| error.to_string())?;
+        spool
+            .finish_qif(model_id, temporary.as_file_mut(), &mut payload, self.codec)
             .map_err(|error| error.to_string())?;
         temporary
             .persist_noclobber(output)

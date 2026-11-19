@@ -48,7 +48,7 @@ pub fn sha256_reader(reader: &mut impl Read) -> io::Result<String> {
     Ok(hex_encode(digest.finalize().as_ref()))
 }
 
-fn hex_encode(bytes: &[u8]) -> String {
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {

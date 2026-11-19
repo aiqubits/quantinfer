@@ -23,6 +23,7 @@ pub(crate) use encoding::{encode_value, tensor_byte_size, write_string, Cursor};
 pub use layout::qk_channel;
 pub use reader::{GgufReader, PackedTensorReader};
 pub use spool::GgufSpool;
+pub(crate) use spool::SpoolSource;
 pub use types::{FormatError, GgmlType, GgufTensorInfo, GgufValue, GgufWriter};
 
 #[cfg(test)]

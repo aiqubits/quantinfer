@@ -665,7 +665,10 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif` 发布当前 QIF。二者使用 `--qif-profile single|package`、
    `--qif-codec none|zstd|lz4`，PACKAGE 还接受 `--max-shard-bytes N`。内部仍复用
-   已验证的 GGUF 语义映射；发布器的转换/写入阶段不是全模型内存上界保证。
+   已验证的 GGUF 语义映射。SafeTensors 转换按 tensor 在磁盘暂存，通过 SINGLE payload
+   暂存流或 PACKAGE 分片流直接发布 QIF；内存开销与当前 tensor、编码块和索引大小
+   有关。`from-gguf` 兼容入口仍整体读取传入的 GGUF。固定 SmolLM2 两分片测试用
+   384 MiB 进程地址空间运行两种容器与三种 codec，并核对所有产物字节与 GGUF 转换一致。
 8. 更新 `docs/architecture/design-decisions.md`、`docs/architecture/mvp-qwen3.md`、`docs/rfcs/README.md`，明确 v1 已废弃、v2 是唯一新格式（已完成）。
 
 ## 12. 设计结论

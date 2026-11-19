@@ -139,6 +139,15 @@ jobs:
           fi
           grep -F 'checksum mismatch for shard model-00002-of-00002.safetensors' error.log
           test ! -e rejected.gguf
+      - name: Verify bounded sharded SafeTensors conversion to QIF
+        shell: bash
+        run: |
+          cargo build --release --locked -p quantinfer-cli
+          python3 tests/conformance/sharded_qif_conversion.py \
+            --converter target/release/quantinfer-convert --cli target/release/quantinfer-cli \
+            --config config.json --tokenizer tokenizer.json --gguf smollm2-f32.gguf \
+            --index sharded/model.safetensors.index.json --checksums sharded.sha256 \
+            | tee smollm2-sharded-qif-conversion.log
       - name: Verify a mixed precision package and its inference profile
         shell: bash
         run: |
@@ -431,6 +440,7 @@ jobs:
         with:
           name: smollm2-benchmark
           path: |
+            smollm2-sharded-qif-conversion.log
             smollm2-k-quant-*.json
             smollm2-k-quant-quality.log
             smollm2-precision-*.json

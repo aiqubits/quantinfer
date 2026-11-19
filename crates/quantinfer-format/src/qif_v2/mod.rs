@@ -18,6 +18,8 @@ mod reshard;
 mod signature;
 mod writer;
 
+pub(crate) use writer::{write_spooled_package, write_spooled_single};
+
 pub use metadata::MetadataValue;
 pub use mmap::MappedFile;
 pub use package::{write_qif_v2_package, write_qif_v2_package_with_codec, PackageReader};

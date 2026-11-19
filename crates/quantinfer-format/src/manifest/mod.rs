@@ -1,6 +1,7 @@
 //! Model manifests, checksums, and verified packages.
 
 mod hash;
+pub(crate) use hash::hex_encode;
 pub(crate) use hash::open_readonly_nofollow;
 mod package;
 mod types;

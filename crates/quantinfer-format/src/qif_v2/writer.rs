@@ -1,6 +1,6 @@
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::io::{self, Read, Seek, Write};
 
 use ed25519_dalek::SigningKey;
 use sha2::{Digest, Sha256};
@@ -10,10 +10,11 @@ use quantinfer_core::{
     Q8_0_BLOCK_SIZE,
 };
 
-use crate::gguf::GgufReader;
-use crate::{GgmlType, GgufValue, ModelManifest, Result, TensorManifest};
+use crate::gguf::{GgufReader, SpoolSource};
+use crate::{GgmlType, GgufTensorInfo, GgufValue, ModelManifest, Result, TensorManifest};
 
 use super::metadata::MetadataValue;
+use super::package::write_package_from_source;
 use super::payload::validate_payload;
 use super::{
     align, canonicalize_manifest_layouts, invalid, metadata_from_gguf, ALIAS_NONE, ALIGNMENT,
@@ -28,7 +29,59 @@ pub enum Codec {
     Lz4,
 }
 
-type BuiltIndex = (Vec<u8>, Vec<usize>, Vec<Vec<u8>>);
+trait Scratch: Read + Write + Seek {}
+impl<T: Read + Write + Seek> Scratch for T {}
+
+enum StagedPayload<'a> {
+    Memory(Vec<(usize, Vec<u8>)>),
+    Scratch {
+        file: &'a mut dyn Scratch,
+        written: usize,
+    },
+}
+
+impl StagedPayload<'_> {
+    fn append(&mut self, offset: usize, bytes: Cow<'_, [u8]>) -> Result<()> {
+        match self {
+            Self::Memory(chunks) => chunks.push((offset, bytes.into_owned())),
+            Self::Scratch { file, written } => {
+                write_padding(file, *written, offset)?;
+                file.write_all(&bytes).map_err(write_error)?;
+                *written = offset
+                    .checked_add(bytes.len())
+                    .ok_or_else(|| invalid("payload length overflows"))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn publish(self, output: &mut impl Write, length: usize) -> Result<()> {
+        match self {
+            Self::Memory(chunks) => {
+                let mut written = 0;
+                for (offset, bytes) in chunks {
+                    write_padding(output, written, offset)?;
+                    output.write_all(&bytes).map_err(write_error)?;
+                    written = offset
+                        .checked_add(bytes.len())
+                        .ok_or_else(|| invalid("payload length overflows"))?;
+                }
+                write_padding(output, written, length)
+            }
+            Self::Scratch { mut file, written } => {
+                write_padding(&mut file, written, length)?;
+                file.rewind().map_err(write_error)?;
+                let length =
+                    u64::try_from(length).map_err(|_| invalid("payload length overflows u64"))?;
+                let copied = io::copy(&mut file.take(length), output).map_err(write_error)?;
+                if copied != length {
+                    return Err(invalid("QIF scratch payload is truncated"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct PhysicalTensor {
@@ -39,10 +92,6 @@ struct PhysicalTensor {
     data_offset: usize,
     hash: [u8; HASH_SIZE],
     codec: u32,
-    dtype: u32,
-    encoding: u32,
-    scheme: u32,
-    layout: u32,
 }
 
 impl Codec {
@@ -101,6 +150,66 @@ pub fn import_gguf_package(
     )
 }
 
+pub(crate) fn write_spooled_single<F: Read + Seek>(
+    mut source: SpoolSource<F>,
+    model_id: impl Into<String>,
+    output: &mut impl Write,
+    scratch: &mut (impl Read + Write + Seek),
+    codec: Codec,
+) -> Result<()> {
+    let (manifest, metadata) = describe_gguf_controls(
+        &source.controls.metadata,
+        &source.controls.tensors,
+        model_id,
+        source.ggml_rows()?,
+    )?;
+    let legacy = source.legacy_blocks()?;
+    write_single_from_source(
+        manifest,
+        &metadata,
+        |name| spooled_tensor(&mut source, legacy, name),
+        output,
+        codec,
+        scratch,
+    )
+}
+
+pub(crate) fn write_spooled_package<F: Read + Seek>(
+    mut source: SpoolSource<F>,
+    model_id: impl Into<String>,
+    output: &std::path::Path,
+    max_shard_bytes: Option<usize>,
+    codec: Codec,
+) -> Result<()> {
+    let (manifest, metadata) = describe_gguf_controls(
+        &source.controls.metadata,
+        &source.controls.tensors,
+        model_id,
+        source.ggml_rows()?,
+    )?;
+    let legacy = source.legacy_blocks()?;
+    write_package_from_source(
+        manifest,
+        &metadata,
+        |name| spooled_tensor(&mut source, legacy, name),
+        output,
+        max_shard_bytes,
+        codec,
+    )
+}
+
+fn spooled_tensor<'a>(
+    source: &mut SpoolSource<impl Read + Seek>,
+    legacy: bool,
+    name: &str,
+) -> Result<Cow<'a, [u8]>> {
+    let (dtype, mut bytes) = source.read_tensor(name)?;
+    if dtype == GgmlType::Q4_0 && legacy {
+        bytes = repack_q4_0(&bytes);
+    }
+    Ok(Cow::Owned(bytes))
+}
+
 type Imported<'a> = (
     ModelManifest,
     BTreeMap<String, MetadataValue>,
@@ -134,20 +243,33 @@ pub fn describe_gguf(
             "source must be GGUF; repack native QIF through its native reader/writer",
         ));
     }
-    let mut metadata = reader.metadata().clone();
+    describe_gguf_controls(
+        reader.metadata(),
+        reader.tensors(),
+        model_id,
+        reader.uses_ggml_output_rows()?,
+    )
+}
+
+fn describe_gguf_controls(
+    metadata: &BTreeMap<String, GgufValue>,
+    tensors: &[GgufTensorInfo],
+    model_id: impl Into<String>,
+    ggml: bool,
+) -> Result<(ModelManifest, BTreeMap<String, MetadataValue>)> {
+    let mut metadata = metadata.clone();
     let architecture = match metadata.get("general.architecture") {
         Some(GgufValue::String(architecture)) => architecture.as_str(),
         None => return Err(invalid("source GGUF is missing general.architecture")),
         Some(_) => return Err(invalid("source architecture must be a string")),
     };
     let mut manifest = ModelManifest::new(model_id, architecture);
-    let ggml = reader.uses_ggml_output_rows()?;
     metadata.insert(
         "quantinfer.qif.ggml_dimension_order".to_owned(),
         GgufValue::Bool(ggml),
     );
     let mut schemes = Vec::new();
-    for tensor in reader.tensors() {
+    for tensor in tensors {
         let (dtype, scheme, block_size) = descriptor_parts(tensor.dtype)?;
         let mut shape = tensor.shape.clone();
         if ggml {
@@ -207,7 +329,7 @@ pub fn write_qif_v2_with_codec<'a>(
     output: &mut impl Write,
     codec: Codec,
 ) -> Result<()> {
-    write_qif_v2_inner(manifest, metadata, tensor_bytes, output, codec, None)
+    write_borrowed(manifest, metadata, tensor_bytes, output, codec, None)
 }
 
 pub fn write_qif_v2_signed<'a>(
@@ -218,7 +340,7 @@ pub fn write_qif_v2_signed<'a>(
     codec: Codec,
     signing_key: &SigningKey,
 ) -> Result<()> {
-    write_qif_v2_inner(
+    write_borrowed(
         manifest,
         metadata,
         tensor_bytes,
@@ -228,13 +350,64 @@ pub fn write_qif_v2_signed<'a>(
     )
 }
 
-fn write_qif_v2_inner<'a>(
-    mut manifest: ModelManifest,
+fn write_borrowed<'a>(
+    manifest: ModelManifest,
     metadata: &BTreeMap<String, MetadataValue>,
     mut tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output: &mut impl Write,
     codec: Codec,
     signing_key: Option<&SigningKey>,
+) -> Result<()> {
+    let mut loaded = BTreeMap::new();
+    write_qif_v2_inner(
+        manifest,
+        metadata,
+        |name| {
+            if let Some(&bytes) = loaded.get(name) {
+                return Ok(Cow::Borrowed(bytes));
+            }
+            let bytes = tensor_bytes(name)?;
+            loaded.insert(name.to_owned(), bytes);
+            Ok(Cow::Borrowed(bytes))
+        },
+        output,
+        codec,
+        signing_key,
+        StagedPayload::Memory(Vec::new()),
+    )
+}
+
+fn write_single_from_source<'a>(
+    manifest: ModelManifest,
+    metadata: &BTreeMap<String, MetadataValue>,
+    tensor_bytes: impl FnMut(&str) -> Result<Cow<'a, [u8]>>,
+    output: &mut impl Write,
+    codec: Codec,
+    scratch: &mut (impl Read + Write + Seek),
+) -> Result<()> {
+    scratch.rewind().map_err(write_error)?;
+    write_qif_v2_inner(
+        manifest,
+        metadata,
+        tensor_bytes,
+        output,
+        codec,
+        None,
+        StagedPayload::Scratch {
+            file: scratch,
+            written: 0,
+        },
+    )
+}
+
+fn write_qif_v2_inner<'a>(
+    mut manifest: ModelManifest,
+    metadata: &BTreeMap<String, MetadataValue>,
+    mut tensor_bytes: impl FnMut(&str) -> Result<Cow<'a, [u8]>>,
+    output: &mut impl Write,
+    codec: Codec,
+    signing_key: Option<&SigningKey>,
+    mut staging: StagedPayload<'_>,
 ) -> Result<()> {
     if manifest.tensors.len() > MAX_TENSORS {
         return Err(invalid("tensor count exceeds the limit"));
@@ -244,29 +417,13 @@ fn write_qif_v2_inner<'a>(
     super::reader::validate_manifest_limits(&manifest)?;
     let metadata_bytes = super::metadata::encode(metadata)?;
 
-    let mut payloads = Vec::with_capacity(manifest.tensors.len());
-    for tensor in &mut manifest.tensors {
-        let payload = tensor_bytes(&tensor.name)?;
-        let expected = payload_size(&tensor.descriptor)?;
-        if payload.len() != expected {
-            return Err(invalid(format!(
-                "tensor {} has {} bytes, expected {expected}",
-                tensor.name,
-                payload.len()
-            )));
-        }
-        validate_payload(tensor.descriptor.dtype, payload, &tensor.name)?;
-        tensor.checksum_sha256 = Some(crate::sha256_hex(payload));
-        payloads.push(payload);
-    }
-    // The manifest contains tensor checksums, so serialize it only after all
-    // payload validation has completed.
+    let (index, payload_length) =
+        build_index(&mut manifest, codec.id(), &mut tensor_bytes, &mut staging)?;
     let manifest_bytes = serde_json::to_vec(&manifest)
         .map_err(|error| invalid(format!("cannot serialize manifest: {error}")))?;
     if manifest_bytes.len() > 64 * 1024 * 1024 {
         return Err(invalid("manifest exceeds the size limit"));
     }
-    let (index, chunk_offsets, stored_payloads) = build_index(&manifest, &payloads, codec.id())?;
     let root_hash = root_hash(&manifest_bytes, &metadata_bytes, &index);
 
     let manifest_offset = align(HEADER_SIZE)?;
@@ -294,14 +451,6 @@ fn write_qif_v2_inner<'a>(
     } else {
         index_end
     })?;
-    let mut payload_length = 0usize;
-    for payload in &stored_payloads {
-        payload_length = payload_length
-            .checked_add(payload.len())
-            .ok_or_else(|| invalid("payload length overflows"))?;
-        payload_length = align(payload_length)?;
-    }
-
     let header = encode_header(
         manifest_offset,
         manifest_bytes.len(),
@@ -339,22 +488,7 @@ fn write_qif_v2_inner<'a>(
         output.write_all(&signature).map_err(write_error)?;
         write_padding(output, signature_offset + signature.len(), payload_offset)?;
     }
-    let mut current = payload_offset;
-    for (payload, offset) in stored_payloads.iter().zip(chunk_offsets) {
-        let expected = payload_offset
-            .checked_add(offset)
-            .ok_or_else(|| invalid("payload offset overflows"))?;
-        write_padding(output, current, expected)?;
-        output.write_all(payload).map_err(write_error)?;
-        current = expected
-            .checked_add(payload.len())
-            .ok_or_else(|| invalid("payload end overflows"))?;
-    }
-    let payload_end = payload_offset
-        .checked_add(payload_length)
-        .ok_or_else(|| invalid("payload range overflows"))?;
-    write_padding(output, current, payload_end)?;
-    Ok(())
+    staging.publish(output, payload_length)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -412,21 +546,34 @@ fn encode_header(
     Ok(header)
 }
 
-fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Result<BuiltIndex> {
+fn build_index<'a>(
+    manifest: &mut ModelManifest,
+    codec: u32,
+    tensor_bytes: &mut impl FnMut(&str) -> Result<Cow<'a, [u8]>>,
+    staging: &mut StagedPayload<'_>,
+) -> Result<(Vec<u8>, usize)> {
     let mut strings = Vec::new();
     let mut shapes = Vec::new();
     let mut records = Vec::new();
     let mut chunks = Vec::new();
-    let mut names = BTreeSet::new();
     let mut dedup = BTreeMap::<[u8; HASH_SIZE], Vec<usize>>::new();
-    let mut physical = Vec::<Option<PhysicalTensor>>::with_capacity(payloads.len());
-    let mut offsets = Vec::with_capacity(payloads.len());
-    let mut stored_payloads = Vec::with_capacity(payloads.len());
+    let mut physical = Vec::<Option<PhysicalTensor>>::with_capacity(manifest.tensors.len());
     let mut payload_offset = 0usize;
-    for (index, tensor) in manifest.tensors.iter().enumerate() {
-        if !names.insert(tensor.name.as_str()) {
-            return Err(invalid("tensor names must be unique"));
+    for index in 0..manifest.tensors.len() {
+        let tensor = &mut manifest.tensors[index];
+        let payload = tensor_bytes(&tensor.name)?;
+        let expected = payload_size(&tensor.descriptor)?;
+        if payload.len() != expected {
+            return Err(invalid(format!(
+                "tensor {} has {} bytes, expected {expected}",
+                tensor.name,
+                payload.len()
+            )));
         }
+        validate_payload(tensor.descriptor.dtype, &payload, &tensor.name)?;
+        let hash: [u8; HASH_SIZE] = Sha256::digest(&payload).into();
+        tensor.checksum_sha256 = Some(crate::manifest::hex_encode(&hash));
+        let tensor = &manifest.tensors[index];
         let name_offset = strings.len();
         strings.extend_from_slice(
             &u32::try_from(tensor.name.len())
@@ -448,19 +595,14 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
             );
         }
         let (dtype, encoding, scheme, layout) = descriptor_ids(&tensor.descriptor)?;
-        let payload = payloads[index];
-        let hash: [u8; HASH_SIZE] = Sha256::digest(payload).into();
-        let alias_target = dedup.get(&hash).and_then(|candidates| {
-            candidates.iter().copied().find(|candidate| {
-                let prior = physical[*candidate].expect("dedup candidate is physical");
-                manifest.tensors[*candidate].descriptor == tensor.descriptor
-                    && prior.dtype == dtype
-                    && prior.encoding == encoding
-                    && prior.scheme == scheme
-                    && prior.layout == layout
-                    && payloads[*candidate] == payload
-            })
-        });
+        let mut alias_target = None;
+        for &candidate in dedup.get(&hash).into_iter().flatten() {
+            let prior = &manifest.tensors[candidate];
+            if prior.descriptor == tensor.descriptor && tensor_bytes(&prior.name)? == payload {
+                alias_target = Some(candidate);
+                break;
+            }
+        }
         let tensor = if let Some(target) = alias_target {
             let prior = physical[target].expect("alias target is physical");
             let record = encode_tensor_record(
@@ -498,7 +640,11 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
                 if chunks.len() / 72 >= MAX_CHUNKS {
                     return Err(invalid("chunk count exceeds the limit"));
                 }
-                let stored = super::codec::compress(codec, raw)?;
+                let stored = if codec == CODEC_NONE {
+                    Cow::Borrowed(raw)
+                } else {
+                    Cow::Owned(super::codec::compress(codec, raw)?)
+                };
                 let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
                 chunks.extend_from_slice(&encode_chunk(
                     0,
@@ -509,7 +655,7 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
                     stored.len(),
                     stored_hash,
                 )?);
-                offsets.push(payload_offset);
+                let offset = payload_offset;
                 stored_length = stored_length
                     .checked_add(stored.len())
                     .ok_or_else(|| invalid("stored tensor length overflows"))?;
@@ -518,7 +664,7 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
                         .checked_add(stored.len())
                         .ok_or_else(|| invalid("payload offset overflows"))?,
                 )?;
-                stored_payloads.push(stored);
+                staging.append(offset, stored)?;
                 raw_offset += raw.len();
             }
             let info = PhysicalTensor {
@@ -531,10 +677,6 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
                 data_offset: first_offset,
                 hash,
                 codec,
-                dtype,
-                encoding,
-                scheme,
-                layout,
             };
             physical.push(Some(info));
             dedup.entry(hash).or_default().push(index);
@@ -579,7 +721,7 @@ fn build_index(manifest: &ModelManifest, payloads: &[&[u8]], codec: u32) -> Resu
     if index.len() > MAX_INDEX_BYTES {
         return Err(invalid("index exceeds the size limit"));
     }
-    Ok((index, offsets, stored_payloads))
+    Ok((index, payload_offset))
 }
 
 #[allow(clippy::too_many_arguments)]

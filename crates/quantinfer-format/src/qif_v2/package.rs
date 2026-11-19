@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -64,10 +65,59 @@ struct PhysicalTensor {
     data_offset: usize,
     hash: [u8; HASH_SIZE],
     codec: u32,
-    dtype: u32,
-    encoding: u32,
-    scheme: u32,
-    layout: u32,
+}
+
+struct StagedShard {
+    id: usize,
+    name: String,
+    file: File,
+    size: usize,
+    digest: Sha256,
+}
+
+impl StagedShard {
+    fn create(root: &Path, id: usize) -> Result<Self> {
+        let name = format!("shard-{id:05}.qifd");
+        let file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(root.join(&name))
+            .map_err(io_error)?;
+        Ok(Self {
+            id,
+            name,
+            file,
+            size: 0,
+            digest: Sha256::new(),
+        })
+    }
+
+    fn append(&mut self, bytes: &[u8]) -> Result<usize> {
+        let start = align(self.size)?;
+        let end = start
+            .checked_add(bytes.len())
+            .ok_or_else(|| invalid("package shard size overflows"))?;
+        let padding = &[0; ALIGNMENT][..start - self.size];
+        self.file.write_all(padding).map_err(io_error)?;
+        self.file.write_all(bytes).map_err(io_error)?;
+        self.digest.update(padding);
+        self.digest.update(bytes);
+        self.size = end;
+        Ok(start)
+    }
+
+    fn finish(self) -> Result<ShardManifest> {
+        self.file.sync_all().map_err(io_error)?;
+        Ok(ShardManifest {
+            path: self.name,
+            size: self.size as u64,
+            sha256: hex_encode(&self.digest.finalize()),
+            mesh_axis: 0,
+            rank: 1,
+            coordinate: vec![self.id as u32],
+            tensors: Vec::new(),
+        })
+    }
 }
 
 /// Write a QIF-PACKAGE directory with independently readable shard files.
@@ -89,17 +139,42 @@ pub fn write_qif_v2_package<'a>(
 }
 
 pub fn write_qif_v2_package_with_codec<'a>(
-    mut manifest: ModelManifest,
+    manifest: ModelManifest,
     metadata: &BTreeMap<String, MetadataValue>,
     mut tensor_bytes: impl FnMut(&str) -> Result<&'a [u8]>,
     output_dir: impl AsRef<Path>,
     max_shard_bytes: Option<usize>,
     codec: Codec,
 ) -> Result<()> {
+    let mut loaded = BTreeMap::new();
+    write_package_from_source(
+        manifest,
+        metadata,
+        |name| {
+            if let Some(&bytes) = loaded.get(name) {
+                return Ok(Cow::Borrowed(bytes));
+            }
+            let bytes = tensor_bytes(name)?;
+            loaded.insert(name.to_owned(), bytes);
+            Ok(Cow::Borrowed(bytes))
+        },
+        output_dir.as_ref(),
+        max_shard_bytes,
+        codec,
+    )
+}
+
+pub(super) fn write_package_from_source<'a>(
+    mut manifest: ModelManifest,
+    metadata: &BTreeMap<String, MetadataValue>,
+    mut tensor_bytes: impl FnMut(&str) -> Result<Cow<'a, [u8]>>,
+    output_dir: &Path,
+    max_shard_bytes: Option<usize>,
+    codec: Codec,
+) -> Result<()> {
     canonicalize_manifest_layouts(&mut manifest);
     manifest.validate()?;
     super::reader::validate_manifest_limits(&manifest)?;
-    let output_dir = output_dir.as_ref();
     if output_dir.exists() {
         return Err(invalid(format!(
             "package output already exists: {}",
@@ -137,7 +212,7 @@ pub fn write_qif_v2_package_with_codec<'a>(
 fn write_package_contents<'a>(
     manifest: &mut ModelManifest,
     metadata: &BTreeMap<String, MetadataValue>,
-    tensor_bytes: &mut impl FnMut(&str) -> Result<&'a [u8]>,
+    tensor_bytes: &mut impl FnMut(&str) -> Result<Cow<'a, [u8]>>,
     output_dir: &Path,
     max_shard_bytes: usize,
     codec: u32,
@@ -145,31 +220,30 @@ fn write_package_contents<'a>(
     let metadata_bytes = super::metadata::encode(metadata)?;
     write_atomic_file(&output_dir.join("metadata.qmb"), &metadata_bytes)?;
 
-    let mut payloads = Vec::with_capacity(manifest.tensors.len());
-    for tensor in &mut manifest.tensors {
-        let bytes = tensor_bytes(&tensor.name)?;
-        let expected = package_payload_size(&tensor.descriptor)?;
-        if bytes.len() != expected {
-            return Err(invalid(format!(
-                "tensor {} has {} bytes, expected {expected}",
-                tensor.name,
-                bytes.len()
-            )));
-        }
-        validate_payload(tensor.descriptor.dtype, bytes, &tensor.name)?;
-        tensor.checksum_sha256 = Some(crate::sha256_hex(bytes));
-        payloads.push(bytes);
-    }
-
     let mut strings = Vec::new();
     let mut shapes = Vec::new();
     let mut records = Vec::new();
     let mut chunks = Vec::new();
     let mut dedup = BTreeMap::<[u8; HASH_SIZE], Vec<usize>>::new();
     let mut physical = Vec::<Option<PhysicalTensor>>::with_capacity(manifest.tensors.len());
-    let mut shard_bytes = vec![Vec::<u8>::new()];
+    let mut shard = StagedShard::create(output_dir, 0)?;
+    let mut shards = Vec::new();
     let mut shard_tensors = vec![BTreeSet::<String>::new()];
-    for (tensor_id, (tensor, payload)) in manifest.tensors.iter().zip(payloads.iter()).enumerate() {
+    for tensor_id in 0..manifest.tensors.len() {
+        let tensor = &mut manifest.tensors[tensor_id];
+        let payload = tensor_bytes(&tensor.name)?;
+        let expected = package_payload_size(&tensor.descriptor)?;
+        if payload.len() != expected {
+            return Err(invalid(format!(
+                "tensor {} has {} bytes, expected {expected}",
+                tensor.name,
+                payload.len()
+            )));
+        }
+        validate_payload(tensor.descriptor.dtype, &payload, &tensor.name)?;
+        let raw_hash: [u8; HASH_SIZE] = Sha256::digest(&payload).into();
+        tensor.checksum_sha256 = Some(hex_encode(&raw_hash));
+        let tensor = &manifest.tensors[tensor_id];
         let name_offset = strings.len();
         strings.extend_from_slice(
             &(u32::try_from(tensor.name.len()).map_err(|_| invalid("tensor name is too large"))?)
@@ -190,18 +264,14 @@ fn write_package_contents<'a>(
             );
         }
         let (dtype, scheme, layout) = descriptor_ids(&tensor.descriptor)?;
-        let raw_hash: [u8; HASH_SIZE] = Sha256::digest(payload).into();
-        let alias_target = dedup.get(&raw_hash).and_then(|candidates| {
-            candidates.iter().copied().find(|candidate| {
-                let prior = physical[*candidate].expect("dedup candidate is physical");
-                manifest.tensors[*candidate].descriptor == tensor.descriptor
-                    && prior.dtype == dtype
-                    && prior.encoding == dtype
-                    && prior.scheme == scheme
-                    && prior.layout == layout
-                    && payloads[*candidate] == *payload
-            })
-        });
+        let mut alias_target = None;
+        for &candidate in dedup.get(&raw_hash).into_iter().flatten() {
+            let prior = &manifest.tensors[candidate];
+            if prior.descriptor == tensor.descriptor && tensor_bytes(&prior.name)? == payload {
+                alias_target = Some(candidate);
+                break;
+            }
+        }
         if let Some(target) = alias_target {
             let prior = physical[target].expect("alias target is physical");
             let chunk_bytes = &chunks[prior.chunk_start as usize * CHUNK_RECORD_SIZE
@@ -246,29 +316,33 @@ fn write_package_contents<'a>(
                     super::codec::DEFAULT_CHUNK_BYTES
                 };
                 let mut take = remaining.min(max_shard_bytes).min(raw_limit);
-                let mut stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                let encode = |take| {
+                    let raw = &payload[raw_offset..raw_offset + take];
+                    if codec == CODEC_NONE {
+                        Ok(Cow::Borrowed(raw))
+                    } else {
+                        compress(codec, raw).map(Cow::Owned)
+                    }
+                };
+                let mut stored = encode(take)?;
                 while stored.len() > max_shard_bytes {
                     if take == 1 {
                         return Err(invalid("shard size limit is too small for codec framing"));
                     }
                     take /= 2;
-                    stored = compress(codec, &payload[raw_offset..raw_offset + take])?;
+                    stored = encode(take)?;
                 }
-                if shard_bytes.last().is_some_and(|shard| {
-                    !shard.is_empty()
-                        && align(shard.len())
-                            .ok()
-                            .and_then(|start| start.checked_add(stored.len()))
-                            .is_none_or(|end| end > max_shard_bytes)
-                }) {
-                    shard_bytes.push(Vec::new());
+                if shard.size > 0
+                    && align(shard.size)?
+                        .checked_add(stored.len())
+                        .is_none_or(|end| end > max_shard_bytes)
+                {
+                    shards.push(shard.finish()?);
+                    shard = StagedShard::create(output_dir, shards.len())?;
                     shard_tensors.push(BTreeSet::new());
                 }
-                let shard_id = shard_bytes.len() - 1;
-                let shard = &mut shard_bytes[shard_id];
-                let stored_offset = align(shard.len())?;
-                shard.resize(stored_offset, 0);
-                shard.extend_from_slice(&stored);
+                let shard_id = shard.id;
+                let stored_offset = shard.append(&stored)?;
                 first_stored_offset.get_or_insert(stored_offset);
                 let stored_hash: [u8; HASH_SIZE] = Sha256::digest(&stored).into();
                 chunks.extend_from_slice(&encode_chunk(
@@ -282,7 +356,9 @@ fn write_package_contents<'a>(
                 ));
                 shard_tensors[shard_id].insert(tensor.name.clone());
                 raw_offset += take;
-                stored_total += stored.len();
+                stored_total = stored_total
+                    .checked_add(stored.len())
+                    .ok_or_else(|| invalid("package stored tensor length overflows"))?;
             }
             let info = PhysicalTensor {
                 chunk_start: u32::try_from(chunk_start)
@@ -295,10 +371,6 @@ fn write_package_contents<'a>(
                     .ok_or_else(|| invalid("package chunk is missing"))?,
                 hash: raw_hash,
                 codec,
-                dtype,
-                encoding: dtype,
-                scheme,
-                layout,
             };
             records.extend_from_slice(&encode_tensor_record(
                 tensor_id as u64,
@@ -335,19 +407,9 @@ fn write_package_contents<'a>(
         &chunks,
     )?;
     write_atomic_file(&output_dir.join("index.qifi"), &index)?;
-    let mut shards = Vec::with_capacity(shard_bytes.len());
-    for (shard_id, bytes) in shard_bytes.into_iter().enumerate() {
-        let path = format!("shard-{shard_id:05}.qifd");
-        write_atomic_file(&output_dir.join(&path), &bytes)?;
-        shards.push(ShardManifest {
-            path,
-            size: bytes.len() as u64,
-            sha256: crate::sha256_hex(&bytes),
-            mesh_axis: 0,
-            rank: 1,
-            coordinate: vec![shard_id as u32],
-            tensors: shard_tensors[shard_id].iter().cloned().collect(),
-        });
+    shards.push(shard.finish()?);
+    for (entry, names) in shards.iter_mut().zip(shard_tensors) {
+        entry.tensors = names.into_iter().collect();
     }
     let mut package = PackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,

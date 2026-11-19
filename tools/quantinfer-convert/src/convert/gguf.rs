@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
-use std::io::{Read, Seek};
+use std::io::Seek;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -510,6 +510,22 @@ pub(crate) fn run() -> Result<(), String> {
             );
         }
     }
+    if output_format == "qif" {
+        let model_id = output_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("model");
+        qif_options.publish_spool(spool, model_id, &output_path)?;
+        if let (Some(plan), Some(path)) = (&optimized, &precision_report) {
+            plan.write_report(path, &output_path)?;
+        }
+        println!(
+            "converted {} tensors to {}",
+            weights.tensor_count(),
+            output_path.display()
+        );
+        return Ok(());
+    }
     #[cfg(unix)]
     let output = tempfile::Builder::new()
         .permissions(fs::Permissions::from_mode(0o666))
@@ -521,33 +537,6 @@ pub(crate) fn run() -> Result<(), String> {
     spool
         .finish(output.as_file_mut())
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
-    if output_format == "qif" {
-        output
-            .as_file_mut()
-            .rewind()
-            .map_err(|error| format!("cannot rewind {}: {error}", output_path.display()))?;
-        let mut gguf_bytes = Vec::new();
-        output
-            .as_file_mut()
-            .read_to_end(&mut gguf_bytes)
-            .map_err(|error| format!("cannot read temporary GGUF: {error}"))?;
-        let reader = quantinfer_format::GgufReader::open(gguf_bytes)
-            .map_err(|error| format!("cannot validate temporary GGUF: {error}"))?;
-        let model_id = output_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("model");
-        qif_options.publish(&reader, model_id, &output_path)?;
-        if let (Some(plan), Some(path)) = (&optimized, &precision_report) {
-            plan.write_report(path, &output_path)?;
-        }
-        println!(
-            "converted {} tensors to {}",
-            weights.tensor_count(),
-            output_path.display()
-        );
-        return Ok(());
-    }
     let checksum = if manifest_path.is_some() {
         let file = output.as_file_mut();
         file.rewind()
