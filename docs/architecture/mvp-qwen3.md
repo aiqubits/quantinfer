@@ -37,7 +37,9 @@ supports SINGLE/PACKAGE, independent compression and file-backed reads; the
 default model loader opens native SINGLE/PACKAGE controls and reads tensors
 on demand, without retaining raw weight bytes during typed decoding. Model
 construction still materializes the required Core weights. Independent C/Python readers
-cover a fixed unsigned, uncompressed F32 golden profile. See the
+cover the original unsigned/uncompressed F32 golden profile and a bounded
+core-profile matrix with eight encodings, two layouts, three codecs, aliases,
+PACKAGE and SINGLE signatures. See the
 [conformance matrix](../formats/qif-conformance.md) for the tested boundaries.
 
 ## Remaining plan boundaries

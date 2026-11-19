@@ -8,9 +8,21 @@ Enable the `candle` feature on `quantinfer` to use `quantinfer::candle`.
 `to_candle` and `from_candle` copy floating tensors while preserving shape
 and element order. Imports from Candle use F32 storage in QuantInfer.
 
-`packed_from_qif` loads validated Q8_0, Q4_0, Q4_K, Q5_K, and Q6_K payloads
-into Candle without dequantizing them. Packed blocks must fit within the
-last dimension. The resulting Candle tensor retains the stored row order.
+`packed_view_from_qif` loads Q8_0, Q4_0, Q4_K, Q5_K, and Q6_K blocks without
+requantizing them. It verifies the selected tensor's raw hash/finite values,
+supports none/zstd/LZ4 and aliases, and returns `PackedQifTensor`. Its `storage()`
+keeps the physical packed rows; `logical_shape()` and `is_transposed()` describe
+the coordinate view. `dequantize()` returns the original QIF logical values,
+applying Candle transpose strides when needed. Blocks must fit each physical
+row. This does not perform model-specific RoPE channel transforms.
+
+The existing `packed_from_qif` returns a plain Candle `QTensor` with QIF logical
+shape. It rejects native output-row matrices that require a transpose view;
+use `packed_view_from_qif` for those matrices. In the GGML dimension profile,
+row-major and output-row bytes can already share native logical row order.
+The optional Candle CI compares all five encodings, two layouts, two dimension
+profiles, three codecs and aliases on non-square matrices, and retains a
+specific regression for the previously misread `[32,64]` output-row matrix.
 
 ## PEFT LoRA
 

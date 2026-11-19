@@ -33,21 +33,26 @@ let plan = registry.resolve(&quantinfer_runtime::ExecutionRequest::cpu(
 | CPU scalar | default | F32, Q4_0, Q8_0, Q4_K, Q5_K, Q6_K; reference attention and KV cache |
 | CPU SIMD | `quantinfer-backend-cpu/simd` | Runtime checked AVX2, AVX-512 and AArch64 NEON scaled-add kernels; scalar fallback remains the reference |
 | CUDA | `quantinfer-backend-cuda/native` | Optional dynamic CUDA driver/NVRTC projection backend with capability checks |
-| Metal | `quantinfer-backend-metal/native` | Optional macOS MSL projection backend and CPU fallback conformance |
+| Metal | `quantinfer-backend-metal/native` | Optional macOS Metal adapter using the shared WGPU projection shaders and CPU fallbacks |
 | WGPU | `quantinfer-backend-wgpu/native` | Optional portable GPU F32/Q4_0/Q8_0 tiled projections |
-| Ascend | `quantinfer-backend-ascend/native` | Optional CANN ACL probe and ACLNN MatMul workspace/execute plan |
-| T-MAC | `quantinfer-backend-tmac` | Explicit CPU Q4_0 capability contract for a linked LUT kernel |
-| KleidiAI | `quantinfer-backend-kleidiai` | Explicit Arm CPU Q4_0 capability contract for a linked micro-kernel |
+| Ascend | `quantinfer-backend-ascend/native` | Concrete CANN F32 MatMul executor: context/stream, device storage/copies, ACLNN execution and synchronization |
+| T-MAC | `quantinfer-backend-tmac` | Native Rust Q4_0 output-row LUT4 with AVX2/NEON selection, scalar fallback and an optional external-kernel hook |
+| KleidiAI | `quantinfer-backend-kleidiai/native` | Pinned Arm SDK Q4_0 output-row microkernel on Linux AArch64 dotprod; portable builds retain the external-kernel contract |
 
 GPU and NPU crates are optional workspace members. They must not become
 dependencies of `quantinfer-core`, the scalar CPU backend, or format readers.
 When a native runtime is unavailable, resolution fails with a capability error
 and callers can deliberately fall back to CPU.
 
-The T-MAC and KleidiAI crates intentionally contain no vendor library or
-unsafe FFI. They provide the stable capability boundary and target detection;
-an application links its chosen upstream kernel and registers the provider
-only when that execution implementation is present.
+T-MAC implements its LUT4 profile in Rust, with isolated unsafe SIMD intrinsics;
+it does not run the upstream TVM compiler or autotuner. KleidiAI's optional
+native feature compiles a fixed SDK revision through a C/unsafe FFI boundary.
+Its selected microkernel also quantizes activations to Q8 with F16 scales;
+this numerical profile is explicitly tested and differs from F32-activation
+scalar execution. The Ascend executor isolates CANN FFI and resource ownership.
+See the concrete [T-MAC](../../backends/t-mac/README.md),
+[KleidiAI](../../backends/kleidiai/README.md) and
+[Ascend](../../backends/ascend/README.md) profiles and acceptance boundaries.
 
 ## Verification
 
@@ -58,7 +63,9 @@ cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The CUDA, Metal, WGPU and Ascend workflows compile their optional providers;
-native hardware jobs run only when a configured runner is available. The
-model conformance workflow compares the selected backend against the pinned
-CPU reference before accepting a change.
+Dedicated workflows compile optional GPU/NPU providers and exercise their
+documented probe, ABI-contract, shader or device paths. T-MAC and KleidiAI
+workflows execute their concrete kernels on native CPU runners. A successful
+probe, mock or compile does not establish vendor-device numerical/performance
+acceptance; inspect the actual steps and runner. Model conformance retains
+the fixed CPU reference and explicitly selected backend checks.

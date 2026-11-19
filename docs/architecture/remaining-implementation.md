@@ -8,18 +8,32 @@
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
-| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `f651ed2` 的双环境专项及主 CI 已通过，各 147 项；报告工具预算和测试边界见 conformance 文档 |
+| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `dcea320` 与 `02f7d9a` 的双环境专项及主 CI 已通过，各 153 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
 | 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 的完整 Hessian 矩阵生产 API、独立参考和真实单投影 QIF 路径已本地通过，仍需全模型编排；AWQ/AutoRound 算法未完成；LLM Compressor 已有 WNA16 Adapter |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
+| Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | 本地修复新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；旧 plain-QTensor 入口拒绝无法表达的 transpose；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过，待本批远端 CI |
 | 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
 
 QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名不混作当前 wire core 的缺陷；若后续扩展这些 profile，仍需单独冻结版本/编码与验收。
 
 ## 已完成迭代的证据
+
+- 对 `02f7d9a` 的独立审查发现 Candle packed 导入忽略原生 output-row 坐标：
+  合法 Q8_0 `[32,64]` 的逻辑元素从 -10 被误读成 -12；原有两个可选 feature 测试
+  仍通过。修复保留物理 packed storage 和显式 logical view，`dequantize` 应用
+  transpose stride；同时验证所选 tensor raw hash，支持 none/zstd/LZ4 和 alias。
+  新矩阵为五种 encoding × 两种 layout × 两种维度 profile × 三种 codec，共
+  60 个 artifact，每个对照 physical/alias 的全部逻辑元素及原始 bytes。
+  另保留原始非对称反例、output width=3、有限 payload 损坏拒绝与 unaligned 输入。
+  后端文档中旧 contract-only/无 FFI 的描述和跨语言数量已按实际实现修正。
+- `02f7d9a` 的十一项远端工作流已全部成功，包括
+  [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44501323457)。
+  Qwen3 的原有独立参考、三种 K 质量/六种 QIF 对照、同机性能门禁、上游 GPTQ
+  八组向量重算及 llama.cpp 互操作均通过。这些已有检查不覆盖上述新 Candle 反例。
 
 - `be72240626a05acaeb4c740003bc63ea1519c24a`：原生文件后端、两种 profile 与三种
   codec 发布路径；[CI](https://github.com/aiqubits/quantinfer/actions/runs/44225309125)
