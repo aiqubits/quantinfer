@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 quantinfer-core.workspace = true
 quantinfer-format.workspace = true
+quantinfer-quant.workspace = true
+half.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

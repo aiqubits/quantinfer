@@ -48,6 +48,12 @@ pub(crate) fn run() -> Result<(), String> {
         #[cfg(not(feature = "gptq"))]
         return Err("gptq requires a converter built with --features gptq".into());
     }
+    if arguments.first().is_some_and(|argument| argument == "awq") {
+        #[cfg(feature = "awq")]
+        return crate::calibrated::awq::run(&arguments[1..]);
+        #[cfg(not(feature = "awq"))]
+        return Err("awq requires a converter built with --features awq".into());
+    }
     if arguments
         .first()
         .is_some_and(|argument| argument == "from-gguf")

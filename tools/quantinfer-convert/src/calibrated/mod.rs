@@ -1,6 +1,12 @@
 //! Sequential, activation-calibrated whole-model quantization workflow.
 
+#[cfg(feature = "awq")]
+pub(crate) mod awq;
 mod dataset;
+#[cfg(feature = "gptq")]
+mod gptq;
+#[cfg(feature = "gptq")]
+pub(crate) use gptq::run;
 mod model;
 mod options;
 mod packing;
@@ -10,18 +16,38 @@ mod validation;
 use options::WorkflowOptions;
 use quantinfer::{
     cpu::{load_gguf_tokenizer, CpuModel, ModelSource},
-    model::TensorRole,
-    runtime::{dense_storage_name, LinearWeight},
     tokenizer::Tokenizer,
 };
-use quantinfer_adapter_gptq::HessianCalibration;
 use quantinfer_format::{qif, ExecutionVariant};
-use quantinfer_quant::{CalibratedQuantizationProvider, QuantizationProvider};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, io::Write, path::Path};
 
-pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
-    let options = WorkflowOptions::parse(arguments)?;
+pub(super) struct ProductionContext<'a> {
+    pub model: &'a mut CpuModel,
+    pub manifest: &'a mut quantinfer_format::ModelManifest,
+    pub spec: &'a quantinfer::model::ModelSpec,
+    pub prompts: &'a [Vec<usize>],
+    pub context: usize,
+    pub ggml: bool,
+    pub statistics_bytes: usize,
+}
+
+pub(super) struct Production {
+    pub payloads: BTreeMap<String, Vec<u8>>,
+    pub records: Vec<Value>,
+    pub details: BTreeMap<String, Value>,
+}
+
+trait ModelQuantizer {
+    fn name(&self) -> &'static str;
+    fn id(&self) -> &'static str;
+    fn bits(&self) -> usize;
+    fn scheme(&self) -> quantinfer_core::QuantizationScheme;
+    fn parameters(&self) -> Value;
+    fn produce(&self, context: ProductionContext<'_>) -> Result<Production, String>;
+}
+
+fn execute(options: WorkflowOptions, algorithm: &impl ModelQuantizer) -> Result<(), String> {
     let dataset = dataset::read_dataset(&options.dataset, options.dataset_bytes)?;
     let source = ModelSource::open(&options.input).map_err(|e| e.to_string())?;
     let reader = source.open_reader(None).map_err(|e| e.to_string())?;
@@ -70,82 +96,19 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     }
     let baseline = validation::capture(&model, &holdouts, context, spec.vocabulary.eos_token_id)?;
     let ggml = reader.uses_ggml_output_rows().map_err(|e| e.to_string())?;
-    let mut payloads = BTreeMap::<String, Vec<u8>>::new();
-    let mut records = Vec::new();
-    for layer in 0..spec.layers.len() {
-        for roles in model::GROUPS {
-            let input = model::projection(&model, layer, roles[0])?.shape().dims()[0];
-            let mut calibration = HessianCalibration::new(input, options.statistics_bytes)
-                .map_err(|e| e.to_string())?;
-            for tokens in &prompts {
-                let mut observer =
-                    |observed_layer,
-                     observed_roles: &[TensorRole],
-                     activations: &quantinfer_core::Tensor| {
-                        if observed_layer == layer
-                            && observed_roles.iter().any(|role| roles.contains(role))
-                        {
-                            calibration.observe_rows(activations).map_err(|e| {
-                                quantinfer::runtime::RuntimeError::InvalidInput(e.to_string())
-                            })?;
-                        }
-                        Ok(())
-                    };
-                model
-                    .observe_projections(
-                        tokens,
-                        &mut model.new_cache(context).map_err(|e| e.to_string())?,
-                        &mut observer,
-                    )
-                    .map_err(|e| e.to_string())?;
-            }
-            for &role in roles {
-                let name = dense_storage_name(role, Some(layer));
-                let LinearWeight::F32(weights) = model::projection(&model, layer, role)? else {
-                    return Err(format!("{name} is not a floating projection"));
-                };
-                let quantized = options
-                    .provider
-                    .quantize_calibrated(weights, &calibration)
-                    .map_err(|e| format!("cannot quantize {name}: {e}"))?;
-                let error = options
-                    .provider
-                    .error_report(weights, &quantized)
-                    .map_err(|e| e.to_string())?;
-                let rope_dim = (ggml
-                    && spec.architecture == "llama"
-                    && matches!(
-                        role,
-                        TensorRole::QueryProjection | TensorRole::KeyProjection
-                    ))
-                .then_some(spec.layers[layer].attention.head_dim);
-                let raw = packing::encoded_projection(&quantized, &name, rope_dim)?;
-                let tensor = manifest
-                    .tensors
-                    .iter_mut()
-                    .find(|t| t.name == name)
-                    .ok_or_else(|| format!("manifest is missing {name}"))?;
-                let mut descriptor = options
-                    .provider
-                    .storage_descriptor(weights.shape().clone())
-                    .map_err(|e| e.to_string())?;
-                descriptor.logical_shape = tensor.descriptor.logical_shape.clone();
-                tensor.descriptor = descriptor;
-                tensor.checksum_sha256 = None;
-                records.push(json!({"tensor":name,"layer":layer,"role":format!("{role:?}"),"calibration_rows":calibration.rows(),
-                    "source_core_f32_sha256":validation::tensor_hash(weights)?,"payload_sha256":quantinfer_format::sha256_hex(&raw),
-                    "maximum_weight_error":error.max_absolute_error,"mean_weight_error":error.mean_absolute_error,"relative_l2":error.relative_l2_error}));
-                payloads.insert(name.clone(), raw);
-                model::replace_projection(
-                    &mut model,
-                    layer,
-                    role,
-                    packing::runtime_weight(quantized)?,
-                )?;
-                println!("gptq_projection={name}");
-            }
-        }
-    }
+    let Production {
+        payloads,
+        records,
+        details,
+    } = algorithm.produce(ProductionContext {
+        model: &mut model,
+        manifest: &mut manifest,
+        spec: &spec,
+        prompts: &prompts,
+        context,
+        ggml,
+        statistics_bytes: options.statistics_bytes,
+    })?;
     let actual = validation::capture(&model, &holdouts, context, spec.vocabulary.eos_token_id)?;
     let quality = validation::compare(
         &baseline,
@@ -155,18 +118,19 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     )?;
     manifest.model_id = options.model_id.clone().unwrap_or_else(|| {
         format!(
-            "{}-gptq{}",
+            "{}-{}{}",
             options
                 .input
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy(),
-            options.provider.options().bits
+            algorithm.name(),
+            algorithm.bits()
         )
     });
-    manifest.quantization = options.provider.scheme();
+    manifest.quantization = algorithm.scheme();
     manifest.execution_variants = vec![ExecutionVariant {
-        name: "gptq-cpu".into(),
+        name: format!("{}-cpu", algorithm.name()),
         quantization: manifest.quantization,
         dtype: "f32-accumulation".into(),
         runtime_provider: "cpu-scalar".into(),
@@ -174,7 +138,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     }];
     metadata.insert(
         "quantinfer.quantization.algorithm".into(),
-        qif::MetadataValue::String("gptq-static-signed-f16".into()),
+        qif::MetadataValue::String(algorithm.id().into()),
     );
     metadata.insert(
         "quantinfer.quantization.variant".into(),
@@ -237,12 +201,21 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     validation::verify_parity(&parity_reference, &parity)?;
     drop(reloaded);
     drop(artifact_reader);
-    let report = json!({"schema_version":1,"algorithm":"gptq-static-signed-f16","input":options.input,"output":options.output,
+    let mut report = json!({"schema_version":1,"algorithm":algorithm.id(),"input":options.input,"output":options.output,
         "source":identity,"calibration_dataset_sha256":dataset.sha256,"calibration_prompts":prompts.len(),"calibration_token_rows":prompts.iter().map(Vec::len).sum::<usize>(),
-        "bits":options.provider.options().bits,"group_size":options.provider.options().group_size,"damping":options.provider.options().damping,
-        "activation_order":options.provider.options().activation_order,"layers":spec.layers.len(),"quantized_projections":records.len(),"projections":records,
+        "layers":spec.layers.len(),"quantized_projections":records.len(),"projections":records,
         "validation_dataset_sha256":validation_dataset.as_ref().map(|d|d.sha256.as_str()),"quality_status":if holdouts.is_empty(){"not_evaluated"}else{"passed"},
         "quality_thresholds":{"maximum_kl":options.maximum_kl,"minimum_top10_overlap":options.minimum_top10},"holdouts":quality,"artifact_parity":true,"payload_verified":true});
+    if let Value::Object(parameters) = algorithm.parameters() {
+        report
+            .as_object_mut()
+            .expect("report object")
+            .extend(parameters);
+    }
+    report
+        .as_object_mut()
+        .expect("report object")
+        .extend(details);
     // The complete candidate is verified while private. Publication is the last
     // artifact operation; an optional report is a separate sidecar.
     if prepared.is_dir() {
@@ -259,9 +232,14 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     if let Some(path) = &options.report {
         write_report(path, &report)?;
     }
-    println!("gptq_quantized_projections={}", payloads.len());
     println!(
-        "gptq_quality_status={}",
+        "{}_quantized_projections={}",
+        algorithm.name(),
+        records.len()
+    );
+    println!(
+        "{}_quality_status={}",
+        algorithm.name(),
         if holdouts.is_empty() {
             "not_evaluated"
         } else {

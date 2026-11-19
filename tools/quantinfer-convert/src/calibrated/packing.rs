@@ -47,7 +47,7 @@ pub(super) fn encoded_projection(
             };
             writer.add_q8_0_tensor(name, &tensor);
         }
-        _ => return Err("GPTQ publication expects Q4_0 or Q8_0 output-row blocks".into()),
+        _ => return Err("Calibrated publication expects Q4_0 or Q8_0 output-row blocks".into()),
     }
     let reader =
         GgufReader::open(writer.finish().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
@@ -87,6 +87,6 @@ pub(super) fn runtime_weight(data: QuantizedData) -> Result<LinearWeight, String
     match data {
         QuantizedData::Q4_0(tensor) => Ok(LinearWeight::Q4_0OutputRows(tensor)),
         QuantizedData::Q8_0(tensor) => Ok(LinearWeight::Q8_0OutputRows(tensor)),
-        _ => Err("GPTQ model replacement expects signed output-row storage".into()),
+        _ => Err("Calibrated model replacement expects signed output-row storage".into()),
     }
 }

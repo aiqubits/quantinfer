@@ -3,6 +3,10 @@ use quantinfer_format::{GgufReader, GgufValue, GgufWriter};
 /// Two non-symmetric layers; head_dim=8 makes the Llama Q/K permutation
 /// non-self-inverse, unlike the four-channel fixture.
 pub fn model(architecture: &str, ggml: bool) -> Vec<u8> {
+    model_with_kv_heads(architecture, ggml, 2)
+}
+
+pub fn model_with_kv_heads(architecture: &str, ggml: bool, kv_heads: u32) -> Vec<u8> {
     let mut writer = GgufWriter::new();
     writer.insert_metadata(
         "general.architecture",
@@ -15,7 +19,7 @@ pub fn model(architecture: &str, ggml: bool) -> Vec<u8> {
         ("feed_forward_length", 128),
         ("block_count", 2),
         ("attention.head_count", 8),
-        ("attention.head_count_kv", 2),
+        ("attention.head_count_kv", kv_heads),
         ("attention.head_dim", 8),
         ("attention.key_length", 8),
         ("attention.value_length", 8),
@@ -49,8 +53,8 @@ pub fn model(architecture: &str, ggml: bool) -> Vec<u8> {
         for (suffix, shape) in [
             ("attn_norm", vec![64]),
             ("attn_q", vec![64, 64]),
-            ("attn_k", vec![64, 16]),
-            ("attn_v", vec![64, 16]),
+            ("attn_k", vec![64, kv_heads as usize * 8]),
+            ("attn_v", vec![64, kv_heads as usize * 8]),
             ("attn_output", vec![64, 64]),
             ("ffn_norm", vec![64]),
             ("ffn_gate", vec![64, 128]),

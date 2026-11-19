@@ -80,6 +80,9 @@ calibration/quantization algorithm.
 
 ## AWQ
 
+The [native AWQ provider](awq/README.md) searches scales and clipping bounds
+from calibration inputs and produces Q4_0/Q8_0 weights for verified QIF publication.
+
 `quantinfer-adapter-awq` decodes AutoAWQ's four-bit output-packed
 SafeTensors (`qweight`, `qzeros`, `scales`, and optional `g_idx`) into a
 validated F32 matrix. It handles the interleaved AWQ bit order, grouped

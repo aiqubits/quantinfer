@@ -8,8 +8,10 @@
 
 mod config;
 mod decode;
+mod quantize;
 mod source;
 
 pub use config::AwqConfig;
 pub use decode::dequantize;
+pub use quantize::{AwqCalibration, AwqClippingPlan, AwqOptions, AwqProvider, AwqScalePlan};
 pub use source::AwqTensorSource;

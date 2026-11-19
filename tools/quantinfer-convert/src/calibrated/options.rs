@@ -1,10 +1,9 @@
-//! Validated offline GPTQ workflow configuration.
+//! Validated shared offline workflow configuration.
 
 use crate::{
     common::{optional_value, required_path, validate_options},
     convert::qif_options::QifOptions,
 };
-use quantinfer_adapter_gptq::{GptqProvider, GptqQuantizationOptions};
 use std::{collections::BTreeSet, path::PathBuf};
 
 pub(super) struct WorkflowOptions {
@@ -20,13 +19,12 @@ pub(super) struct WorkflowOptions {
     pub maximum_kl: f64,
     pub minimum_top10: usize,
     pub maximum_validation_prompts: usize,
-    pub provider: GptqProvider,
     pub qif: QifOptions,
 }
 
 impl WorkflowOptions {
-    pub fn parse(arguments: &[String]) -> Result<Self, String> {
-        let options = [
+    pub fn parse(arguments: &[String], algorithm_options: &[(&str, bool)]) -> Result<Self, String> {
+        let mut options = vec![
             ("--input", true),
             ("--dataset", true),
             ("--validation-dataset", true),
@@ -34,11 +32,6 @@ impl WorkflowOptions {
             ("--report", true),
             ("--model-id", true),
             ("--max-sequence-length", true),
-            ("--bits", true),
-            ("--group-size", true),
-            ("--damping", true),
-            ("--activation-order", false),
-            ("--maximum-workspace-bytes", true),
             ("--maximum-statistics-bytes", true),
             ("--max-dataset-bytes", true),
             ("--maximum-kl", true),
@@ -48,6 +41,7 @@ impl WorkflowOptions {
             ("--qif-codec", true),
             ("--max-shard-bytes", true),
         ];
+        options.extend_from_slice(algorithm_options);
         validate_options(arguments, &options)?;
         let mut seen = BTreeSet::new();
         let mut index = 0;
@@ -58,45 +52,6 @@ impl WorkflowOptions {
             }
             index += 1 + usize::from(options.iter().find(|(name, _)| *name == flag).unwrap().1);
         }
-        let integer = |flag: &str, default: usize| -> Result<usize, String> {
-            let value = optional_value(arguments, flag)
-                .map(|value| {
-                    value
-                        .parse::<usize>()
-                        .map_err(|_| format!("{flag} must be an integer"))
-                })
-                .transpose()?
-                .unwrap_or(default);
-            if value == 0 {
-                return Err(format!("{flag} must be positive"));
-            }
-            Ok(value)
-        };
-        let number = |flag: &str, default: f64| -> Result<f64, String> {
-            let value = optional_value(arguments, flag)
-                .map(|v| {
-                    v.parse::<f64>()
-                        .map_err(|_| format!("{flag} must be a number"))
-                })
-                .transpose()?
-                .unwrap_or(default);
-            if !value.is_finite() || value <= 0. {
-                return Err(format!("{flag} must be finite and positive"));
-            }
-            Ok(value)
-        };
-        let defaults = GptqQuantizationOptions::default();
-        let provider = GptqProvider::new(GptqQuantizationOptions {
-            bits: integer("--bits", defaults.bits)?,
-            group_size: integer("--group-size", defaults.group_size)?,
-            damping: number("--damping", defaults.damping)?,
-            activation_order: seen.contains("--activation-order"),
-            maximum_workspace_bytes: integer(
-                "--maximum-workspace-bytes",
-                defaults.maximum_workspace_bytes,
-            )?,
-        })
-        .map_err(|error| error.to_string())?;
         let output = required_path(arguments, "--output")?;
         let validation = optional_value(arguments, "--validation-dataset").map(PathBuf::from);
         if validation.is_none()
@@ -150,15 +105,42 @@ impl WorkflowOptions {
             report,
             model_id,
             context: optional_value(arguments, "--max-sequence-length")
-                .map(|_| integer("--max-sequence-length", 512))
+                .map(|_| integer(arguments, "--max-sequence-length", 512))
                 .transpose()?,
-            statistics_bytes: integer("--maximum-statistics-bytes", 512 * 1024 * 1024)?,
-            dataset_bytes: integer("--max-dataset-bytes", 32 * 1024 * 1024)?,
-            maximum_kl: number("--maximum-kl", 0.5)?,
-            provider,
+            statistics_bytes: integer(arguments, "--maximum-statistics-bytes", 512 * 1024 * 1024)?,
+            dataset_bytes: integer(arguments, "--max-dataset-bytes", 32 * 1024 * 1024)?,
+            maximum_kl: number(arguments, "--maximum-kl", 0.5)?,
             qif: QifOptions::parse(arguments)?,
             minimum_top10,
-            maximum_validation_prompts: integer("--max-validation-prompts", 16)?,
+            maximum_validation_prompts: integer(arguments, "--max-validation-prompts", 16)?,
         })
     }
+}
+
+pub(super) fn integer(arguments: &[String], flag: &str, default: usize) -> Result<usize, String> {
+    let value = optional_value(arguments, flag)
+        .map(|v| {
+            v.parse::<usize>()
+                .map_err(|_| format!("{flag} must be an integer"))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if value == 0 {
+        return Err(format!("{flag} must be positive"));
+    }
+    Ok(value)
+}
+
+pub(super) fn number(arguments: &[String], flag: &str, default: f64) -> Result<f64, String> {
+    let value = optional_value(arguments, flag)
+        .map(|v| {
+            v.parse::<f64>()
+                .map_err(|_| format!("{flag} must be a number"))
+        })
+        .transpose()?
+        .unwrap_or(default);
+    if !value.is_finite() || value <= 0. {
+        return Err(format!("{flag} must be finite and positive"));
+    }
+    Ok(value)
 }

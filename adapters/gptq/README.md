@@ -116,7 +116,7 @@ SINGLE/none and PACKAGE/zstd without requantizing the output.
 QUANTINFER_GPTQ_WORKFLOW_SOURCE=/path/to/pinned-smollm2-f32.gguf \
 QUANTINFER_GPTQ_WORKFLOW_REPORT=/path/to/whole-model-quality.json \
 cargo test --release --locked -p quantinfer-convert --features gptq \
-  --test gptq_model_conformance -- --ignored --nocapture
+  --test model_quantization_conformance -- --ignored --nocapture
 ```
 
 Studio integration remains pending. The small workflow matrix covers both

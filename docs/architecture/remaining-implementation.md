@@ -11,7 +11,7 @@
 | 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `dcea320` 与 `02f7d9a` 的双环境专项及主 CI 已通过，各 153 项；报告工具预算和测试边界见 conformance 文档 |
 | 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
-| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 完整 Hessian API 与全模型 CLI/QIF 编排已实现，独立矩阵参考、小型全流程及正式真实 SmolLM2 全模型质量/两 profile 验收均本地通过；`e6a3f2f` 的独立全模型远端 job 已成功。AWQ/AutoRound 算法未完成；LLM Compressor 已有 WNA16 Adapter |
+| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter，不将 import/dequantize 冒充前三者的算法 | GPTQ 完整 Hessian API 与全模型 CLI/QIF 编排已实现，独立矩阵参考、小型全流程及正式真实 SmolLM2 全模型质量/两 profile 验收均本地通过；`e6a3f2f` 的独立全模型远端 job 已成功。AWQ 原生缩放、clipping 和全模型发布已实现，本地独立 Torch 参考、48 种小型发布组合及 SmolLM2 全模型检查通过。AutoRound 全模型流程仍待完成。LLM Compressor 已有 WNA16 Adapter |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
 | Studio | 量化任务、校准 workflow、registry/profile/package 管理与 benchmark 可视化；端到端任务、失败、取消及产物验证 | 未完成 |
@@ -22,6 +22,15 @@
 QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名不混作当前 wire core 的缺陷；若后续扩展这些 profile，仍需单独冻结版本/编码与验收。
 
 ## 已完成迭代的证据
+
+- AWQ 在 Qwen3/Llama 的真实 attention 和 SwiGLU 运算上选择缩放，逐层传递已量化输出，
+  对 V/O/Gate/Up/Down 执行基于 token 重建误差的 clipping。独立 Torch 向量覆盖 4/8-bit、
+  32/64 分组和尾组。48 种发布组合覆盖两架构、两维度顺序、两位宽、两容器与三 codec。
+  额外验证了半精度归一化参数转为 F32、保留其它载荷、类型化元数据和失败时不发布。
+- 真实 SmolLM2 校准使用 13 条输入和 159 个 token，量化全部 210 个投影并补偿 60 个归一化
+  参数。四条留出输入的 KL 分别为 0.130847、0.103983、0.027359、0.163912，
+  Top-10 重合均为 8，达到预设 KL ≤ 0.5、Top-10 ≥ 6。SINGLE/PACKAGE 的逐张量哈希、
+  logits、生成和 KV 一致。完整本地检查 291.09 秒。模型 CI 已加入该验收作业。
 
 - `e6a3f2f` 的实际十一项 workflow 已全部 completed/success，包括
   [完整 Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44515061181)。

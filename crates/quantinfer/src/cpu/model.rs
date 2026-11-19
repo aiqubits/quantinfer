@@ -122,6 +122,33 @@ impl<B: KernelBackend> DenseModel<B> {
         }
     }
 
+    /// Evaluate the actual attention component from normalized activations.
+    pub fn forward_attention_block(
+        &self,
+        layer: usize,
+        input: &Tensor,
+        cache: &mut KvCache,
+        observer: Option<&mut dyn ProjectionObserver>,
+    ) -> Result<Tensor> {
+        match self {
+            Self::Qwen3(model) => model.forward_attention_block(layer, input, cache, observer),
+            Self::Llama(model) => model.forward_attention_block(layer, input, cache, observer),
+        }
+    }
+
+    /// Evaluate the actual SwiGLU component from normalized activations.
+    pub fn forward_feed_forward_block(
+        &self,
+        layer: usize,
+        input: &Tensor,
+        observer: Option<&mut dyn ProjectionObserver>,
+    ) -> Result<Tensor> {
+        match self {
+            Self::Qwen3(model) => model.forward_feed_forward_block(layer, input, observer),
+            Self::Llama(model) => model.forward_feed_forward_block(layer, input, observer),
+        }
+    }
+
     pub fn new_cache(&self, context_length: usize) -> Result<KvCache> {
         if context_length > self.max_position_embeddings() {
             return Err(RuntimeError::InvalidInput(

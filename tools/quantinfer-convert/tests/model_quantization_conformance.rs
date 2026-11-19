@@ -1,4 +1,4 @@
-#![cfg(feature = "gptq")]
+#![cfg(any(feature = "gptq", feature = "awq"))]
 
 use quantinfer::{
     cpu::{CpuModel, ModelSource},
@@ -55,14 +55,12 @@ fn run(model: &CpuModel, tokens: &[usize]) -> Value {
     json!({"full_logits_sha256":sha256_hex(&raw),"generated":generated,"kv_length":expected})
 }
 
-#[test]
-#[ignore = "requires the pinned SmolLM2 F32 GGUF; performs all 210 projection quantizations"]
-fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
-    let input = PathBuf::from(
-        std::env::var_os("QUANTINFER_GPTQ_WORKFLOW_SOURCE").expect("verified source"),
-    );
+fn whole_model(algorithm: &str) {
+    let env_prefix = format!("QUANTINFER_{}_WORKFLOW", algorithm.to_ascii_uppercase());
+    let input =
+        PathBuf::from(std::env::var_os(format!("{env_prefix}_SOURCE")).expect("verified source"));
     let report_path =
-        PathBuf::from(std::env::var_os("QUANTINFER_GPTQ_WORKFLOW_REPORT").expect("report output"));
+        PathBuf::from(std::env::var_os(format!("{env_prefix}_REPORT")).expect("report output"));
     let golden: Value =
         serde_json::from_str(include_str!("../../../tests/golden/smollm2-135m-f32.json")).unwrap();
     let tokens: Vec<usize> = golden["prompt_tokens"]
@@ -108,7 +106,7 @@ fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
     let quality = root.path().join("quality.json");
     let start = Instant::now();
     let process = Command::new(env!("CARGO_BIN_EXE_quantinfer-convert"))
-        .arg("gptq")
+        .arg(algorithm)
         .arg("--input")
         .arg(&input)
         .arg("--dataset")
@@ -175,11 +173,49 @@ fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
                 .find(|v| v["tensor"] == tensor.name)
                 .unwrap();
             assert_eq!(record["payload_sha256"], hash);
-            assert_eq!(record["calibration_rows"], 159);
+            if algorithm == "gptq" {
+                assert_eq!(record["calibration_rows"], 159);
+            }
+        } else if algorithm == "awq" && is_folded_norm(&tensor.name) {
+            assert_eq!(tensor.dtype, GgmlType::F32);
+            let record = quality["normalizations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["tensor"] == tensor.name)
+                .unwrap();
+            assert_eq!(record["payload_sha256"], hash);
         } else {
             assert_eq!(hash, source_hashes[&tensor.name]);
         }
         hashes.insert(tensor.name.clone(), hash);
+    }
+    assert_eq!(hashes.len(), source_hashes.len());
+    if algorithm == "awq" {
+        assert_eq!(quality["normalizations"].as_array().unwrap().len(), 60);
+        assert_eq!(quality["scale_searches"].as_array().unwrap().len(), 90);
+        let clipping = quality["clipping_searches"].as_array().unwrap();
+        assert_eq!(clipping.len(), 150);
+        for record in clipping {
+            assert_eq!(record["rows"], 159);
+            assert!(
+                record["group_loss_after"].as_f64().unwrap()
+                    <= record["group_loss_before"].as_f64().unwrap()
+            );
+        }
+        assert!(quality["scale_searches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| record["ratio"].as_f64().unwrap() > 0.0));
+        assert!(quality["normalizations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|record| {
+                let name = record["tensor"].as_str().unwrap();
+                hashes[name] != source_hashes[name]
+            }));
     }
     let model = CpuModel::from_gguf(&reader, None, None).unwrap();
     let single = run(&model, &tokens);
@@ -216,7 +252,26 @@ fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
         "single":single,"package":actual,"package_index_sha256":sha256_hex(&fs::read(package.join("index.qifi")).unwrap()),"passed":true});
     fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     println!(
-        "gptq_whole_model_quality={}",
+        "{algorithm}_whole_model_quality={}",
         json!({"seconds":seconds,"holdouts":report["quality"]["holdouts"],"quantized_projections":210,"profiles_equal":true})
     );
+}
+
+fn is_folded_norm(name: &str) -> bool {
+    name.starts_with("blk.")
+        && (name.ends_with(".attn_norm.weight") || name.ends_with(".ffn_norm.weight"))
+}
+
+#[cfg(feature = "gptq")]
+#[test]
+#[ignore = "requires the pinned SmolLM2 F32 GGUF and all 210 GPTQ projections"]
+fn whole_model_gptq_meets_quality_and_lossless_publication_gates() {
+    whole_model("gptq");
+}
+
+#[cfg(feature = "awq")]
+#[test]
+#[ignore = "requires the pinned SmolLM2 F32 GGUF and all 210 AWQ projections"]
+fn whole_model_awq_meets_quality_and_lossless_publication_gates() {
+    whole_model("awq");
 }

@@ -14,7 +14,8 @@ target/release/quantinfer-convert gptq \
 Input can be floating GGUF, native QIF SINGLE/PACKAGE, or a verified model
 package with its embedded tokenizer. Qwen3 and Llama dense models are supported.
 Every input tensor must be F32/F16/BF16; already-quantized sources fail explicitly.
-This entry point does not run AWQ, AutoRound or an uncalibrated RTN fallback.
+
+See [AWQ](#awq) for activation-aware scaling and clipping.
 
 JSONL datasets contain one JSON string or an object with a `text` string per
 line. Nonempty strings may contain whitespace. Blank lines are ignored. Prompt
@@ -65,7 +66,39 @@ Native QIF typed metadata and source/tokenizer revisions are retained.
 
 Small tests cover both architectures, both dimension profiles, both bit widths,
 all six profile/codec choices, native inputs, failed gates and no requantization.
-The separately ignored `gptq_model_conformance` test quantizes all 210 SmolLM2
+The separately ignored `model_quantization_conformance` test quantizes all 210 SmolLM2
 projections and checks four fixed validation inputs and two QIF profiles. The
 [prompt provenance](../../tests/fixtures/gptq/README.md) states the development
 sample boundary. Fixed-prompt acceptance does not establish general task accuracy.
+
+## AWQ
+
+Build with `--features awq` and select `quantinfer-convert awq` with the
+same floating input, JSONL calibration and validation, and QIF publication
+options described above. The signed native profile supports `--bits 4|8`,
+`--group-size` in multiples of 32, and `--grid-points 2..100` (default 20).
+Clipping is enabled by default. Use `--no-clipping` to measure scaling alone.
+
+Calibration propagates the actual packed layer outputs in sequence. It
+searches Q/K/V scales using the complete attention output and gate/up
+scales using the complete SwiGLU output. The down projection uses a linear
+objective and folds compensation into the up projection. V/O compensation
+uses a one-to-one scale mapping and is skipped when grouped-query attention
+repeats value heads. Clipping uses every supplied token row, selects bounds
+against within-group reconstruction loss, and leaves Q/K out of the search.
+All these steps use floating candidates. Final packing writes the chosen
+signed grids directly to Q4_0 or Q8_0.
+
+AWQ publishes the two folded norms per layer as F32, including when their
+source storage is F16 or BF16. The report includes source and transformed
+projection hashes, selected ratios and losses, clipping losses, and the
+replacement normalization hashes. Other nonprojection tensors retain their
+payloads. `--maximum-statistics-bytes` bounds the activation workspace
+estimate and `--maximum-workspace-bytes` bounds the provider's search buffers.
+These bounds exclude model storage, retained payloads, optional quality
+validation and publication.
+
+The [AWQ adapter](../../adapters/awq/README.md) documents the exact grid,
+upstream algorithm references and independent Torch vectors. The full
+SmolLM2 test uses the same 13 calibration and four fixed validation inputs
+as the GPTQ test.

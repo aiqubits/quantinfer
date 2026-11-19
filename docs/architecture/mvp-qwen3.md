@@ -52,8 +52,9 @@ with independent upstream vectors and a real SmolLM2 projection quality test.
 The optional converter `gptq` workflow now calibrates and replaces every dense
 projection, checks optional holdout gates and publishes verified QIF with exact
 reload parity. Its real whole-model case is the fixed SmolLM2 four-bit profile;
-the separate model CI recomputes all 210 projections. AWQ/AutoRound still import existing
-artifacts rather than run their quantization algorithms. LLM Compressor has
+the separate model CI recomputes all 210 projections. The native AWQ workflow
+adds activation-aware scaling and clipping for full-model QIF publication.
+AutoRound currently supports existing checkpoint imports. LLM Compressor has
 the WNA16 import adapter requested by the general plan. See the
 [GPTQ profile and acceptance boundary](../../adapters/gptq/README.md).
 Ascend now has a concrete CANN F32

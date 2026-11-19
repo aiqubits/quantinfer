@@ -440,7 +440,11 @@ jobs:
             smollm2-*-paired-samples/*.txt
             smollm2-qif-comparison.txt
 
-  gptq-whole-model:
+  calibrated-whole-model:
+    strategy:
+      fail-fast: false
+      matrix:
+        algorithm: [gptq, awq]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -459,22 +463,24 @@ jobs:
           sha256sum --check smollm2.sha256
       - name: Build the calibrated workflow and its floating source
         run: |
-          cargo build --release --locked -p quantinfer-convert --features gptq
+          cargo build --release --locked -p quantinfer-convert --features ${{ matrix.algorithm }}
           target/release/quantinfer-convert --config config.json --weights model.safetensors \
             --tokenizer tokenizer.json --output-format gguf --output smollm2-f32.gguf
-      - name: Gate all 210 GPTQ projections, holdout quality and QIF parity
+      - name: Gate all 210 ${{ matrix.algorithm }} projections, holdout quality and QIF parity
         shell: bash
         env:
+          QUANTINFER_AWQ_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
+          QUANTINFER_AWQ_WORKFLOW_REPORT: ${{ github.workspace }}/awq-whole-model-quality.json
           QUANTINFER_GPTQ_WORKFLOW_SOURCE: ${{ github.workspace }}/smollm2-f32.gguf
           QUANTINFER_GPTQ_WORKFLOW_REPORT: ${{ github.workspace }}/gptq-whole-model-quality.json
         run: |
-          cargo test --release --locked -p quantinfer-convert --features gptq \
-            --test gptq_model_conformance -- --ignored --nocapture | tee gptq-whole-model-quality.log
+          cargo test --release --locked -p quantinfer-convert --features ${{ matrix.algorithm }} \
+            --test model_quantization_conformance -- --ignored --nocapture | tee ${{ matrix.algorithm }}-whole-model-quality.log
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: gptq-whole-model-quality
-          path: gptq-whole-model-*
+          name: ${{ matrix.algorithm }}-whole-model-quality
+          path: ${{ matrix.algorithm }}-whole-model-*
 
   smollm2-external-f16:
     runs-on: ubuntu-latest
@@ -571,6 +577,10 @@ jobs:
           done
           python tests/conformance/gptq_reference.py --upstream "$upstream" \
             --check tests/golden/gptq-static-profile.json --output qwen3-gptq-reference.json
+      - name: Recompute native AWQ vectors with Torch
+        run: |
+          python tests/conformance/awq_reference.py --check tests/golden/awq-signed-profile.json \
+            --output qwen3-awq-reference.json
       - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
@@ -702,6 +712,7 @@ jobs:
             qwen3-*.inventory
             qwen3-reference.json
             qwen3-gptq-reference.json
+            qwen3-awq-reference.json
             qwen3-conformance.log
             qwen3-*-benchmark.txt
             qwen3-*-paired-*.txt

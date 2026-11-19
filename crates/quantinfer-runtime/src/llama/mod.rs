@@ -110,20 +110,41 @@ impl LlamaLayerWeights {
         attention: &DenseAttention,
         batch: &mut [DecodeBatchItem<'_>],
     ) -> Result<Tensor> {
-        let sequence_length = hidden.shape().dims()[0];
         let residual = hidden.clone();
         let normalized = backend.rms_norm(hidden, &self.input_layernorm, config.rms_norm_eps)?;
+        let projected =
+            self.attention_block(backend, config, &normalized, &mut trace, attention, batch)?;
+        let residual = add(&residual, &projected)?;
+        let normalized = backend.rms_norm(
+            &residual,
+            &self.post_attention_layernorm,
+            config.rms_norm_eps,
+        )?;
+        let feed_forward = self.feed_forward_block(backend, &normalized, &mut trace)?;
+        add(&residual, &feed_forward)
+    }
+
+    fn attention_block<B: KernelBackend>(
+        &self,
+        backend: &B,
+        config: &LlamaConfig,
+        normalized: &Tensor,
+        trace: &mut ProjectionTrace<'_, '_>,
+        attention: &DenseAttention,
+        batch: &mut [DecodeBatchItem<'_>],
+    ) -> Result<Tensor> {
+        let sequence_length = normalized.shape().dims()[0];
         trace.record(
             &[
                 TensorRole::QueryProjection,
                 TensorRole::KeyProjection,
                 TensorRole::ValueProjection,
             ],
-            &normalized,
+            normalized,
         )?;
         let query = self
             .q_proj
-            .matmul(backend, &normalized)?
+            .matmul(backend, normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_attention_heads,
@@ -131,7 +152,7 @@ impl LlamaLayerWeights {
             ]))?;
         let key = self
             .k_proj
-            .matmul(backend, &normalized)?
+            .matmul(backend, normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads(),
@@ -139,7 +160,7 @@ impl LlamaLayerWeights {
             ]))?;
         let value = self
             .v_proj
-            .matmul(backend, &normalized)?
+            .matmul(backend, normalized)?
             .reshape(Shape::from(vec![
                 sequence_length,
                 config.num_key_value_heads(),
@@ -152,23 +173,24 @@ impl LlamaLayerWeights {
                 config.query_projection_size(),
             ]))?;
         trace.record(&[TensorRole::OutputProjection], &attended)?;
-        let projected = self.o_proj.matmul(backend, &attended)?;
-        let residual = add(&residual, &projected)?;
-        let normalized = backend.rms_norm(
-            &residual,
-            &self.post_attention_layernorm,
-            config.rms_norm_eps,
-        )?;
+        self.o_proj.matmul(backend, &attended)
+    }
+
+    fn feed_forward_block<B: KernelBackend>(
+        &self,
+        backend: &B,
+        normalized: &Tensor,
+        trace: &mut ProjectionTrace<'_, '_>,
+    ) -> Result<Tensor> {
         trace.record(
             &[TensorRole::GateProjection, TensorRole::UpProjection],
-            &normalized,
+            normalized,
         )?;
-        let gate = self.gate_proj.matmul(backend, &normalized)?;
-        let up = self.up_proj.matmul(backend, &normalized)?;
+        let gate = self.gate_proj.matmul(backend, normalized)?;
+        let up = self.up_proj.matmul(backend, normalized)?;
         let feed_forward = backend.silu_mul(&gate, &up)?;
         trace.record(&[TensorRole::DownProjection], &feed_forward)?;
-        let feed_forward = self.down_proj.matmul(backend, &feed_forward)?;
-        add(&residual, &feed_forward)
+        self.down_proj.matmul(backend, &feed_forward)
     }
 }
 
@@ -322,12 +344,7 @@ impl<B: KernelBackend> LlamaModel<B> {
         batch: &mut [DecodeBatchItem<'_>],
         mut observer: Option<&mut dyn ProjectionObserver>,
     ) -> Result<Tensor> {
-        let attention = DenseAttention {
-            query_heads: self.config.num_attention_heads,
-            key_value_heads: self.config.num_key_value_heads(),
-            head_dim: self.config.effective_head_dim(),
-            rope_theta: self.config.rope_theta,
-        };
+        let attention = self.block_attention();
         let mut hidden = self.backend.embedding(&self.embedding, token_ids)?;
         for (index, layer) in self.layers.iter().enumerate() {
             hidden = layer.forward(
@@ -362,3 +379,5 @@ mod tests;
 
 mod loader;
 pub use loader::uses_ggml_layout;
+
+mod blocks;
