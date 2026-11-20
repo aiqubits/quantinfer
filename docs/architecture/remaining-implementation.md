@@ -8,22 +8,26 @@
 | --- | --- | --- |
 | QIF 默认运行时接入 | SINGLE/PACKAGE 只读控制区打开；按 tensor 加载；保留 alias、原生 metadata、完整性及预算检查；CLI/server/C/WASI-NN 真实模型生成对照 | `be72240` 本地回归及远端 SmolLM2 六种组合、HTTP/C/Python/WASI-NN 验收通过，见下方证据 |
 | QIF 发布与检查工具 | SafeTensors/GGUF 可发布 SINGLE/PACKAGE 与三种 codec；原生 metadata inspect、完整 verify；参数与破损输入回归 | `184e7ca` 本地回归和远端 SmolLM2 六种组合的 inspect/verify/generate 已通过 |
-| 跨语言 reader | 独立 C/Python 扩展到已冻结编码、codec、alias、PACKAGE 和签名语义；共用正反 corpus 比较结果 | `dcea320` 与 `02f7d9a` 的双环境专项及主 CI 已通过，各 153 项；报告工具预算和测试边界见 conformance 文档 |
-| 持续 fuzz | 覆盖 package JSON/path/shard，持续运行与 corpus/失败 artifact 管理；保留快速 smoke | `6421b63` 三个 ASan target 的远端时间预算与 smoke 检查通过；每日定时/缓存/日志/失败 artifact 已接入；有限测试的范围见下方证据 |
+| 跨语言 reader | 独立 C/Python 与 Rust 对照冻结的编码、codec、alias、PACKAGE 和签名语义 | `94e304b` 的两个 Ubuntu 环境各通过 192 项，包含嵌套 Unicode 控制路径及冒号、反斜杠反例。 [Ubuntu latest](https://github.com/aiqubits/quantinfer/actions/runs/44731147311/job/136270917076) · [Ubuntu 24.04](https://github.com/aiqubits/quantinfer/actions/runs/44731147311/job/136270917168) |
+| 持续 fuzz | 覆盖 reader、PACKAGE index 和控制区，保留 corpus、日志和失败产物 | `94e304b` 的三个 push ASan 目标各运行 61 秒并通过。同一提交在本地三个目标各运行 901 秒，共 12,558,690 次。远端定时作业在 `8e5a087` 上三个目标各运行 901 秒并通过。 [当前 push](https://github.com/aiqubits/quantinfer/actions/runs/44731146822) · [定时作业](https://github.com/aiqubits/quantinfer/actions/runs/44702929032) |
 | 必需能力 registry | 明确 feature/backend 名称、能力匹配与未知要求拒绝；无需调用者猜测未登记字符串 | `5c4c262` 本地与远端 CI/Model Conformance 通过；已登记四个 QIF feature、七个 backend identity；CPU/GPU/direct loader 核对实际后端；语义见 [registry](requirements-registry.md) |
-| 高级量化 provider | GPTQ/AWQ/AutoRound 的浮点权重与校准输入到量化产物闭环，独立参考与误差门禁；LLM Compressor 按原方案核对 Adapter | GPTQ 完整 Hessian 与整模型流程已通过远端验收；AWQ 原生缩放、clipping 和 QIF 发布已通过 `34d7756` 的[整模型专项](https://github.com/aiqubits/quantinfer/actions/runs/44532255162/job/135588360329)。AutoRound 原生 SignRound 的独立 Torch 对照、小模型和真实 SmolLM2 整模型门禁本地通过，远端证据按自己的提交记录。LLM Compressor 已有 WNA16 Adapter |
+| 高级量化 provider | GPTQ、AWQ、AutoRound 从浮点权重和校准输入发布 QIF，覆盖独立参考、留出样本和容器一致性。LLM Compressor 提供 WNA16 Adapter | 三种量化在固定 SmolLM2 上分别验证 210 个投影。四个留出样本的最大 KL 分别为 0.429150、0.163912 和 0.239773，最小 Top-10 重合为 6、8 和 8。 [GPTQ](https://github.com/aiqubits/quantinfer/actions/runs/44731146886/job/136270916451) · [AWQ](https://github.com/aiqubits/quantinfer/actions/runs/44731146886/job/136270916136) · [AutoRound](https://github.com/aiqubits/quantinfer/actions/runs/44731146886/job/136270916138) |
 | Mixed precision 与精度矩阵 | 复杂策略与误差实验、两模型更多 K-quant 组合的真实质量验收，记录覆盖边界 | `c8c558c` 的 K 生产端与双模型矩阵、`04900bf` 的全局校准预算策略及 `1c748d9` 重跑均通过远端 Model Conformance，见下方 |
 | 厂商 kernel | Ascend matmul、T-MAC、KleidiAI 的实际 executor/kernel 实现、所用 SDK 绑定、能力声明、可执行 ABI/契约测试；硬件实测单列 | Ascend `8928c63`、KleidiAI `26bfa4f`、T-MAC `175873e` 专项 CI 已通过；各实现 profile 与上游编译栈/硬件测量的边界见 README |
-| Studio | 量化任务、校准 workflow、registry/profile/package 管理、LoRA 和 benchmark 可视化 | 固定 SmolLM2 已在本地通过 HTTP 校准、AWQ 发布、重分片与校验，Profile 和 LoRA 生效、失败清理、运行取消、benchmark JSON 和重启恢复。已接入 Model Conformance |
+| Studio | 量化任务、校准 workflow、registry/profile/package 管理、LoRA 和 benchmark 可视化 | 固定 SmolLM2 通过校准、任务取消、AWQ 发布、重分片、Profile 与 LoRA 服务、基准和重启恢复。 [真实模型作业](https://github.com/aiqubits/quantinfer/actions/runs/44731146886/job/136270915825) |
 | Candle QIF 布局 | 不改变原生 output-row 的逻辑坐标；所有 packed encoding、layout、维度 profile、codec 与 alias 对照 | `00049bd` 新增显式 `PackedQifTensor` 坐标视图，保留原始 blocks；五项专项、隔离 workspace 标准检查、可选 feature Clippy 与两个 xtask smoke 通过；远端 CI 已成功 |
 | 模型参数与 QIF 对齐 | 已知模型参数按语义校验，不随存储维度模式跳过；SINGLE/PACKAGE 按显式偏移支持较大物理对齐，仍拒绝重叠、倒序和未对齐块 | `df4eb15` 本地 240 次模型加载、九种 codec/alignment 和三语言 189 项都通过；七个实际触发的远端 workflow 通过，含 [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44523217346) |
 | 滑动窗口、分片资源与发布 | 两种 Dense adapter 明确拒绝不支持的滑动窗口；PACKAGE reader 以单分片句柄读取；writer 完成全量校验后发布 | 本地 288 次模型加载、64 分片与 32 描述符限制、暂存目录校验失败及清理回归、三语言 189 项通过。性能 CI 启用 `pipefail` 和补齐 CPU SIMD 变更触发；对应远端 CI 单列 |
 | 分片 SafeTensors 默认输出 | 分片源逐 tensor 读取，默认输出对 SINGLE/PACKAGE 与三种 codec 逐块写入 | SmolLM2 两分片的六种 QIF 组合在本地 384 MiB 地址空间限制下完成发布和校验；所有文件 hash 与原转换流程一致。已接入 Model Conformance |
-| 完成审计 | 对照全部要求逐项检查代码、测试、真实模型及最新远端 CI，不以本表的状态文字代替证据 | 未完成 |
+| 原 Qwen3 转换命令 | 旧命令省略 `--output-format` 仍可生成 GGUF。常规 SafeTensors 转换保留 QIF 默认 | CI 用原命令生成 F32、Q8_0 和 Q4_0 GGUF，并核对 F32 与 Q8_0 的冻结文件摘要。 [真实 Qwen3 作业](https://github.com/aiqubits/quantinfer/actions/runs/44731146886/job/136271723642) |
+| PACKAGE 摘要与路径 | 打开时检查分片摘要语法和本地相对路径，完整校验核对分片内容 | 摘要负例、跨语言路径套件和 64 分片资源限制测试均通过。 [格式规范](../formats/qif-v2-final-plan.md#8-qif-package) · [摘要与资源回归](https://github.com/aiqubits/quantinfer/actions/runs/44731147311/job/136270916744) |
+| 完成审计 | 对照通用 MVP 的 30 项和 [QIF 方案](../formats/qif-v2-final-plan.md)第 10 节的 10 项，核对代码、软件契约、真实模型与 CI | 已完成当前软件交付范围的验收。代码基线 `94e304b` 触发的五项工作流全部通过。 [代码基线](https://github.com/aiqubits/quantinfer/commit/94e304b8641f387da350a09ff2cb459b9aef291b) · [CI](https://github.com/aiqubits/quantinfer/actions/runs/44731147311) · [Model Conformance](https://github.com/aiqubits/quantinfer/actions/runs/44731146886) |
 
 QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名不混作当前 wire core 的缺陷；若后续扩展这些 profile，仍需单独冻结版本/编码与验收。
 
 ## 已完成迭代的证据
+
+以下记录反映各提交在当时的实现和验收状态。
 
 - AutoRound 对每个线性投影使用实际输入，联合优化舍入偏移和对称裁剪，前向与最终存储均
   使用 F16 网格。独立 Torch autograd 对照包含 4/8 bit、32/64 分组与较短尾组。整模型
@@ -307,8 +311,8 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   `2549efafb6629d3b44a3e1eba18bc2a222fcca24302fc2b7abe3f8b2d17cc762`；
   仅改变两个非方形投影的物理布局，不重新量化。该批自身的远端 CI 在提交后核对。
 
-固定 `1c748d9` 的 [全条款复核](two-plan-review-1c748d9.md) 保留远端与本地的原始状态，
-不将后续修复反写成原提交已经通过。高级量化的全部生产流程与完整 Studio 仍未完成。
+固定 `1c748d9` 的 [全条款复核](two-plan-review-1c748d9.md) 保留当时的远端与本地状态。
+该次复核时，完整高级量化发布流程与 Studio 仍在实施。
 
 - `dcea320` 已发布 QIF 逐 tensor layout、结构类型校验和规范精确化修复。该提交的
   常规 CI、Metal/WGPU/CUDA、Ascend、KleidiAI、T-MAC、GGUF 互操作及 push 时间预算
@@ -325,8 +329,8 @@ QIF 方案明确延后的 FP8/NF4、BLAKE3、远程 transport、PACKAGE 签名�
   的 GPTQ 投影 MSE 为 `0.000013752617658749938`，同一最终码表的 RTN 为
   `0.002377514089817588`。SINGLE/none 与 PACKAGE/zstd 均保留相同量化 blocks，
   holdout KL 为 `0.0000022303983379325617`、Top-10 重合 10，生成 token 与 F32
-  golden 一致。该结果不表示所有层均已 GPTQ，也不扩大为一般任务质量保证；
-  全模型编排、AWQ、AutoRound 和完整 Studio 继续保留为未完成项。
+  golden 一致。该批验证范围是首层的单个投影。全模型编排、AWQ、AutoRound 和完整 Studio
+  在该批之后继续实施。
   本批最终本地 workspace 为 257 passed / 0 failed / 7 ignored，含 doctest；
   fmt/check/Clippy 与两个 xtask smoke 全部通过。新增真实模型用例已单独执行成功，
   上游原始源码重算八组 fixture 也通过；远端结果按对应提交的 CI 另行核对。
