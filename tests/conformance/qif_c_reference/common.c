@@ -234,7 +234,9 @@ void relative_path(Bytes value) {
 char *path_in(const char *root, Json name) {
   Bytes value = string_bytes(name);
   relative_path(value);
-  CHECK(!memchr(value.data, 0, value.size));
+  CHECK(!memchr(value.data, ':', value.size) &&
+        !memchr(value.data, '\\', value.size) &&
+        !memchr(value.data, 0, value.size));
   size_t root_length = strlen(root);
   CHECK(value.size < LIMIT - root_length - 2);
   char *joined = allocate(root_length + 1 + value.size + 1);

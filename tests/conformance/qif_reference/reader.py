@@ -20,6 +20,8 @@ def read_file(path, maximum=LIMIT):
 
 def resolved(root, relative):
     relative_path(relative)
+    require(not any(char in relative for char in (':', '\\', '\x00')),
+            'invalid character in package path')
     path = (root / relative).resolve(strict=True)
     require(path.is_relative_to(root), 'package path escapes root')
     return path

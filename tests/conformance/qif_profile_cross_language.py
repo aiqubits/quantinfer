@@ -373,6 +373,19 @@ def main():
         check(path, False)
 
         # PACKAGE paths, topology, shard integrity, split blocks and aliases.
+        for name, target, accepted in (
+                ('nested-control-path', 'controls/元数据.qmb', True),
+                ('scheme-control-path', 'fixture:metadata.qmb', False),
+                ('backslash-control-path', r'controls\metadata.qmb', False)):
+            path = root / name
+            shutil.copytree(fixtures / 'package-lz4', path)
+            document = json.loads((path / 'qif.json').read_bytes())
+            moved = path / target
+            moved.parent.mkdir(exist_ok=True)
+            (path / document['metadata_path']).rename(moved)
+            document['metadata_path'] = target
+            repair_package(path, document)
+            check(path, accepted)
         for name in ('parent-path', 'absolute-path', 'symlink-escape', 'duplicate-shard',
                      'coordinate-rank', 'tensor-list', 'missing-shard', 'shard-size',
                      'shard-hash', 'index-shard-id', 'index-overlap', 'duplicate-json'):

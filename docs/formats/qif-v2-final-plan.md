@@ -597,7 +597,8 @@ canonical `qif.json` 字节、`metadata.qmb` 的字节、`index.qifi` 的字节�
 包含块间 padding。`sha256` 和 `root_hash` 均编码为 64 个小写十六进制字符。
 reader 打开时验证摘要格式，完整 `verify()` 核对 shard 文件内容与其摘要。
 
-路径 MUST 禁止 `..`、绝对路径和未授权 scheme。package 在临时目录写入后由 reader
+PACKAGE 路径是以 `/` 分隔的本地相对路径。reader MUST 拒绝绝对路径、`..` 路径段、
+冒号、反斜杠和 NUL，也必须拒绝解析后位于包目录之外的路径。package 在临时目录写入后由 reader
 执行全量 `verify()`，通过后才原子 rename 至发布路径。默认 reader 在打开时逐一验证
 shard 路径和大小，读取时复用最近访问的一个 shard 文件句柄。
 
@@ -670,7 +671,7 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
 5. QIF2-SINGLE 与 QIF2-PACKAGE 对相同 tensor 产生一致逻辑值（当前 package tests 已覆盖）；
 6. package 通过全局 index 改变 shard 分配而不改变 tensor 编码（当前公开 API 为 `quantinfer_format::qif::plan_qif_reshard`，已有跨 shard 规划和测试；writer 仍会结合 codec 大小与对齐执行最终物理放置）；
 7. root/full verification 在损坏、截断、重叠、越界和错误 codec 上稳定失败；
-8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；177 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
+8. Rust reader 与独立 C/Python golden readers 对固定 unsigned/uncompressed F32 fixture 得出一致 header、index 字段、section/checksum 和 payload bytes；CI 保留原始及控制区重排两个布局和四类损坏输入。另有独立 C/Python core-profile readers，覆盖八种编码、两种 layout、typed QMB、三种 codec、alias、PACKAGE 与 SINGLE Ed25519／可信公钥策略；180 个组合及正反用例和 12 个 corpus seed 已接入 CI，C 使用 ASan/UBSan。报告工具另设 64 MiB artifact 与总逻辑 tensor 字节预算（alias 也计入），不是生产格式的大小限制；覆盖范围和依赖见 [QIF conformance](qif-conformance.md)，不将有限矩阵解释为所有恶意输入的等价性证明；
 9. `cargo run -p quantinfer-xtask -- qif-bench --qif PATH --safetensors PATH --gguf PATH --tensor NAME` 在独立进程中报告三种格式的 open、selected-tensor range、open-to-first-range、artifact size、RSS/high-water 和 page-fault 指标；GGUF open 包含整文件读入，QIF full-verify 的耗时与资源统计单列。输出说明 eager/file-backed 加载方式、dtype、范围字节数/hash 和未控制的缓存状态。不同名称可用 `--qif-tensor`、`--safetensors-tensor`、`--gguf-tensor` 显式对应；测量范围和比较限制见 [benchmarks](../../benches/README.md)；
 10. 不得把“比 SafeTensors 快多少”写入规范，除非由可复现基准证明。
 

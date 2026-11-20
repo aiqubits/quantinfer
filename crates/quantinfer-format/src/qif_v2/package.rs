@@ -1161,7 +1161,8 @@ fn package_root_hash(
 
 fn resolve_path(root: &Path, relative: &str) -> Result<PathBuf> {
     let path = Path::new(relative);
-    if path.is_absolute()
+    if relative.contains([':', '\\', '\0'])
+        || path.is_absolute()
         || path.components().any(|component| {
             matches!(
                 component,
