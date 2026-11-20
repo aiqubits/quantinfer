@@ -691,7 +691,10 @@ GGUF 继续使用 owned reader；`manifest.json` 模型包保留其先验证完�
    默认运行时对照。每日定时任务保留 corpus、日志及失败 artifact；push 有单独
    的时间预算检查。输入、输出、时长限制和仍未覆盖的拓扑/并发文件系统边界见
    [fuzz/README.md](../../fuzz/README.md)，不能将有限运行解释为完整安全证明。
-6. 新 CLI 默认输出 QIF；默认 runtime 拒绝旧 v1，旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
+6. SafeTensors 转换 CLI 默认输出 QIF。显式 `--output-format` 优先；省略格式且未指定
+   QIF 专用参数时，`.gguf` 输出路径（不区分大小写）或 `--manifest` 选择 GGUF，
+   兼容原 Qwen3 转换命令。模型读取器继续按文件内容识别格式。默认 runtime 拒绝旧 v1，
+   旧 v1 module 仅保留在格式 crate 内供历史 fixtures 使用。
 7. GGUF → QIF 已由 `from-gguf` 实现；SafeTensors 转换器通过
    `--output-format qif` 发布当前 QIF。二者使用 `--qif-profile single|package`、
    `--qif-codec none|zstd|lz4`，PACKAGE 还接受 `--max-shard-bytes N`。内部仍复用

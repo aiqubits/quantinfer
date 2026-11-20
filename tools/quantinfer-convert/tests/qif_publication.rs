@@ -2,7 +2,7 @@ use quantinfer_format::{GgufReader, GgufValue, GgufWriter, PackedTensorReader};
 use std::{fs, process::Command};
 
 #[test]
-fn safetensors_publishes_all_native_profiles_and_codecs_with_identical_tensor_values() {
+fn safetensors_preserves_tensor_values_and_legacy_gguf_output() {
     let root = tempfile::tempdir().unwrap();
     let config = root.path().join("config.json");
     fs::write(&config, r#"{"model_type":"llama","vocab_size":4,"hidden_size":4,"intermediate_size":8,"num_hidden_layers":1,"num_attention_heads":2,"num_key_value_heads":1,"max_position_embeddings":16,"tie_word_embeddings":true}"#).unwrap();
@@ -60,7 +60,35 @@ fn safetensors_publishes_all_native_profiles_and_codecs_with_identical_tensor_va
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let baseline = GgufReader::open(fs::read(baseline).unwrap()).unwrap();
+    let baseline_bytes = fs::read(baseline).unwrap();
+    let legacy = root.path().join("legacy.GGUF");
+    assert!(command(&legacy).status().unwrap().success());
+    assert_eq!(fs::read(legacy).unwrap(), baseline_bytes);
+
+    let legacy_with_manifest = root.path().join("legacy.bin");
+    let manifest = root.path().join("manifest.json");
+    assert!(command(&legacy_with_manifest)
+        .arg("--manifest")
+        .arg(&manifest)
+        .status()
+        .unwrap()
+        .success());
+    assert_eq!(fs::read(legacy_with_manifest).unwrap(), baseline_bytes);
+    assert!(manifest.is_file());
+
+    for (name, options) in [
+        ("default.qif", &[][..]),
+        ("explicit-qif.gguf", &["--output-format", "qif"][..]),
+        ("select-qif.gguf", &["--qif-codec", "lz4"][..]),
+    ] {
+        let path = root.path().join(name);
+        assert!(command(&path).args(options).status().unwrap().success());
+        PackedTensorReader::open_path(path)
+            .unwrap()
+            .verify_qif()
+            .unwrap();
+    }
+    let baseline = GgufReader::open(baseline_bytes).unwrap();
     for profile in ["single", "package"] {
         for codec in ["none", "zstd", "lz4"] {
             let path = root.path().join(format!("{profile}-{codec}"));

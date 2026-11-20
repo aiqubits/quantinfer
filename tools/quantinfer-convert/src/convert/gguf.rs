@@ -128,23 +128,32 @@ pub(crate) fn run() -> Result<(), String> {
         .then(|| required_path(&arguments, "--weights-checksums"))
         .transpose()?;
     let output_path = required_path(&arguments, "--output")?;
-    let output_format =
-        optional_value(&arguments, "--output-format").unwrap_or_else(|| "qif".to_owned());
+    let qif_requested = arguments.iter().any(|value| {
+        matches!(
+            value.as_str(),
+            "--qif-profile" | "--qif-codec" | "--max-shard-bytes"
+        )
+    });
+    let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
+    let gguf_requested = manifest_path.is_some()
+        || output_path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("gguf"));
+    let explicit_format = optional_value(&arguments, "--output-format");
+    let output_format = explicit_format
+        .as_deref()
+        .unwrap_or(if gguf_requested && !qif_requested {
+            "gguf"
+        } else {
+            "qif"
+        });
     if output_format != "gguf" && output_format != "qif" {
         return Err("--output-format must be gguf or qif".to_owned());
     }
     let qif_options = super::qif_options::QifOptions::parse(&arguments)?;
-    if output_format == "gguf"
-        && arguments.iter().any(|value| {
-            matches!(
-                value.as_str(),
-                "--qif-profile" | "--qif-codec" | "--max-shard-bytes"
-            )
-        })
-    {
+    if output_format == "gguf" && qif_requested {
         return Err("QIF publication options require --output-format qif".into());
     }
-    let manifest_path = optional_value(&arguments, "--manifest").map(PathBuf::from);
     if output_format == "qif" && manifest_path.is_some() {
         return Err("--manifest is only supported when --output-format gguf".to_owned());
     }

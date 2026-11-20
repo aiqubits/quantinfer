@@ -609,7 +609,7 @@ jobs:
         run: |
           python tests/conformance/autoround_reference.py --check tests/golden/autoround-signed-profile.json \
             --output qwen3-autoround-reference.json
-      - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF
+      - name: Convert and inspect F32, Q8_0 and Q4_0 GGUF using the original command
         run: |
           cargo build --release --locked -p quantinfer-convert -p quantinfer-cli
           for variant in f32 q8_0 q4_0; do
@@ -617,7 +617,7 @@ jobs:
             if [[ "$variant" != f32 ]]; then options+=(--quantize "$variant"); fi
             target/release/quantinfer-convert --config qwen3/config.json \
               --weights qwen3/model.safetensors --tokenizer qwen3/tokenizer.json \
-              --output-format gguf --output "qwen3-$variant.gguf" "${options[@]}"
+              --output "qwen3-$variant.gguf" "${options[@]}"
             target/release/quantinfer-cli inspect-gguf --input "qwen3-$variant.gguf" \
               > "qwen3-$variant.inventory"
           done

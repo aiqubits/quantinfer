@@ -14,5 +14,5 @@ export QUANTINFER_GGML_LIB_DIR=/path/to/ggml/build/bin
 export LD_LIBRARY_PATH="$QUANTINFER_GGML_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 cargo run --release --locked -p quantinfer-convert --features ggml -- \
   --config config.json --weights model.safetensors --tokenizer tokenizer.json \
-  --output model.gguf --quantize q8_0 --ggml
+  --output-format gguf --output model.gguf --quantize q8_0 --ggml
 ```

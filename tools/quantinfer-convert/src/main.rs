@@ -27,6 +27,7 @@ pub(crate) fn print_help() {
     println!("       quantinfer-convert gptq --input FLOAT_MODEL --dataset PROMPTS.jsonl --output QIF_PATH [--validation-dataset HOLDOUT.jsonl] [--report REPORT.json] [--bits 4|8] [--group-size N] [--damping FRACTION] [--activation-order] [--qif-profile single|package] [--qif-codec none|zstd|lz4] (requires feature gptq)");
     println!("       quantinfer-convert awq --input FLOAT_MODEL --dataset PROMPTS.jsonl --output QIF_PATH [--validation-dataset HOLDOUT.jsonl] [--report REPORT.json] [--bits 4|8] [--group-size N] [--grid-points N] [--no-clipping] [--qif-profile single|package] [--qif-codec none|zstd|lz4] (requires feature awq)");
     println!("       quantinfer-convert autoround --input FLOAT_MODEL --dataset PROMPTS.jsonl --output QIF_PATH [--validation-dataset HOLDOUT.jsonl] [--report REPORT.json] [--bits 4|8] [--group-size N] [--iterations N] [--rounding-lr RATE] [--clipping-lr RATE] [--threads N] (requires feature autoround)");
+    println!("SafeTensors conversion defaults to QIF. With no format or QIF-specific options, a .gguf output or --manifest selects GGUF.");
 }
 
 #[cfg(test)]
