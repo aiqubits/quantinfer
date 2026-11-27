@@ -31,7 +31,7 @@ libc = "0.2"
 memmap2 = "0.9"
 zstd = "0.13"
 lz4_flex = "0.11"
-ed25519-dalek = "2"
+ed25519-dalek = "3"
 quantinfer = { path = "crates/quantinfer", version = "0.1.0" }
 quantinfer-core = { path = "crates/quantinfer-core", version = "0.1.0" }
 quantinfer-format = { path = "crates/quantinfer-format", version = "0.1.0" }
